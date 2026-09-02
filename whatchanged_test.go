@@ -275,6 +275,27 @@ func TestIgnoredDirectories(t *testing.T) {
 	}
 }
 
+func TestCommittedDirectorySymlinkIsIgnored(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	symlinks, ok := f.fs.(billy.Symlink)
+	if !ok {
+		t.Fatal("fixture filesystem does not support symlinks")
+	}
+	if err := symlinks.Symlink("a", "alias"); err != nil {
+		t.Fatal(err)
+	}
+	f.commit("base")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.stdout != "no exported API changes\n" {
+		t.Errorf("stdout = %q", r.stdout)
+	}
+}
+
 func TestGOOSFiltering(t *testing.T) {
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
@@ -361,6 +382,21 @@ func TestBreakingHidesCompatible(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	want := "example.com/m/a\n  - Drop: removed\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+}
+
+func TestBreakingWithOnlyCompatibleChanges(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Added() {}\n")
+	r := f.run("HEAD", "", Options{Breaking: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want := "1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}

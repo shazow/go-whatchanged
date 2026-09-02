@@ -97,13 +97,6 @@ func (o *Overlay) ReadDir(name string) ([]fs.FileInfo, error) {
 			// The entry vanished between listing and stat; skip it.
 			continue
 		}
-		if fi.Mode()&fs.ModeSymlink != 0 {
-			// go/build follows symlinks via os.Stat; do the same so that
-			// symlinked directories are visible as directories.
-			if target, err := os.Stat(filepath.Join(name, fi.Name())); err == nil {
-				fi = renamed{FileInfo: target, name: fi.Name()}
-			}
-		}
 		infos = append(infos, fi)
 	}
 	return infos, nil
@@ -132,14 +125,6 @@ func (o *Overlay) IsDir(name string) bool {
 	fi, err := o.Stat(name)
 	return err == nil && fi.IsDir()
 }
-
-// renamed overrides the name of an fs.FileInfo.
-type renamed struct {
-	fs.FileInfo
-	name string
-}
-
-func (r renamed) Name() string { return r.name }
 
 // Context returns a copy of build.Default whose filesystem hooks are served
 // by the overlay. Cgo is disabled because the cgo path shells out and writes

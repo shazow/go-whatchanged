@@ -141,7 +141,9 @@ func Write(w io.Writer, res Result, opts Options) error {
 		}
 	}
 
-	b.WriteString("\n")
+	if !first {
+		b.WriteString("\n")
+	}
 	b.WriteString(formatSummary(st, sum))
 	b.WriteString("\n")
 	_, err := io.WriteString(w, b.String())
