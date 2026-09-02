@@ -23,7 +23,34 @@ func namedForms(old, nw *types.Package, msg string) (before, after string) {
 	if oldObj == nil || newObj == nil {
 		return "", ""
 	}
-	return types.ObjectString(oldObj, types.RelativeTo(old)), types.ObjectString(newObj, types.RelativeTo(nw))
+	return declString(oldObj, old), declString(newObj, nw)
+}
+
+// declString renders obj as it would appear in source. go/types prints
+// methods as "func (*T).M(...)"; this prints the conventional
+// "func (r *T) M(...)" instead.
+func declString(obj types.Object, pkg *types.Package) string {
+	qual := types.RelativeTo(pkg)
+	f, ok := obj.(*types.Func)
+	if !ok {
+		return types.ObjectString(obj, qual)
+	}
+	sig, ok := f.Type().(*types.Signature)
+	if !ok || sig.Recv() == nil {
+		return types.ObjectString(obj, qual)
+	}
+	recv := sig.Recv()
+	var b strings.Builder
+	b.WriteString("func (")
+	if recv.Name() != "" && recv.Name() != "_" {
+		b.WriteString(recv.Name())
+		b.WriteString(" ")
+	}
+	b.WriteString(types.TypeString(recv.Type(), qual))
+	b.WriteString(") ")
+	b.WriteString(f.Name())
+	b.WriteString(strings.TrimPrefix(types.TypeString(sig, qual), "func"))
+	return b.String()
 }
 
 // lookupSymbol resolves the symbol forms apidiff emits: "Name", "T.M" and
