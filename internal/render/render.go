@@ -134,8 +134,8 @@ func Write(w io.Writer, res Result, opts Options) error {
 
 // formatChange maps an apidiff change to one or more indented lines with a
 // glyph and color. "changed from X to Y" messages are split so that the
-// before and after values sit on their own lines, aligned on the same
-// column, which makes long signatures easy to compare.
+// before and after values sit on their own "-" and "+" lines, like a small
+// patch, which makes long signatures easy to compare.
 func formatChange(st Style, c apidiff.Change) []string {
 	bold := !c.Compatible
 	paint := func(text string) string {
@@ -168,8 +168,8 @@ func formatChange(st Style, c apidiff.Change) []string {
 	if head, from, to, ok := splitChangedFromTo(c.Message); ok {
 		return []string{
 			"  " + paint(glyph+head),
-			"      " + st.Dim("from") + " " + paint(from),
-			"        " + st.Dim("to") + " " + paint(to),
+			"      " + st.Red("- "+from, bold),
+			"      " + st.Green("+ "+to, bold),
 		}
 	}
 	return []string{"  " + paint(glyph+c.Message)}

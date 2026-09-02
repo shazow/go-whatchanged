@@ -8,11 +8,11 @@ example.com/m/gone (removed)
 example.com/m/store
   - (*Client).Close: removed
   ~ Open: changed
-      from func(string) (*Client, error)
-        to func(string, Options) (*Client, error)
+      - func(string) (*Client, error)
+      + func(string, Options) (*Client, error)
   ~ Version: changed
-      from untyped string
-        to untyped int
+      - untyped string
+      + untyped int
   + (*Client).Ping: added
   + Options: added
   + Point.Z: added
@@ -20,8 +20,8 @@ example.com/m/store
 example.com/m/util
   ! Sizer.Size: added
   ~ Stringer: changed
-      from Stringer
-        to fmt.Stringer
+      - Stringer
+      + fmt.Stringer
 
 4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR
 # stderr
