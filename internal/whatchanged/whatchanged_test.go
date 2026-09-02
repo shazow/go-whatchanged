@@ -36,6 +36,9 @@ type fixture struct {
 	repo *git.Repository
 	fs   billy.Filesystem
 	env  modres.Env
+	// modcache, when set, is an in-memory module cache mounted at
+	// env.GOMODCACHE on both sides; see useFakeModcache.
+	modcache billy.Filesystem
 }
 
 func newFixture(t *testing.T) *fixture {
@@ -70,6 +73,39 @@ func (f *fixture) write(name, content string) {
 	}
 	if err := file.Close(); err != nil {
 		f.t.Fatal(err)
+	}
+}
+
+// useFakeModcache replaces the real module cache with an empty in-memory
+// one, populated with writeModule, so tests can define dependencies.
+func (f *fixture) useFakeModcache() {
+	f.modcache = memfs.New()
+	f.env.GOMODCACHE = vfs.SyntheticPrefix + "modcache"
+}
+
+// writeModule adds a module version to the fake module cache. files are
+// relative to the module root; a go.mod is added unless files has one.
+func (f *fixture) writeModule(modPath, version string, files map[string]string) {
+	f.t.Helper()
+	root := modPath + "@" + version
+	if _, ok := files["go.mod"]; !ok {
+		files["go.mod"] = "module " + modPath + "\n\ngo 1.24\n"
+	}
+	for name, content := range files {
+		full := path.Join(root, name)
+		if err := f.modcache.MkdirAll(path.Dir(full), 0o755); err != nil {
+			f.t.Fatal(err)
+		}
+		file, err := f.modcache.Create(full)
+		if err != nil {
+			f.t.Fatal(err)
+		}
+		if _, err := file.Write([]byte(content)); err != nil {
+			f.t.Fatal(err)
+		}
+		if err := file.Close(); err != nil {
+			f.t.Fatal(err)
+		}
 	}
 }
 
@@ -124,11 +160,15 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	opts.Stdout = &out
 	opts.Stderr = &errb
 	opts.Base = base
-	headSpec := sideSpec{fs: vfs.NewBillyFS(f.fs)}
-	if head != "" {
-		headSpec = sideSpec{rev: head}
+	var mounts []vfs.Mount
+	if f.modcache != nil {
+		mounts = []vfs.Mount{{Path: f.env.GOMODCACHE, FS: vfs.NewBillyFS(f.modcache)}}
 	}
-	res, err := runRepo(f.open, sideSpec{rev: opts.baseRev()}, headSpec, "", f.env, opts)
+	headSpec := sideSpec{fs: vfs.NewBillyFS(f.fs), mounts: mounts}
+	if head != "" {
+		headSpec = sideSpec{rev: head, mounts: mounts}
+	}
+	res, err := runRepo(f.open, sideSpec{rev: opts.baseRev(), mounts: mounts}, headSpec, "", f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
@@ -1028,6 +1068,124 @@ func TestParseFailOn(t *testing.T) {
 		got, err := ParseFailOn(tc.in)
 		if (err == nil) != tc.ok || got != tc.want {
 			t.Errorf("ParseFailOn(%q) = %d, %v; want %d, ok=%v", tc.in, got, err, tc.want, tc.ok)
+		}
+	}
+}
+
+func TestPackageWithoutExportedAPIRemovedOrAdded(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
+	f.commit("base")
+	f.remove("plugin/plugin.go")
+	f.write("other/other.go", "package other\n\nfunc init() {}\n")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want := "example.com/m/other (new)\n  + package added\n\n" +
+		"example.com/m/plugin (removed)\n  - package removed\n\n" +
+		"2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitIncompatible {
+		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
+	}
+
+	// A nested module is not part of this module's API on either side.
+	f.write("plugin/go.mod", "module example.com/m/plugin\n\ngo 1.24\n")
+	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
+	r = f.run("HEAD", "", Options{Breaking: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "example.com/m/plugin (removed)\n  - package removed\n")
+	mustNotContain(t, r.stdout, "package added")
+}
+
+func TestConstantValueChange(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nconst Version = \"1.2.0\"\n\nconst Limit int64 = 10\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nconst Version = \"1.3.0-dev\"\n\nconst Limit int64 = 20\n")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout,
+		"  ~ Limit: value changed\n      - const Limit int64 = 10\n      + const Limit int64 = 20\n",
+		"  ~ Version: value changed\n      - const Version untyped string = \"1.2.0\"\n      + const Version untyped string = \"1.3.0-dev\"\n")
+}
+
+// A dependency that imports the main module (grpc-go and go-control-plane
+// import each other, for instance) must be linked against each side's own
+// main-module packages. Sharing one checked copy between the sides makes
+// the other side see two distinct core.Client types and report bogus type
+// errors, even when both sides are identical.
+func TestDependencyImportingMainModuleIsNotShared(t *testing.T) {
+	f := newFixture(t)
+	f.useFakeModcache()
+	f.writeModule("example.com/dep", "v1.0.0", map[string]string{
+		"dep.go": "package dep\n\nimport \"example.com/m/core\"\n\nfunc Use(c core.Client) {}\n",
+	})
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n")
+	f.write("core/core.go", "package core\n\ntype Client struct{}\n")
+	f.write("a/a.go", "package a\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/m/core\"\n)\n\nfunc A(c core.Client) { dep.Use(c) }\n")
+	f.commit("base")
+
+	for i := 0; i < 5; i++ {
+		r := f.run("HEAD", "", Options{})
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if r.stderr != "" {
+			t.Fatalf("run %d: stderr = %q, want none", i, r.stderr)
+		}
+		if r.stdout != "no exported API changes\n" {
+			t.Errorf("run %d: stdout = %q", i, r.stdout)
+		}
+	}
+
+	// The same holds for two committed revisions of the same tree.
+	r := f.run("HEAD", "HEAD", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.stderr != "" {
+		t.Errorf("stderr = %q, want none", r.stderr)
+	}
+}
+
+// When the two go.mod files pin a transitive dependency to different
+// versions, a package that imports it (same directory on both sides) must be
+// checked once per side; otherwise one side links it against the other
+// side's version of the dependency.
+func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
+	f := newFixture(t)
+	f.useFakeModcache()
+	f.writeModule("example.com/q", "v1.0.0", map[string]string{"q.go": "package q\n\ntype T struct{}\n"})
+	f.writeModule("example.com/q", "v1.1.0", map[string]string{"q.go": "package q\n\ntype T struct{}\n\nfunc New() T { return T{} }\n"})
+	f.writeModule("example.com/p", "v1.0.0", map[string]string{
+		"p.go": "package p\n\nimport \"example.com/q\"\n\nfunc Use(t q.T) {}\n",
+	})
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire (\n\texample.com/p v1.0.0\n\texample.com/q v1.0.0\n)\n")
+	f.write("a/a.go", "package a\n\nimport (\n\t\"example.com/p\"\n\t\"example.com/q\"\n)\n\nfunc A() { p.Use(q.T{}) }\n")
+	f.commit("base")
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire (\n\texample.com/p v1.0.0\n\texample.com/q v1.1.0\n)\n")
+
+	for i := 0; i < 5; i++ {
+		r := f.run("HEAD", "", Options{})
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		if r.stderr != "" {
+			t.Fatalf("run %d: stderr = %q, want none", i, r.stderr)
+		}
+		if r.stdout != "no exported API changes\n" {
+			t.Errorf("run %d: stdout = %q", i, r.stdout)
 		}
 	}
 }

@@ -28,9 +28,13 @@ func namedForms(old, nw *types.Package, msg string) (before, after string) {
 
 // declString renders obj as it would appear in source. go/types prints
 // methods as "func (*T).M(...)"; this prints the conventional
-// "func (r *T) M(...)" instead.
+// "func (r *T) M(...)" instead, and adds the value of a constant, which is
+// what a "value changed" message is about.
 func declString(obj types.Object, pkg *types.Package) string {
 	qual := types.RelativeTo(pkg)
+	if c, ok := obj.(*types.Const); ok {
+		return types.ObjectString(obj, qual) + " = " + c.Val().String()
+	}
 	f, ok := obj.(*types.Func)
 	if !ok {
 		return types.ObjectString(obj, qual)

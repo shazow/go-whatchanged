@@ -103,8 +103,15 @@ declaration with parameter names (`func Open(path string) ...`,
 is to a whole symbol; a change to a struct field falls back to the bare
 types.
 
+A constant whose value changed shows both values: `const Version untyped
+string = "1.4.0"` on the `-` line and the new value on the `+` line.
+
 A package header carries `(new)` when it exists only on the head side and
-`(removed)` when it exists only on the base side. The summary line ends with
+`(removed)` when it exists only on the base side. A package without any
+exported API, one that only registers itself in `init`, say, still gets a
+`package added` (compatible) or `package removed` (incompatible) line when
+it appears or disappears, since importers notice either way. A directory
+that becomes a nested module counts as removed. The summary line ends with
 the semantic version bump the changes would require: `MAJOR` if anything is
 incompatible, `MINOR` if only compatible changes were made, `PATCH` otherwise.
 The counts always describe the full diff, even with `--breaking`.
@@ -143,7 +150,11 @@ filesystem so `$GOROOT` and the module cache stay reachable. Import paths are
 resolved from `go.mod` alone, which is sound for modules at `go 1.17` or
 newer because graph pruning guarantees every module providing an imported
 package is listed. Dependency packages are type-checked once and shared
-between the two sides since their directories are immutable.
+between the two sides when their imports resolve identically on both: a
+dependency that imports the main module (grpc-go and go-control-plane import
+each other), or one whose transitive imports the two `go.mod` files pin to
+different versions, is checked once per side instead, so that neither side
+is ever linked against the other side's packages.
 
 ## Non-goals (for now)
 

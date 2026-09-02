@@ -4,6 +4,8 @@
 package loader
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"go/ast"
 	"go/build"
@@ -16,13 +18,19 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/shazow/go-whatchanged/internal/modres"
 )
 
-// SharedCache memoizes packages by resolved directory. Standard library and
-// module cache directories are immutable, so the same directory always yields
-// the same package regardless of which side asked for it.
+// SharedCache memoizes dependency packages between the two sides of a diff.
+// Standard library and module cache directories are immutable, so a
+// directory yields the same package whichever side asks for it, provided
+// its imports resolve the same way on both sides. Entries are therefore
+// keyed by directory plus a resolution signature (see Loader.signature): a
+// dependency that imports the main module, or one whose transitive imports
+// are pinned to different versions by the two go.mod files, gets one entry
+// per side instead of leaking one side's packages into the other.
 type SharedCache struct {
 	mu      sync.Mutex
 	entries map[string]*entry
@@ -68,6 +76,11 @@ func (e *ResolveError) Error() string {
 
 func (e *ResolveError) Unwrap() error { return e.Err }
 
+// loaderSeq numbers loaders so that each side's main module is a distinct
+// ingredient of the shared cache keys, even when both sides mount the same
+// tree.
+var loaderSeq atomic.Uint64
+
 // Loader is a memoizing types.ImporterFrom for one side of a diff.
 type Loader struct {
 	ctxt     build.Context
@@ -75,6 +88,7 @@ type Loader struct {
 	resolver *modres.Resolver
 	shared   *SharedCache
 	maxGo    string // language version cap, "go1.24" form; "" when unknown
+	id       string // identifies this side's main-module packages in cache keys
 
 	mu       sync.Mutex
 	local    map[string]*types.Package // main-module packages by import path
@@ -83,6 +97,15 @@ type Loader struct {
 	warnings map[string][]string
 	stack    []string // import paths currently being checked, innermost last
 	fatal    error    // first ResolveError encountered
+	dirs     map[string]importDirResult
+	sigs     map[string]string // dependency directory → resolution signature
+	sigBusy  map[string]bool   // signatures being computed (cycle guard)
+}
+
+// importDirResult memoizes one go/build ImportDir call.
+type importDirResult struct {
+	bp  *build.Package
+	err error
 }
 
 // New returns a loader for one side.
@@ -93,10 +116,14 @@ func New(ctxt build.Context, fset *token.FileSet, resolver *modres.Resolver, sha
 		resolver: resolver,
 		shared:   shared,
 		maxGo:    toolchainVersion(resolver.StdGoVersion()),
+		id:       fmt.Sprintf("side%d", loaderSeq.Add(1)),
 		local:    map[string]*types.Package{},
 		localErr: map[string]error{},
 		inflight: map[string]bool{},
 		warnings: map[string][]string{},
+		dirs:     map[string]importDirResult{},
+		sigs:     map[string]string{},
+		sigBusy:  map[string]bool{},
 	}
 }
 
@@ -220,7 +247,11 @@ func (l *Loader) loadShared(importPath string, loc modres.Location) (*types.Pack
 	}
 	l.mu.Unlock()
 
-	e, owner := l.shared.acquire(loc.Dir)
+	key := loc.Dir
+	if loc.Kind == modres.Dep {
+		key += "\x00" + l.signature(loc.Dir)
+	}
+	e, owner := l.shared.acquire(key)
 	if owner {
 		l.mu.Lock()
 		l.inflight[loc.Dir] = true
@@ -245,13 +276,81 @@ func (l *Loader) loadShared(importPath string, loc modres.Location) (*types.Pack
 	return e.pkg, e.err
 }
 
+// signature fingerprints how the imports of the module-cache package at dir
+// resolve on this side: every import path together with the directory it
+// maps to and, recursively, that directory's signature. Two sides with the
+// same signature would link dir against identical *types.Package objects,
+// so the checked package can be shared. Signatures differ when a dependency
+// imports the main module, whose packages are per side, and when the two
+// go.mod files pin a transitive dependency to different versions. Standard
+// library packages always resolve alike and need no signature of their own.
+func (l *Loader) signature(dir string) string {
+	l.mu.Lock()
+	if s, ok := l.sigs[dir]; ok {
+		l.mu.Unlock()
+		return s
+	}
+	if l.sigBusy[dir] {
+		l.mu.Unlock()
+		return "cycle"
+	}
+	l.sigBusy[dir] = true
+	l.mu.Unlock()
+
+	h := sha256.New()
+	bp, err := l.importDir(dir)
+	if err != nil {
+		fmt.Fprintf(h, "error\x00%v\x00", err)
+	} else {
+		for _, imp := range bp.Imports {
+			if imp == "C" || imp == "unsafe" {
+				continue
+			}
+			loc, err := l.resolver.Resolve(imp, dir)
+			switch {
+			case err != nil:
+				fmt.Fprintf(h, "%s\x00!%v\x00", imp, err)
+			case loc.Kind == modres.Main:
+				fmt.Fprintf(h, "%s\x00%s\x00%s\x00", imp, loc.Dir, l.id)
+			case loc.Kind == modres.Std:
+				fmt.Fprintf(h, "%s\x00%s\x00std\x00", imp, loc.Dir)
+			default:
+				fmt.Fprintf(h, "%s\x00%s\x00%s\x00", imp, loc.Dir, l.signature(loc.Dir))
+			}
+		}
+	}
+	s := hex.EncodeToString(h.Sum(nil))[:16]
+
+	l.mu.Lock()
+	delete(l.sigBusy, dir)
+	l.sigs[dir] = s
+	l.mu.Unlock()
+	return s
+}
+
+// importDir memoizes go/build's ImportDir per directory: the signature walk
+// and the type-check both need it.
+func (l *Loader) importDir(dir string) (*build.Package, error) {
+	l.mu.Lock()
+	r, ok := l.dirs[dir]
+	l.mu.Unlock()
+	if ok {
+		return r.bp, r.err
+	}
+	bp, err := l.ctxt.ImportDir(dir, 0)
+	l.mu.Lock()
+	l.dirs[dir] = importDirResult{bp: bp, err: err}
+	l.mu.Unlock()
+	return bp, err
+}
+
 // check parses and type-checks the package at loc. Type errors never abort
 // the check: apidiff copes with partial packages, so they are returned as
 // warnings alongside the (possibly incomplete) package.
 func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, []string, error) {
 	l.push(importPath)
 	defer l.pop()
-	bp, err := l.ctxt.ImportDir(loc.Dir, 0)
+	bp, err := l.importDir(loc.Dir)
 	if err != nil {
 		if _, ok := err.(*build.NoGoError); ok {
 			return nil, nil, fmt.Errorf("no buildable Go source files for %q in %s", importPath, loc.Dir)
