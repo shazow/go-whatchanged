@@ -21,11 +21,27 @@ const (
 	Removed
 )
 
+// Change is one API change. Before and After optionally carry the
+// declaration-style form of the symbol on each side for "changed from X to
+// Y" messages, such as "func Open(path string) (*Client, error)"; when they
+// are empty the renderer falls back to the types quoted in the message.
+type Change struct {
+	Message    string
+	Compatible bool
+	Before     string
+	After      string
+}
+
+// FromAPIDiff converts an apidiff change without named forms.
+func FromAPIDiff(c apidiff.Change) Change {
+	return Change{Message: c.Message, Compatible: c.Compatible}
+}
+
 // Package is the diff of one package.
 type Package struct {
 	Path    string
 	Status  Status
-	Changes []apidiff.Change
+	Changes []Change
 }
 
 // Warning is a non-fatal problem encountered while loading one side.
@@ -136,7 +152,7 @@ func Write(w io.Writer, res Result, opts Options) error {
 // glyph and color. "changed from X to Y" messages are split so that the
 // before and after values sit on their own "-" and "+" lines, like a small
 // patch, which makes long signatures easy to compare.
-func formatChange(st Style, c apidiff.Change) []string {
+func formatChange(st Style, c Change) []string {
 	bold := !c.Compatible
 	paint := func(text string) string {
 		switch {
@@ -166,6 +182,9 @@ func formatChange(st Style, c apidiff.Change) []string {
 	}
 
 	if head, from, to, ok := splitChangedFromTo(c.Message); ok {
+		if c.Before != "" && c.After != "" {
+			from, to = c.Before, c.After
+		}
 		return []string{
 			"  " + paint(glyph+head),
 			"      " + st.Red("- "+from, bold),

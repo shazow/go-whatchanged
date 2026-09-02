@@ -13,8 +13,8 @@ $ go-whatchanged v1.4.0
 example.com/m/store
   - (*Client).Close: removed
   ~ Open: changed
-      - func(string) (*Client, error)
-      + func(string, Options) (*Client, error)
+      - func Open(path string) (*Client, error)
+      + func Open(path string, o Options) (*Client, error)
   + (*Client).Ping: added
   + Options: added
 
@@ -62,9 +62,13 @@ Changes are grouped by package, one line per change:
 | `~`   | compatible change | cyan |
 | `+`   | compatible addition | green |
 
-A `changed from X to Y` message is split into a small patch: the old value on
-a red `-` line and the new value on a green `+` line, so two long signatures
-can be compared column by column.
+A `changed from X to Y` message is split into a small patch: the old
+declaration on a red `-` line and the new one on a green `+` line, so two
+long signatures can be compared column by column. The lines show the full
+declaration with parameter names (`func Open(path string) ...`,
+`func (c *Client) Ping() ...`, `const Version untyped int`) when the change
+is to a whole symbol; a change to a struct field falls back to the bare
+types.
 
 A package header carries `(new)` when it exists only on the head side and
 `(removed)` when it exists only on the base side. The summary line ends with

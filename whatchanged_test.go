@@ -205,17 +205,18 @@ func TestRemovedFunc(t *testing.T) {
 
 func TestChangedSignature(t *testing.T) {
 	f := newFixture(t)
-	f.write("a/a.go", "package a\n\nfunc Open(name string) error { return nil }\n")
+	f.write("a/a.go", "package a\n\ntype Client struct{}\n\nfunc (c *Client) Do(n int) {}\n\nfunc Open(name string) error { return nil }\n")
 	f.commit("base")
-	f.write("a/a.go", "package a\n\ntype Options struct{}\n\nfunc Open(name string, o Options) error { return nil }\n")
+	f.write("a/a.go", "package a\n\ntype Client struct{}\n\nfunc (c *Client) Do(n int, tags ...string) {}\n\ntype Options struct{}\n\nfunc Open(name string, o Options) error { return nil }\n")
 	r := f.run("HEAD", "", Options{})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"  ~ Open: changed\n      - func(string) error\n      + func(string, Options) error\n",
+		"  ~ (*Client).Do: changed\n      - func (c *Client) Do(n int)\n      + func (c *Client) Do(n int, tags ...string)\n",
+		"  ~ Open: changed\n      - func Open(name string) error\n      + func Open(name string, o Options) error\n",
 		"  + Options: added\n",
-		"1 package changed · 1 incompatible · 1 compatible · would require: MAJOR\n")
+		"1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n")
 }
 
 func TestAddedStructFieldIsCompatible(t *testing.T) {
@@ -345,7 +346,7 @@ func TestTypeErrorOnBaseSideNamesRevision(t *testing.T) {
 	if want := "warn: example.com/m/a: v0.1.0:a/a.go:3:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
-	mustContain(t, r.stdout, "  ~ Broken: changed\n      - invalid type\n      + int\n")
+	mustContain(t, r.stdout, "  ~ Broken: changed\n      - var Broken invalid type\n      + var Broken int\n")
 }
 
 func TestBreakingHidesCompatible(t *testing.T) {

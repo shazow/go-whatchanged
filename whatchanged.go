@@ -299,7 +299,11 @@ func diffSides(base, head *side) (*render.Result, error) {
 			pkg.Status = render.Removed
 			nw = types.NewPackage(p, old.Name())
 		}
-		pkg.Changes = apidiff.Changes(old, nw).Changes
+		for _, c := range apidiff.Changes(old, nw).Changes {
+			rc := render.FromAPIDiff(c)
+			rc.Before, rc.After = namedForms(old, nw, c.Message)
+			pkg.Changes = append(pkg.Changes, rc)
+		}
 		res.Packages = append(res.Packages, pkg)
 	}
 

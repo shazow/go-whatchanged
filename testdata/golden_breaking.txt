@@ -5,17 +5,17 @@ example.com/m/gone (removed)
 example.com/m/store
   - (*Client).Close: removed
   ~ Open: changed
-      - func(string) (*Client, error)
-      + func(string, Options) (*Client, error)
+      - func Open(path string) (*Client, error)
+      + func Open(path string, o Options) (*Client, error)
   ~ Version: changed
-      - untyped string
-      + untyped int
+      - const Version untyped string
+      + const Version untyped int
 
 example.com/m/util
   ! Sizer.Size: added
   ~ Stringer: changed
-      - Stringer
-      + fmt.Stringer
+      - type Stringer interface{String() string}
+      + type Stringer = fmt.Stringer
 
 4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR
 # stderr
