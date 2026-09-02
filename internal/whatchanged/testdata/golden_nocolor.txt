@@ -11,8 +11,8 @@ example.com/m/store
       - func Open(path string) (*Client, error)
       + func Open(path string, o Options) (*Client, error)
   ~ Version: changed
-      - const Version untyped string
-      + const Version untyped int
+      - const Version untyped string = "1"
+      + const Version untyped int = 1
   + (*Client).Ping: added
   + Options: added
   + Point.Z: added

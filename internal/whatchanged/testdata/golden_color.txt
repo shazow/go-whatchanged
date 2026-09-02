@@ -11,8 +11,8 @@
       [1;31m- func Open(path string) (*Client, error)[0m
       [1;32m+ func Open(path string, o Options) (*Client, error)[0m
   [1;33m~ Version: changed[0m
-      [1;31m- const Version untyped string[0m
-      [1;32m+ const Version untyped int[0m
+      [1;31m- const Version untyped string = "1"[0m
+      [1;32m+ const Version untyped int = 1[0m
   [32m+ (*Client).Ping: added[0m
   [32m+ Options: added[0m
   [32m+ Point.Z: added[0m

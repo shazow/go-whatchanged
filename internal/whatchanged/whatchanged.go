@@ -242,9 +242,10 @@ func exitCode(sum render.Summary, fail FailOn) int {
 // sideSpec names one side: a git revision, or a directory served either from
 // disk (fs == nil) or from an arbitrary read-only filesystem (tests).
 type sideSpec struct {
-	rev string
-	dir string
-	fs  vfs.FS
+	rev    string
+	dir    string
+	fs     vfs.FS
+	mounts []vfs.Mount // extra mounts, such as a test's in-memory module cache
 }
 
 // side is a fully loaded side.
@@ -319,18 +320,18 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, goos, go
 		}
 		s.label = spec.rev
 		mount := vfs.GitMountPath(tree)
-		s.overlay = vfs.NewOverlay(vfs.Mount{Path: mount, FS: vfs.NewGitFS(tree)})
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
 		root = path.Join(mount, rel)
 		s.prefix = root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
 		mount := vfs.SyntheticPrefix + "worktree"
-		s.overlay = vfs.NewOverlay(vfs.Mount{Path: mount, FS: spec.fs})
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: mount, FS: spec.fs}}, spec.mounts...)...)
 		root = path.Join(mount, rel)
 		s.prefix = root + "/"
 	default:
 		s.label = "working tree"
-		s.overlay = vfs.NewOverlay()
+		s.overlay = vfs.NewOverlay(spec.mounts...)
 		root = spec.dir
 		s.prefix = root + string(filepath.Separator)
 	}
@@ -420,6 +421,17 @@ func diffSides(base, head *side) (*render.Result, error) {
 			rc := render.FromAPIDiff(c)
 			rc.Before, rc.After = namedForms(old, nw, c.Message)
 			pkg.Changes = append(pkg.Changes, rc)
+		}
+		// apidiff only sees symbols, so a package with no exported API
+		// that appears or disappears would go unreported. Importers still
+		// notice: the import breaks, or its init side effects are gone.
+		if len(pkg.Changes) == 0 {
+			switch pkg.Status {
+			case render.New:
+				pkg.Changes = append(pkg.Changes, render.Change{Message: "package added", Compatible: true})
+			case render.Removed:
+				pkg.Changes = append(pkg.Changes, render.Change{Message: "package removed"})
+			}
 		}
 		res.Packages = append(res.Packages, pkg)
 	}

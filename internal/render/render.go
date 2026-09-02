@@ -202,9 +202,9 @@ func formatChange(st Style, c Change) []string {
 	bold := !c.Compatible
 	paint := func(text string) string {
 		switch {
-		case strings.HasSuffix(c.Message, ": removed"):
+		case strings.HasSuffix(c.Message, " removed"):
 			return st.Red(text, bold)
-		case strings.HasSuffix(c.Message, ": added"):
+		case strings.HasSuffix(c.Message, " added"):
 			if c.Compatible {
 				return st.Green(text, false)
 			}
@@ -217,9 +217,9 @@ func formatChange(st Style, c Change) []string {
 	}
 	glyph := "~ "
 	switch {
-	case strings.HasSuffix(c.Message, ": removed"):
+	case strings.HasSuffix(c.Message, " removed"):
 		glyph = "- "
-	case strings.HasSuffix(c.Message, ": added"):
+	case strings.HasSuffix(c.Message, " added"):
 		if c.Compatible {
 			glyph = "+ "
 		} else {
