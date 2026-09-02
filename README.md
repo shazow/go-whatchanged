@@ -8,6 +8,9 @@ Answers "what did I change in the public API since `main` / `v1.4.0` /
 from git objects and the new side from the working tree (uncommitted and
 untracked files included). Everything is type-checked in-process.
 
+Run it with no arguments to see what your uncommitted changes do to the API
+compared with `HEAD`, or name a base revision to look further back:
+
 ```
 $ go-whatchanged v1.4.0
 example.com/m/store
@@ -35,11 +38,17 @@ Requires Go 1.24 or newer.
 ## Usage
 
 ```
-go-whatchanged [flags] <base> [<head>]
+go-whatchanged [flags] [<base> [<head>]]
 
-  base   commit-ish for the old side: hash, tag, branch, HEAD~2, ...
+  base   optional commit-ish for the old side: hash, tag, branch, HEAD~2, ...
+         Default: HEAD.
   head   optional commit-ish for the new side. Default: the working tree.
+```
 
+With no arguments the diff is `HEAD` against the working tree, so it shows
+exactly what the uncommitted changes in your checkout do to the exported API.
+
+```
 Flags:
   --repo string      path inside a git repository (default: current directory)
   --goos, --goarch   build target (default: the running platform)

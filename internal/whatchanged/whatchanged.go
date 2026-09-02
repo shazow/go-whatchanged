@@ -4,7 +4,6 @@
 package whatchanged
 
 import (
-	"errors"
 	"fmt"
 	"go/build"
 	"go/token"
@@ -35,7 +34,8 @@ type Options struct {
 	// Repo is a path inside the git repository. Empty means the current
 	// directory. The enclosing .git is found by walking upward.
 	Repo string
-	// Base is the commit-ish for the old side.
+	// Base is the commit-ish for the old side. Empty means HEAD, so the
+	// zero value diffs the last commit against the working tree.
 	Base string
 	// Head is the commit-ish for the new side. Empty means the working tree.
 	Head string
@@ -68,9 +68,7 @@ func Run(opts Options) (int, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
 	}
-	if opts.Base == "" {
-		return ExitError, errors.New("a base commit-ish is required")
-	}
+	base := opts.baseRev()
 
 	dir := opts.Repo
 	if dir == "" {
@@ -113,11 +111,22 @@ func Run(opts Options) (int, error) {
 	} else {
 		head = sideSpec{dir: modRoot}
 	}
-	res, err := runRepo(repo, sideSpec{rev: opts.Base}, head, rel, env, opts)
+	res, err := runRepo(repo, sideSpec{rev: base}, head, rel, env, opts)
 	if err != nil {
 		return ExitError, err
 	}
 	return finish(res, opts)
+}
+
+// DefaultBase is the revision used for the old side when none is given.
+const DefaultBase = "HEAD"
+
+// baseRev returns the old-side revision, applying DefaultBase.
+func (o Options) baseRev() string {
+	if o.Base == "" {
+		return DefaultBase
+	}
+	return o.Base
 }
 
 // finish prints warnings and the diff, and derives the exit code.
