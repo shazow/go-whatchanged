@@ -10,7 +10,9 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -72,6 +74,7 @@ type Loader struct {
 	fset     *token.FileSet
 	resolver *modres.Resolver
 	shared   *SharedCache
+	maxGo    string // language version cap, "go1.24" form; "" when unknown
 
 	mu       sync.Mutex
 	local    map[string]*types.Package // main-module packages by import path
@@ -89,6 +92,7 @@ func New(ctxt build.Context, fset *token.FileSet, resolver *modres.Resolver, sha
 		fset:     fset,
 		resolver: resolver,
 		shared:   shared,
+		maxGo:    toolchainVersion(resolver.StdGoVersion()),
 		local:    map[string]*types.Package{},
 		localErr: map[string]error{},
 		inflight: map[string]bool{},
@@ -275,7 +279,7 @@ func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, 
 	conf := types.Config{
 		Importer:    l,
 		FakeImportC: true,
-		GoVersion:   goVersion(loc.GoVersion),
+		GoVersion:   l.langVersion(loc.GoVersion),
 		Error: func(err error) {
 			warnings = append(warnings, err.Error())
 		},
@@ -298,6 +302,46 @@ func readFile(ctxt build.Context, name string) ([]byte, error) {
 	}
 	defer rc.Close()
 	return io.ReadAll(rc)
+}
+
+// MaxGoVersion returns the language version every package is type-checked
+// at most as, in "go1.24" form, or "" when the toolchain version is unknown.
+func (l *Loader) MaxGoVersion() string { return l.maxGo }
+
+// langVersion converts a go.mod language version into the form go/types
+// expects, capped at the toolchain's own language version. go/types reports
+// an error in every package that declares a version newer than the one it
+// was built with, and it cannot know newer features anyway, so checking as
+// the newest version it does know loses nothing and keeps the output quiet.
+func (l *Loader) langVersion(v string) string {
+	gv := goVersion(v)
+	if gv == "" || l.maxGo == "" {
+		return gv
+	}
+	if version.Compare(version.Lang(gv), l.maxGo) > 0 {
+		return l.maxGo
+	}
+	return gv
+}
+
+// toolchainVersion returns the language version implemented by the running
+// binary's go/types, in "go1.24" form: the lower of the version this binary
+// was compiled with and the version of the standard library it type-checks
+// against (std is the go directive of $GOROOT/src/go.mod). Development
+// builds of Go report no usable version and fall back to std alone.
+func toolchainVersion(std string) string {
+	built := version.Lang(runtime.Version())
+	std = version.Lang(goVersion(std))
+	switch {
+	case built == "":
+		return std
+	case std == "":
+		return built
+	case version.Compare(std, built) < 0:
+		return std
+	default:
+		return built
+	}
 }
 
 // goVersion converts a go.mod language version ("1.21", "1.21.0") into the

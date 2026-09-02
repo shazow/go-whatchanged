@@ -112,11 +112,16 @@ The counts always describe the full diff, even with `--breaking`.
 Type-check problems are reported on stderr as `warn: <package>: <error>` and
 never abort the diff unless `--strict` is set. Positions on the base side are
 prefixed with the revision (`v1.4.0:store/store.go:12:3`); positions in the
-working tree are relative to the module root.
+working tree are relative to the module root. A module whose `go` directive
+is newer than the Go that built `go-whatchanged` is type-checked as the
+newest version the binary knows, with a single `warn: <module>: go.mod
+requires go 1.25 but go-whatchanged was built with go1.24; ...` line, which
+`--strict` also treats as fatal.
 
 ## Guarantees
 
-The tool is safe to run at any time, in any state of your checkout:
+The tool is safe to run at any time, in any state of your checkout,
+including a linked worktree created with `git worktree add`:
 
 - **No disk writes.** No temporary directories, no checkouts, no build cache,
   no `go.sum` edits. It only reads the repository, `.git`, `$GOROOT/src` and

@@ -106,6 +106,10 @@ func (f *fixture) tag(name string, h plumbing.Hash) {
 	}
 }
 
+// open hands out the in-memory repository. Memory storage is only read
+// during a run, so sharing one handle between the sides is safe here.
+func (f *fixture) open() (*git.Repository, error) { return f.repo, nil }
+
 type runResult struct {
 	stdout, stderr string
 	code           int
@@ -124,7 +128,7 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	if head != "" {
 		headSpec = sideSpec{rev: head}
 	}
-	res, err := runRepo(f.repo, sideSpec{rev: opts.baseRev()}, headSpec, "", f.env, opts)
+	res, err := runRepo(f.open, sideSpec{rev: opts.baseRev()}, headSpec, "", f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
@@ -425,6 +429,172 @@ func TestHeadCommit(t *testing.T) {
 	mustContain(t, r.stdout, "  + B: added\n", "  + Uncommitted: added\n")
 }
 
+// diskFixture creates a repository on disk with two commits and packs its
+// objects, the layout of every clone. go-git indexes packfiles lazily, so
+// only this fixture exercises the concurrent object reads a real diff of two
+// revisions performs; the in-memory fixture never does. It returns the
+// worktree directory and the two commit hashes: base declares func A, head
+// adds func B.
+func diskFixture(t *testing.T) (dir string, base, head plumbing.Hash) {
+	t.Helper()
+	dir = t.TempDir()
+	repo, err := git.PlainInit(dir, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wt, err := repo.Worktree()
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(name, content string) {
+		t.Helper()
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(msg string) plumbing.Hash {
+		t.Helper()
+		if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
+			t.Fatal(err)
+		}
+		sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
+		h, err := wt.Commit(msg, &git.CommitOptions{Author: sig, Committer: sig})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return h
+	}
+	write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	write("a/a.go", "package a\n\nfunc A() {}\n")
+	base = commit("base")
+	write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	head = commit("head")
+
+	if err := repo.RepackObjects(&git.RepackConfig{}); err != nil {
+		t.Fatal(err)
+	}
+	// Repacking leaves the loose copies behind; drop them so every object
+	// read goes through the packfile.
+	objects := filepath.Join(dir, ".git", "objects")
+	entries, err := os.ReadDir(objects)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) == 2 {
+			if err := os.RemoveAll(filepath.Join(objects, e.Name())); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	return dir, base, head
+}
+
+func TestTwoRevisionsOnPackedRepository(t *testing.T) {
+	dir, base, head := diskFixture(t)
+	// The race this guards against is timing dependent; a handful of runs
+	// made it show up reliably before the fix.
+	for i := 0; i < 10; i++ {
+		var out, errb bytes.Buffer
+		code, err := Run(Options{
+			Repo:   dir,
+			Base:   base.String()[:7], // abbreviated, as typed from git log
+			Head:   head.String(),
+			Stdout: &out,
+			Stderr: &errb,
+		})
+		if err != nil {
+			t.Fatalf("run %d: %v", i, err)
+		}
+		if code != ExitClean {
+			t.Errorf("run %d: exit = %d, stderr = %q", i, code, errb.String())
+		}
+		mustContain(t, out.String(), "example.com/m/a\n  + B: added\n")
+	}
+}
+
+func TestLinkedWorktree(t *testing.T) {
+	main, base, head := diskFixture(t)
+
+	// Lay out what "git worktree add <linked> <head>" produces: a .git file
+	// pointing into the main repository, whose per-worktree directory holds
+	// HEAD and points back at the shared object store via commondir.
+	linked := filepath.Join(t.TempDir(), "linked")
+	admin := filepath.Join(main, ".git", "worktrees", "linked")
+	for _, d := range []string{admin, filepath.Join(linked, "a")} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := map[string]string{
+		filepath.Join(admin, "HEAD"):       head.String() + "\n",
+		filepath.Join(admin, "commondir"):  "../..\n",
+		filepath.Join(admin, "gitdir"):     filepath.Join(linked, ".git") + "\n",
+		filepath.Join(linked, ".git"):      "gitdir: " + admin + "\n",
+		filepath.Join(linked, "go.mod"):    "module example.com/m\n\ngo 1.24\n",
+		filepath.Join(linked, "a", "a.go"): "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc Uncommitted() {}\n",
+	}
+	for name, content := range files {
+		if err := os.WriteFile(name, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	var out, errb bytes.Buffer
+	code, err := Run(Options{Repo: linked, Base: "HEAD~1", Stdout: &out, Stderr: &errb})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != ExitClean {
+		t.Errorf("exit = %d, stderr = %q", code, errb.String())
+	}
+	mustContain(t, out.String(), "  + B: added\n", "  + Uncommitted: added\n")
+
+	out.Reset()
+	code, err = Run(Options{Repo: linked, Base: base.String(), Head: "HEAD", Stdout: &out, Stderr: &errb})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if code != ExitClean {
+		t.Errorf("exit = %d, stderr = %q", code, errb.String())
+	}
+	mustContain(t, out.String(), "  + B: added\n")
+	mustNotContain(t, out.String(), "Uncommitted")
+}
+
+func TestNewerGoDirectiveIsClamped(t *testing.T) {
+	f := newFixture(t)
+	f.write("go.mod", "module example.com/m\n\ngo 1.99\n")
+	f.write("a/a.go", "package a\n\nimport \"fmt\"\n\nfunc A() { fmt.Println() }\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nimport \"fmt\"\n\nfunc A() { fmt.Println() }\n\nfunc B() {}\n")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + B: added\n")
+	// One module-level warning, deduplicated across the two sides, instead
+	// of go/types' per-package "package requires newer Go version" error.
+	if n := strings.Count(r.stderr, "\n"); n != 1 {
+		t.Errorf("stderr has %d lines, want 1:\n%s", n, r.stderr)
+	}
+	mustContain(t, r.stderr, "warn: example.com/m: go.mod requires go 1.99 but go-whatchanged was built with go1.", "; type-checking as go1.")
+	mustNotContain(t, r.stderr, "requires newer Go version")
+	if r.code != ExitClean {
+		t.Errorf("exit = %d", r.code)
+	}
+
+	r = f.run("HEAD", "", Options{Strict: true})
+	if r.code != ExitError || r.err == nil {
+		t.Errorf("strict: exit = %d, err = %v; want fatal", r.code, r.err)
+	}
+}
+
 func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
@@ -594,7 +764,7 @@ func TestSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.repo, sideSpec{rev: "HEAD"}, sideSpec{fs: vfs.NewBillyFS(f.fs)}, "sub", f.env, opts)
+	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: vfs.NewBillyFS(f.fs)}, "sub", f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
