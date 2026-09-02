@@ -1,0 +1,15 @@
+# stdout
+example.com/m/gone (removed)
+  - Gone: removed
+
+example.com/m/store
+  - (*Client).Close: removed
+  ~ Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)
+  ~ Version: changed from untyped string to untyped int
+
+example.com/m/util
+  ! Sizer.Size: added
+  ~ Stringer: changed from Stringer to fmt.Stringer
+
+4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR
+# stderr
