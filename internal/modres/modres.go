@@ -169,6 +169,11 @@ func (r *Resolver) ModPath() string { return r.modPath }
 // GoVersion returns the main module's go directive.
 func (r *Resolver) GoVersion() string { return r.goVersion }
 
+// StdGoVersion returns the language version of the standard library in
+// GOROOT: the go directive of $GOROOT/src/go.mod, or the running toolchain's
+// version when that file cannot be read.
+func (r *Resolver) StdGoVersion() string { return r.stdGo }
+
 // Env returns the toolchain locations in use.
 func (r *Resolver) Env() Env { return r.env }
 

@@ -9,6 +9,7 @@ import (
 	"go/build"
 	"go/token"
 	"go/types"
+	"go/version"
 	"io"
 	"os"
 	"path"
@@ -97,9 +98,19 @@ func Run(opts Options) (int, error) {
 		rel = ""
 	}
 
-	repo, err := git.PlainOpen(gitRoot)
-	if err != nil {
-		return ExitError, fmt.Errorf("open repository %s: %w", gitRoot, err)
+	open := func() (*git.Repository, error) {
+		// EnableDotGitCommonDir makes linked worktrees (git worktree add)
+		// work: their .git file points at a per-worktree directory whose
+		// objects and refs live in the main repository.
+		repo, err := git.PlainOpenWithOptions(gitRoot, &git.PlainOpenOptions{EnableDotGitCommonDir: true})
+		if err != nil {
+			return nil, fmt.Errorf("open repository %s: %w", gitRoot, err)
+		}
+		return repo, nil
+	}
+	// Report a broken repository up front rather than from inside a side.
+	if _, err := open(); err != nil {
+		return ExitError, err
 	}
 
 	env, err := modres.DefaultEnv()
@@ -113,7 +124,7 @@ func Run(opts Options) (int, error) {
 	} else {
 		head = sideSpec{dir: modRoot}
 	}
-	res, err := runRepo(repo, sideSpec{rev: opts.Base}, head, rel, env, opts)
+	res, err := runRepo(open, sideSpec{rev: opts.Base}, head, rel, env, opts)
 	if err != nil {
 		return ExitError, err
 	}
@@ -158,11 +169,20 @@ type side struct {
 	ld      *loader.Loader
 	pkgs    map[string]*types.Package
 	problem map[string]string
+	notes   []string // module-level warnings, reported under the module path
 }
+
+// openFunc returns a fresh handle on the repository.
+type openFunc func() (*git.Repository, error)
 
 // runRepo diffs base against head. rel is the module root relative to the
 // repository root (slash-separated, "" for the root).
-func runRepo(repo *git.Repository, base, head sideSpec, rel string, env modres.Env, opts Options) (*render.Result, error) {
+//
+// The two sides load concurrently and each opens its own repository handle:
+// go-git's filesystem storage builds its packfile index lazily without
+// locking, so a handle shared between the two goroutines races and makes
+// revisions spuriously unresolvable ("reference not found").
+func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opts Options) (*render.Result, error) {
 	fset := token.NewFileSet()
 	shared := loader.NewSharedCache()
 	goos, goarch := opts.GOOS, opts.GOARCH
@@ -183,7 +203,7 @@ func runRepo(repo *git.Repository, base, head sideSpec, rel string, env modres.E
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			sides[i], errs[i] = loadSide(repo, specs[i], rel, env, goos, goarch, fset, shared)
+			sides[i], errs[i] = loadSide(open, specs[i], rel, env, goos, goarch, fset, shared)
 		}(i)
 	}
 	wg.Wait()
@@ -195,11 +215,15 @@ func runRepo(repo *git.Repository, base, head sideSpec, rel string, env modres.E
 	return diffSides(sides[0], sides[1])
 }
 
-func loadSide(repo *git.Repository, spec sideSpec, rel string, env modres.Env, goos, goarch string, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, goos, goarch string, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
 	s := &side{rev: spec.rev}
 	var root string
 	switch {
 	case spec.rev != "":
+		repo, err := open()
+		if err != nil {
+			return nil, err
+		}
 		tree, err := resolveTree(repo, spec.rev)
 		if err != nil {
 			return nil, err
@@ -229,6 +253,10 @@ func loadSide(repo *git.Repository, spec sideSpec, rel string, env modres.Env, g
 	}
 	s.res = res
 	s.ld = loader.New(s.ctxt, fset, res, shared)
+	if limit := s.ld.MaxGoVersion(); limit != "" && version.Compare(version.Lang("go"+res.GoVersion()), limit) > 0 {
+		s.notes = append(s.notes, fmt.Sprintf("go.mod requires go %s but go-whatchanged was built with %s; type-checking as %s",
+			res.GoVersion(), limit, limit))
+	}
 
 	found, problems, err := discover.Packages(&s.ctxt, s.overlay, root, res.ModPath())
 	if err != nil {
@@ -332,6 +360,9 @@ func collectWarnings(sides ...*side) []render.Warning {
 				return strings.ReplaceAll(msg, s.prefix, "")
 			}
 			return strings.ReplaceAll(msg, s.prefix, s.label+":")
+		}
+		for _, n := range s.notes {
+			add(s.res.ModPath(), n)
 		}
 		pkgs := make([]string, 0)
 		for p := range s.problem {
