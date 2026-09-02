@@ -1,5 +1,6 @@
 // Command go-whatchanged prints a colorized diff of a Go module's exported API
-// between a commit and the working tree.
+// between a commit and the working tree. With no arguments it compares HEAD
+// against the current, possibly uncommitted, state of the checkout.
 package main
 
 import (
@@ -13,11 +14,14 @@ import (
 	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
 
-const usage = `usage: go-whatchanged [flags] <base> [<head>]
+const usage = `usage: go-whatchanged [flags] [<base> [<head>]]
 
 Show how the exported API of the Go module differs between <base> and <head>.
+With no arguments, compare HEAD against the working tree: what your
+uncommitted changes do to the API.
 
-  base   commit-ish for the old side (hash, tag, branch, HEAD~2, ...)
+  base   optional commit-ish for the old side (hash, tag, branch, HEAD~2, ...);
+         default: HEAD
   head   optional commit-ish for the new side; default: the working tree,
          including uncommitted and untracked files
 
@@ -67,6 +71,8 @@ func run(args []string) int {
 	}
 
 	switch fs.NArg() {
+	case 0:
+		// Base defaults to HEAD inside whatchanged.Run.
 	case 1:
 		opts.Base = fs.Arg(0)
 	case 2:
