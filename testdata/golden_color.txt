@@ -7,15 +7,21 @@
 
 [1mexample.com/m/store[0m
   [1;31m- (*Client).Close: removed[0m
-  [1;33m~ Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)[0m
-  [1;33m~ Version: changed from untyped string to untyped int[0m
+  [1;33m~ Open: changed[0m
+      [2mfrom[0m [1;33mfunc(string) (*Client, error)[0m
+        [2mto[0m [1;33mfunc(string, Options) (*Client, error)[0m
+  [1;33m~ Version: changed[0m
+      [2mfrom[0m [1;33muntyped string[0m
+        [2mto[0m [1;33muntyped int[0m
   [32m+ (*Client).Ping: added[0m
   [32m+ Options: added[0m
   [32m+ Point.Z: added[0m
 
 [1mexample.com/m/util[0m
   [1;31m! Sizer.Size: added[0m
-  [1;33m~ Stringer: changed from Stringer to fmt.Stringer[0m
+  [1;33m~ Stringer: changed[0m
+      [2mfrom[0m [1;33mStringer[0m
+        [2mto[0m [1;33mfmt.Stringer[0m
 
 4 packages changed · 6 incompatible · 4 compatible · would require: [1;31mMAJOR[0m
 # stderr

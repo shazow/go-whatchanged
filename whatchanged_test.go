@@ -213,7 +213,7 @@ func TestChangedSignature(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"  ~ Open: changed from func(string) error to func(string, Options) error\n",
+		"  ~ Open: changed\n      from func(string) error\n        to func(string, Options) error\n",
 		"  + Options: added\n",
 		"1 package changed · 1 incompatible · 1 compatible · would require: MAJOR\n")
 }
@@ -345,7 +345,7 @@ func TestTypeErrorOnBaseSideNamesRevision(t *testing.T) {
 	if want := "warn: example.com/m/a: v0.1.0:a/a.go:3:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
-	mustContain(t, r.stdout, "  ~ Broken: changed from invalid type to int\n")
+	mustContain(t, r.stdout, "  ~ Broken: changed\n      from invalid type\n        to int\n")
 }
 
 func TestBreakingHidesCompatible(t *testing.T) {

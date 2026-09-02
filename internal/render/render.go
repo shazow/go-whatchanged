@@ -101,7 +101,7 @@ func Write(w io.Writer, res Result, opts Options) error {
 			if opts.BreakingOnly && c.Compatible {
 				continue
 			}
-			lines = append(lines, "  "+formatChange(st, c))
+			lines = append(lines, formatChange(st, c)...)
 		}
 		if len(lines) == 0 {
 			continue
@@ -132,24 +132,64 @@ func Write(w io.Writer, res Result, opts Options) error {
 	return err
 }
 
-// formatChange maps an apidiff change to a glyph and color.
-func formatChange(st Style, c apidiff.Change) string {
-	msg := c.Message
+// formatChange maps an apidiff change to one or more indented lines with a
+// glyph and color. "changed from X to Y" messages are split so that the
+// before and after values sit on their own lines, aligned on the same
+// column, which makes long signatures easy to compare.
+func formatChange(st Style, c apidiff.Change) []string {
 	bold := !c.Compatible
-	switch {
-	case strings.HasSuffix(msg, ": removed"):
-		return st.Red("- "+msg, bold)
-	case strings.HasSuffix(msg, ": added"):
-		if c.Compatible {
-			return st.Green("+ "+msg, false)
+	paint := func(text string) string {
+		switch {
+		case strings.HasSuffix(c.Message, ": removed"):
+			return st.Red(text, bold)
+		case strings.HasSuffix(c.Message, ": added"):
+			if c.Compatible {
+				return st.Green(text, false)
+			}
+			return st.Red(text, true)
+		case c.Compatible:
+			return st.Cyan(text, false)
+		default:
+			return st.Yellow(text, true)
 		}
-		return st.Red("! "+msg, true)
-	default:
-		if c.Compatible {
-			return st.Cyan("~ "+msg, false)
-		}
-		return st.Yellow("~ "+msg, true)
 	}
+	glyph := "~ "
+	switch {
+	case strings.HasSuffix(c.Message, ": removed"):
+		glyph = "- "
+	case strings.HasSuffix(c.Message, ": added"):
+		if c.Compatible {
+			glyph = "+ "
+		} else {
+			glyph = "! "
+		}
+	}
+
+	if head, from, to, ok := splitChangedFromTo(c.Message); ok {
+		return []string{
+			"  " + paint(glyph+head),
+			"      " + st.Dim("from") + " " + paint(from),
+			"        " + st.Dim("to") + " " + paint(to),
+		}
+	}
+	return []string{"  " + paint(glyph+c.Message)}
+}
+
+// splitChangedFromTo decomposes "<obj>: [value ]changed from X to Y" into
+// "<obj>: [value ]changed", X and Y. Type strings never contain " to "
+// themselves, so the first occurrence after "changed from " is the split.
+func splitChangedFromTo(msg string) (head, from, to string, ok bool) {
+	const marker = "changed from "
+	i := strings.Index(msg, marker)
+	if i < 0 {
+		return "", "", "", false
+	}
+	rest := msg[i+len(marker):]
+	from, to, found := strings.Cut(rest, " to ")
+	if !found || from == "" || to == "" {
+		return "", "", "", false
+	}
+	return msg[:i] + "changed", from, to, true
 }
 
 func formatSummary(st Style, sum Summary) string {

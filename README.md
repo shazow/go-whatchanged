@@ -12,7 +12,9 @@ untracked files included). Everything is type-checked in-process.
 $ go-whatchanged v1.4.0
 example.com/m/store
   - (*Client).Close: removed
-  ~ Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)
+  ~ Open: changed
+      from func(string) (*Client, error)
+        to func(string, Options) (*Client, error)
   + (*Client).Ping: added
   + Options: added
 
@@ -59,6 +61,9 @@ Changes are grouped by package, one line per change:
 | `~`   | incompatible change (signature, type, constant value) | yellow, bold |
 | `~`   | compatible change | cyan |
 | `+`   | compatible addition | green |
+
+A `changed from X to Y` message is split onto aligned `from` and `to` lines
+so that two long signatures can be compared column by column.
 
 A package header carries `(new)` when it exists only on the head side and
 `(removed)` when it exists only on the base side. The summary line ends with
