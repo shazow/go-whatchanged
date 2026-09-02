@@ -117,6 +117,7 @@ type runResult struct {
 }
 
 // run diffs base against the fixture's in-memory worktree (or head, if set).
+// An empty base takes the same default as Run.
 func (f *fixture) run(base, head string, opts Options) runResult {
 	f.t.Helper()
 	var out, errb bytes.Buffer
@@ -127,7 +128,7 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	if head != "" {
 		headSpec = sideSpec{rev: head}
 	}
-	res, err := runRepo(f.open, sideSpec{rev: base}, headSpec, "", f.env, opts)
+	res, err := runRepo(f.open, sideSpec{rev: opts.baseRev()}, headSpec, "", f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
@@ -594,6 +595,38 @@ func TestNewerGoDirectiveIsClamped(t *testing.T) {
 	}
 }
 
+func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("one")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Committed() {}\n")
+	f.commit("two")
+	f.write("a/a.go", "package a\n\nfunc Committed() {}\n\nfunc Uncommitted() {}\n")
+
+	r := f.run("", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	// Only the dirty state relative to HEAD shows up: the earlier commit's
+	// addition is on both sides.
+	mustContain(t, r.stdout, "  - A: removed\n", "  + Uncommitted: added\n")
+	mustNotContain(t, r.stdout, "Committed: added")
+	if r.code != ExitIncompatible {
+		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
+	}
+
+	// Clean checkout: nothing changed.
+	f.commit("three")
+	r = f.run("", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d:\n%s", r.code, ExitClean, r.stdout)
+	}
+	mustNotContain(t, r.stdout, "Uncommitted", "removed")
+}
+
 func TestBadRevision(t *testing.T) {
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n")
@@ -917,6 +950,84 @@ func TestWriteGuard(t *testing.T) {
 		d, n := snapshot(t, root)
 		if b := before[name]; b[0] != d || b[1] != n {
 			t.Errorf("%s (%s) changed during the run: %d files before, %d after", name, root, b[1], n)
+		}
+	}
+}
+
+func TestExitFail(t *testing.T) {
+	// One fixture per required level: major (removed func), minor (added
+	// func) and patch (no exported API change).
+	levels := map[string]func(f *fixture){
+		"major": func(f *fixture) { f.write("a/a.go", "package a\n\nfunc Keep() {}\n") },
+		"minor": func(f *fixture) {
+			f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Added() {}\n")
+		},
+		"patch": func(f *fixture) {
+			f.write("a/a.go", "package a\n\n// Comment only.\nfunc Keep() {}\n\nfunc Drop() {}\n")
+		},
+	}
+	tests := []struct {
+		level string
+		fail  FailOn
+		want  int
+	}{
+		{"major", FailNever, ExitIncompatible},
+		{"major", FailMajor, ExitMajor},
+		{"major", FailMinor, ExitMajor},
+		{"major", FailPatch, ExitMajor},
+		{"minor", FailNever, ExitClean},
+		{"minor", FailMajor, ExitClean},
+		{"minor", FailMinor, ExitMinor},
+		{"minor", FailPatch, ExitMinor},
+		{"patch", FailNever, ExitClean},
+		{"patch", FailMajor, ExitClean},
+		{"patch", FailMinor, ExitClean},
+		{"patch", FailPatch, ExitPatch},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s/%d", tc.level, tc.fail), func(t *testing.T) {
+			f := newFixture(t)
+			f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n")
+			f.commit("base")
+			levels[tc.level](f)
+			r := f.run("HEAD", "", Options{ExitFail: tc.fail})
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if r.code != tc.want {
+				t.Errorf("exit = %d, want %d:\n%s", r.code, tc.want, r.stdout)
+			}
+		})
+	}
+}
+
+func TestExitFailStrictErrorWins(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nvar Broken = undefined\n")
+	r := f.run("HEAD", "", Options{Strict: true, ExitFail: FailPatch})
+	if r.code != ExitError || r.err == nil {
+		t.Errorf("exit = %d, err = %v; want %d and an error", r.code, r.err, ExitError)
+	}
+}
+
+func TestParseFailOn(t *testing.T) {
+	tests := []struct {
+		in   string
+		want FailOn
+		ok   bool
+	}{
+		{"major", FailMajor, true},
+		{"MINOR", FailMinor, true},
+		{"patch", FailPatch, true},
+		{"", FailNever, false},
+		{"breaking", FailNever, false},
+	}
+	for _, tc := range tests {
+		got, err := ParseFailOn(tc.in)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("ParseFailOn(%q) = %d, %v; want %d, ok=%v", tc.in, got, err, tc.want, tc.ok)
 		}
 	}
 }

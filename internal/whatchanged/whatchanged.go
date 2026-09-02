@@ -4,7 +4,6 @@
 package whatchanged
 
 import (
-	"errors"
 	"fmt"
 	"go/build"
 	"go/token"
@@ -36,7 +35,8 @@ type Options struct {
 	// Repo is a path inside the git repository. Empty means the current
 	// directory. The enclosing .git is found by walking upward.
 	Repo string
-	// Base is the commit-ish for the old side.
+	// Base is the commit-ish for the old side. Empty means HEAD, so the
+	// zero value diffs the last commit against the working tree.
 	Base string
 	// Head is the commit-ish for the new side. Empty means the working tree.
 	Head string
@@ -48,6 +48,11 @@ type Options struct {
 	Color bool
 	// Strict turns type-check warnings into a fatal error.
 	Strict bool
+	// ExitFail selects the required release levels that make Run exit
+	// non-zero, with a code naming the level (see ExitMajor and friends).
+	// The zero value, FailNever, keeps the default of ExitIncompatible for
+	// incompatible changes.
+	ExitFail FailOn
 
 	// Stdout receives the diff; Stderr receives warnings.
 	Stdout, Stderr io.Writer
@@ -58,7 +63,61 @@ const (
 	ExitClean        = 0
 	ExitIncompatible = 1
 	ExitError        = 2
+
+	// With Options.ExitFail set, the exit code names the release bump the
+	// changes require when it reaches the selected threshold.
+	ExitMajor = 100
+	ExitMinor = 101
+	ExitPatch = 102
 )
+
+// FailOn is the threshold for Options.ExitFail: the lowest required release
+// level that makes Run exit non-zero.
+type FailOn int
+
+const (
+	// FailNever disables level-based exit codes: Run exits ExitIncompatible
+	// on incompatible changes and ExitClean otherwise.
+	FailNever FailOn = iota
+	// FailMajor exits ExitMajor on incompatible changes.
+	FailMajor
+	// FailMinor exits ExitMajor on incompatible changes and ExitMinor on
+	// compatible ones.
+	FailMinor
+	// FailPatch always exits non-zero: ExitMajor, ExitMinor or ExitPatch,
+	// so the exit code reports the required bump.
+	FailPatch
+)
+
+// ParseFailOn parses an --exit-fail value: "major", "minor" or "patch".
+func ParseFailOn(s string) (FailOn, error) {
+	lvl, err := render.ParseLevel(s)
+	if err != nil {
+		return FailNever, err
+	}
+	switch lvl {
+	case render.Major:
+		return FailMajor, nil
+	case render.Minor:
+		return FailMinor, nil
+	default:
+		return FailPatch, nil
+	}
+}
+
+// threshold is the lowest level that fails, or ok=false for FailNever.
+func (f FailOn) threshold() (min render.Level, ok bool) {
+	switch f {
+	case FailMajor:
+		return render.Major, true
+	case FailMinor:
+		return render.Minor, true
+	case FailPatch:
+		return render.Patch, true
+	default:
+		return 0, false
+	}
+}
 
 // Run executes a diff and returns the process exit code. Errors are returned
 // alongside ExitError; the caller decides how to print them.
@@ -69,9 +128,7 @@ func Run(opts Options) (int, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
 	}
-	if opts.Base == "" {
-		return ExitError, errors.New("a base commit-ish is required")
-	}
+	base := opts.baseRev()
 
 	dir := opts.Repo
 	if dir == "" {
@@ -124,11 +181,22 @@ func Run(opts Options) (int, error) {
 	} else {
 		head = sideSpec{dir: modRoot}
 	}
-	res, err := runRepo(open, sideSpec{rev: opts.Base}, head, rel, env, opts)
+	res, err := runRepo(open, sideSpec{rev: base}, head, rel, env, opts)
 	if err != nil {
 		return ExitError, err
 	}
 	return finish(res, opts)
+}
+
+// DefaultBase is the revision used for the old side when none is given.
+const DefaultBase = "HEAD"
+
+// baseRev returns the old-side revision, applying DefaultBase.
+func (o Options) baseRev() string {
+	if o.Base == "" {
+		return DefaultBase
+	}
+	return o.Base
 }
 
 // finish prints warnings and the diff, and derives the exit code.
@@ -144,10 +212,31 @@ func finish(res *render.Result, opts Options) (int, error) {
 	if err := render.Write(opts.Stdout, *res, render.Options{Color: opts.Color, BreakingOnly: opts.Breaking}); err != nil {
 		return ExitError, err
 	}
-	if render.Summarize(*res).Incompatible > 0 {
-		return ExitIncompatible, nil
+	return exitCode(render.Summarize(*res), opts.ExitFail), nil
+}
+
+// exitCode derives the exit code from the summary and the --exit-fail
+// threshold.
+func exitCode(sum render.Summary, fail FailOn) int {
+	min, ok := fail.threshold()
+	if !ok {
+		if sum.Incompatible > 0 {
+			return ExitIncompatible
+		}
+		return ExitClean
 	}
-	return ExitClean, nil
+	lvl := sum.Level()
+	if lvl < min {
+		return ExitClean
+	}
+	switch lvl {
+	case render.Major:
+		return ExitMajor
+	case render.Minor:
+		return ExitMinor
+	default:
+		return ExitPatch
+	}
 }
 
 // sideSpec names one side: a git revision, or a directory served either from

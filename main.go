@@ -1,5 +1,6 @@
 // Command go-whatchanged prints a colorized diff of a Go module's exported API
-// between a commit and the working tree.
+// between a commit and the working tree. With no arguments it compares HEAD
+// against the current, possibly uncommitted, state of the checkout.
 package main
 
 import (
@@ -13,17 +14,25 @@ import (
 	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
 
-const usage = `usage: go-whatchanged [flags] <base> [<head>]
+const usage = `usage: go-whatchanged [flags] [<base> [<head>]]
 
 Show how the exported API of the Go module differs between <base> and <head>.
+With no arguments, compare HEAD against the working tree: what your
+uncommitted changes do to the API.
 
-  base   commit-ish for the old side (hash, tag, branch, HEAD~2, ...)
+  base   optional commit-ish for the old side (hash, tag, branch, HEAD~2, ...);
+         default: HEAD
   head   optional commit-ish for the new side; default: the working tree,
          including uncommitted and untracked files
 
 The tool never writes to disk and never runs the go command.
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
+
+With --exit-fail=LEVEL the exit code names the semantic version bump the
+changes would require, when it is LEVEL or higher:
+  100 major · 101 minor · 102 patch
+(--exit-fail=patch is therefore always non-zero, unless there is an error.)
 
 Flags:
 `
@@ -40,13 +49,14 @@ func run(args []string) int {
 		fs.PrintDefaults()
 	}
 	var opts whatchanged.Options
-	var color string
+	var color, exitFail string
 	fs.StringVar(&opts.Repo, "repo", "", "path inside a git repository (default: current directory)")
 	fs.StringVar(&opts.GOOS, "goos", runtime.GOOS, "build target OS")
 	fs.StringVar(&opts.GOARCH, "goarch", runtime.GOARCH, "build target architecture")
 	fs.BoolVar(&opts.Breaking, "breaking", false, "show only incompatible changes")
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
 	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
+	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return whatchanged.ExitClean
@@ -66,7 +76,18 @@ func run(args []string) int {
 		return whatchanged.ExitError
 	}
 
+	if exitFail != "" {
+		fail, err := whatchanged.ParseFailOn(exitFail)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "go-whatchanged: --exit-fail: %v\n", err)
+			return whatchanged.ExitError
+		}
+		opts.ExitFail = fail
+	}
+
 	switch fs.NArg() {
+	case 0:
+		// Base defaults to HEAD inside whatchanged.Run.
 	case 1:
 		opts.Base = fs.Arg(0)
 	case 2:

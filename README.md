@@ -1,12 +1,13 @@
 # go-whatchanged
 
-Colorized, read-only diff of a Go module's exported API, built on
+What changed in the public API?
+
+Pretty semantic diff of a Go module's exported API, powered by 
 [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff).
 
-Answers "what did I change in the public API since `main` / `v1.4.0` /
-`HEAD~3`?" while you work, before you commit. The old side is read straight
-from git objects and the new side from the working tree (uncommitted and
-untracked files included). Everything is type-checked in-process.
+Read-only: No mutations to your filesystem, no git clones, no git worktrees.
+
+## Usage
 
 ```
 $ go-whatchanged v1.4.0
@@ -30,28 +31,57 @@ example.com/m/util
 go install github.com/shazow/go-whatchanged@latest
 ```
 
-Requires Go 1.24 or newer. Build it with a Go at least as new as the `go`
-directive of the modules you diff: the type checker cannot know language
-versions newer than itself, so a newer module is checked as the newest
-version the binary supports, with a warning.
-
 ## Usage
 
 ```
-go-whatchanged [flags] <base> [<head>]
+go-whatchanged [flags] [<base> [<head>]]
 
-  base   commit-ish for the old side: hash, tag, branch, HEAD~2, ...
+  base   optional commit-ish for the old side: hash, tag, branch, HEAD~2, ...
+         Default: HEAD.
   head   optional commit-ish for the new side. Default: the working tree.
+```
 
+With no arguments the diff is `HEAD` against the working tree, so it shows
+exactly what the uncommitted changes in your checkout do to the exported API.
+
+```
 Flags:
   --repo string      path inside a git repository (default: current directory)
   --goos, --goarch   build target (default: the running platform)
   --breaking         show only incompatible changes
   --color string     auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
+  --exit-fail LEVEL  exit 100/101/102 when the required bump is major, minor
+                     or patch, or higher (see below)
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 ```
+
+### Failing on a release level
+
+For CI, `--exit-fail=LEVEL` turns the semantic version bump the changes
+would require into the exit code, whenever that bump is `LEVEL` or higher:
+
+| Required bump | `--exit-fail=major` | `--exit-fail=minor` | `--exit-fail=patch` |
+|---------------|--------------------:|--------------------:|--------------------:|
+| MAJOR         | 100                 | 100                 | 100                 |
+| MINOR         | 0                   | 101                 | 101                 |
+| PATCH         | 0                   | 0                   | 102                 |
+
+`--exit-fail=major` fails the build on incompatible changes, like the default
+exit code 1 but with a distinct code. `--exit-fail=minor` also fails on
+compatible additions, which is useful for a branch that must not grow the
+API. `--exit-fail=patch` is always non-zero unless there is an error, so a
+script can read the required bump straight from `$?`:
+
+```
+$ go-whatchanged --exit-fail=patch v1.4.0 >/dev/null
+$ echo $?
+100
+```
+
+Errors still exit 2 regardless of `--exit-fail`, including `--strict`
+type-check warnings.
 
 ## Reading the output
 
@@ -123,4 +153,4 @@ vendor mode, GOPATH mode, cgo-only APIs, module graph resolution beyond
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+[MIT](LICENSE).
