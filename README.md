@@ -51,9 +51,37 @@ Flags:
   --breaking         show only incompatible changes
   --color string     auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
+  --exit-fail LEVEL  exit 100/101/102 when the required bump is major, minor
+                     or patch, or higher (see below)
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 ```
+
+### Failing on a release level
+
+For CI, `--exit-fail=LEVEL` turns the semantic version bump the changes
+would require into the exit code, whenever that bump is `LEVEL` or higher:
+
+| Required bump | `--exit-fail=major` | `--exit-fail=minor` | `--exit-fail=patch` |
+|---------------|--------------------:|--------------------:|--------------------:|
+| MAJOR         | 100                 | 100                 | 100                 |
+| MINOR         | 0                   | 101                 | 101                 |
+| PATCH         | 0                   | 0                   | 102                 |
+
+`--exit-fail=major` fails the build on incompatible changes, like the default
+exit code 1 but with a distinct code. `--exit-fail=minor` also fails on
+compatible additions, which is useful for a branch that must not grow the
+API. `--exit-fail=patch` is always non-zero unless there is an error, so a
+script can read the required bump straight from `$?`:
+
+```
+$ go-whatchanged --exit-fail=patch v1.4.0 >/dev/null
+$ echo $?
+100
+```
+
+Errors still exit 2 regardless of `--exit-fail`, including `--strict`
+type-check warnings.
 
 ## Reading the output
 

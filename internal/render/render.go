@@ -88,16 +88,60 @@ func Summarize(res Result) Summary {
 	return s
 }
 
-// Release returns the semantic version bump the changes require.
-func (s Summary) Release() string {
-	switch {
-	case s.Incompatible > 0:
+// Level is the semantic version bump a set of changes requires. Levels are
+// ordered: Patch < Minor < Major.
+type Level int
+
+const (
+	// Patch means no exported API changes.
+	Patch Level = iota
+	// Minor means only compatible changes.
+	Minor
+	// Major means at least one incompatible change.
+	Major
+)
+
+// String returns the level in upper case, as printed in the summary line.
+func (l Level) String() string {
+	switch l {
+	case Major:
 		return "MAJOR"
-	case s.Compatible > 0:
+	case Minor:
 		return "MINOR"
 	default:
 		return "PATCH"
 	}
+}
+
+// ParseLevel parses a level name, case-insensitively: "major", "minor" or
+// "patch".
+func ParseLevel(s string) (Level, error) {
+	switch strings.ToLower(s) {
+	case "major":
+		return Major, nil
+	case "minor":
+		return Minor, nil
+	case "patch":
+		return Patch, nil
+	}
+	return 0, fmt.Errorf("invalid level %q (want major, minor or patch)", s)
+}
+
+// Level returns the semantic version bump the changes require.
+func (s Summary) Level() Level {
+	switch {
+	case s.Incompatible > 0:
+		return Major
+	case s.Compatible > 0:
+		return Minor
+	default:
+		return Patch
+	}
+}
+
+// Release returns the semantic version bump the changes require, as a string.
+func (s Summary) Release() string {
+	return s.Level().String()
 }
 
 // Write renders the diff to w.
@@ -216,10 +260,10 @@ func splitChangedFromTo(msg string) (head, from, to string, ok bool) {
 func formatSummary(st Style, sum Summary) string {
 	release := sum.Release()
 	var colored string
-	switch release {
-	case "MAJOR":
+	switch sum.Level() {
+	case Major:
 		colored = st.Red(release, true)
-	case "MINOR":
+	case Minor:
 		colored = st.Yellow(release, true)
 	default:
 		colored = st.Green(release, true)
