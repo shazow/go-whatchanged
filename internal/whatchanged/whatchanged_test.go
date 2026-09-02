@@ -466,11 +466,12 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	mustContain(t, r.err.Error(), "module example.org/nothere@v1.2.3 not in module cache (run go mod download)")
 }
 
-// ownDeps reads this project's go.mod to find module versions that are
-// guaranteed to be present in the module cache.
+// ownDeps reads this project's go.mod (two directories up from this
+// package) to find module versions that are guaranteed to be present in the
+// module cache.
 func ownDeps(t *testing.T, paths ...string) map[string]string {
 	t.Helper()
-	data, err := os.ReadFile("go.mod")
+	data, err := os.ReadFile(filepath.Join("..", "..", "go.mod"))
 	if err != nil {
 		t.Fatal(err)
 	}

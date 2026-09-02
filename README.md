@@ -27,7 +27,7 @@ example.com/m/util
 ## Install
 
 ```
-go install github.com/shazow/go-whatchanged/cmd/go-whatchanged@latest
+go install github.com/shazow/go-whatchanged@latest
 ```
 
 Requires Go 1.24 or newer.

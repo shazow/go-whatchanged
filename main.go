@@ -10,7 +10,7 @@ import (
 
 	"golang.org/x/term"
 
-	whatchanged "github.com/shazow/go-whatchanged"
+	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
 
 const usage = `usage: go-whatchanged [flags] <base> [<head>]
