@@ -120,4 +120,4 @@ vendor mode, GOPATH mode, cgo-only APIs, module graph resolution beyond
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+[MIT](LICENSE).
