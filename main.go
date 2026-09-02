@@ -29,6 +29,11 @@ The tool never writes to disk and never runs the go command.
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 
+With --exit-fail=LEVEL the exit code names the semantic version bump the
+changes would require, when it is LEVEL or higher:
+  100 major · 101 minor · 102 patch
+(--exit-fail=patch is therefore always non-zero, unless there is an error.)
+
 Flags:
 `
 
@@ -44,13 +49,14 @@ func run(args []string) int {
 		fs.PrintDefaults()
 	}
 	var opts whatchanged.Options
-	var color string
+	var color, exitFail string
 	fs.StringVar(&opts.Repo, "repo", "", "path inside a git repository (default: current directory)")
 	fs.StringVar(&opts.GOOS, "goos", runtime.GOOS, "build target OS")
 	fs.StringVar(&opts.GOARCH, "goarch", runtime.GOARCH, "build target architecture")
 	fs.BoolVar(&opts.Breaking, "breaking", false, "show only incompatible changes")
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
 	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
+	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
 			return whatchanged.ExitClean
@@ -68,6 +74,15 @@ func run(args []string) int {
 	default:
 		fmt.Fprintf(os.Stderr, "go-whatchanged: invalid --color value %q (want auto, always or never)\n", color)
 		return whatchanged.ExitError
+	}
+
+	if exitFail != "" {
+		fail, err := whatchanged.ParseFailOn(exitFail)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "go-whatchanged: --exit-fail: %v\n", err)
+			return whatchanged.ExitError
+		}
+		opts.ExitFail = fail
 	}
 
 	switch fs.NArg() {

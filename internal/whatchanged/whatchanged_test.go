@@ -783,3 +783,81 @@ func TestWriteGuard(t *testing.T) {
 		}
 	}
 }
+
+func TestExitFail(t *testing.T) {
+	// One fixture per required level: major (removed func), minor (added
+	// func) and patch (no exported API change).
+	levels := map[string]func(f *fixture){
+		"major": func(f *fixture) { f.write("a/a.go", "package a\n\nfunc Keep() {}\n") },
+		"minor": func(f *fixture) {
+			f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Added() {}\n")
+		},
+		"patch": func(f *fixture) {
+			f.write("a/a.go", "package a\n\n// Comment only.\nfunc Keep() {}\n\nfunc Drop() {}\n")
+		},
+	}
+	tests := []struct {
+		level string
+		fail  FailOn
+		want  int
+	}{
+		{"major", FailNever, ExitIncompatible},
+		{"major", FailMajor, ExitMajor},
+		{"major", FailMinor, ExitMajor},
+		{"major", FailPatch, ExitMajor},
+		{"minor", FailNever, ExitClean},
+		{"minor", FailMajor, ExitClean},
+		{"minor", FailMinor, ExitMinor},
+		{"minor", FailPatch, ExitMinor},
+		{"patch", FailNever, ExitClean},
+		{"patch", FailMajor, ExitClean},
+		{"patch", FailMinor, ExitClean},
+		{"patch", FailPatch, ExitPatch},
+	}
+	for _, tc := range tests {
+		t.Run(fmt.Sprintf("%s/%d", tc.level, tc.fail), func(t *testing.T) {
+			f := newFixture(t)
+			f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n")
+			f.commit("base")
+			levels[tc.level](f)
+			r := f.run("HEAD", "", Options{ExitFail: tc.fail})
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if r.code != tc.want {
+				t.Errorf("exit = %d, want %d:\n%s", r.code, tc.want, r.stdout)
+			}
+		})
+	}
+}
+
+func TestExitFailStrictErrorWins(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nvar Broken = undefined\n")
+	r := f.run("HEAD", "", Options{Strict: true, ExitFail: FailPatch})
+	if r.code != ExitError || r.err == nil {
+		t.Errorf("exit = %d, err = %v; want %d and an error", r.code, r.err, ExitError)
+	}
+}
+
+func TestParseFailOn(t *testing.T) {
+	tests := []struct {
+		in   string
+		want FailOn
+		ok   bool
+	}{
+		{"major", FailMajor, true},
+		{"MINOR", FailMinor, true},
+		{"patch", FailPatch, true},
+		{"", FailNever, false},
+		{"breaking", FailNever, false},
+	}
+	for _, tc := range tests {
+		got, err := ParseFailOn(tc.in)
+		if (err == nil) != tc.ok || got != tc.want {
+			t.Errorf("ParseFailOn(%q) = %d, %v; want %d, ok=%v", tc.in, got, err, tc.want, tc.ok)
+		}
+	}
+}
