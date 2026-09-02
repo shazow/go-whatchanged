@@ -1,15 +1,13 @@
 # go-whatchanged
 
-Colorized, read-only diff of a Go module's exported API, built on
+What changed in the public API?
+
+Pretty semantic diff of a Go module's exported API, powered by 
 [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff).
 
-Answers "what did I change in the public API since `main` / `v1.4.0` /
-`HEAD~3`?" while you work, before you commit. The old side is read straight
-from git objects and the new side from the working tree (uncommitted and
-untracked files included). Everything is type-checked in-process.
+Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 
-Run it with no arguments to see what your uncommitted changes do to the API
-compared with `HEAD`, or name a base revision to look further back:
+## Usage
 
 ```
 $ go-whatchanged v1.4.0
@@ -32,8 +30,6 @@ example.com/m/util
 ```
 go install github.com/shazow/go-whatchanged@latest
 ```
-
-Requires Go 1.24 or newer.
 
 ## Usage
 
