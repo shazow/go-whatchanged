@@ -1,9 +1,11 @@
 # stdout
 example.com/m/gone (removed)
   - Gone: removed
+      - func Gone()
 
 example.com/m/store
   - (*Client).Close: removed
+      - func (c *Client) Close() error
   ~ Config.Timeout: changed
       - field Timeout int
       + field Timeout int64
@@ -16,6 +18,7 @@ example.com/m/store
 
 example.com/m/util
   ! Sizer.Size: added
+      + func (Sizer) Size() int
   ~ Stringer: changed
       - type Stringer interface{String() string}
       + type Stringer = fmt.Stringer

@@ -13,14 +13,18 @@ Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 $ go-whatchanged @latest
 example.com/m/store
   - (*Client).Close: removed
+      - func (c *Client) Close() error
   ~ Open: changed
       - func Open(path string) (*Client, error)
       + func Open(path string, o Options) (*Client, error)
   + (*Client).Ping: added
+      + func (c *Client) Ping() error
   + Options: added
+      + type Options struct{Timeout int}
 
 example.com/m/util
   ! Sizer.Size: added
+      + func (Sizer) Size() int
 
 2 packages changed · 3 incompatible · 2 compatible · would require: MAJOR (v1.4.0 → v2.0.0)
 ```
@@ -55,6 +59,8 @@ Flags:
   --exclude PATTERN  skip packages matching PATTERN (repeatable)
   --internal         also show internal packages (see below)
   --breaking         show only incompatible changes
+  --signatures       full | minimal: show each symbol's declaration under
+                     its change, or one line per change (default full)
   --pos              annotate changes with source positions (see below)
   --format string    text | markdown | json (default text; see below)
   --color string     auto | always | never (default auto; honors NO_COLOR)
@@ -93,9 +99,11 @@ be combined with `--exit-fail`:
 $ go-whatchanged --internal
 example.com/m/internal/store (internal)
   - Open: removed
+      - func Open(path string) (*Client, error)
 
 example.com/m/util
   + Pad: added
+      + func Pad(s string, n int) string
 
 1 package changed · 0 incompatible · 1 compatible · would require: MINOR
 internal: 1 package changed · 1 incompatible · 0 compatible
@@ -145,10 +153,12 @@ comment or a job summary:
 
 ```diff
 - (*Client).Close: removed
+-   func (c *Client) Close() error
 ! Open: changed
 -   func Open(path string) (*Client, error)
 +   func Open(path string, o Options) (*Client, error)
 + (*Client).Ping: added
++   func (c *Client) Ping() error
 ```
 
 1 package changed · 2 incompatible · 1 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
@@ -173,7 +183,8 @@ full diff.
           "symbol": "(*Client).Close",
           "kind": "removed",
           "compatible": false,
-          "message": "(*Client).Close: removed"
+          "message": "(*Client).Close: removed",
+          "before": "func (c *Client) Close() error"
         },
         {
           "symbol": "Open",
@@ -202,8 +213,10 @@ and `next_version` appear when the base is a release tag. A package's
 internal package under `--internal`, which the summary then also counts
 separately under `summary.internal`. A change's `kind` is `added`,
 `removed` or `changed`, and `symbol` is empty for a whole-package change
-(`package added`). `before` and `after` are present for `changed from X to
-Y` messages and hold what the text layout prints on its `-` and `+` lines.
+(`package added`). `before` and `after` hold what the text layout prints on
+its `-` and `+` lines: the old declaration of a removed symbol, the new one
+of an added symbol, both for a `changed from X to Y` message; neither is
+present with `--signatures=minimal`.
 With `--pos`, each change also carries a `pos` object locating the
 declaration, `{"rev": "v1.4.0", "file": "store/store.go", "line": 9,
 "col": 18}`, where `rev` is absent for the working tree. `release` is
@@ -279,22 +292,32 @@ prefixed with the revision like the positions in warnings:
 $ go-whatchanged --pos @latest
 example.com/m/store
   - (*Client).Close: removed  v1.4.0:store/store.go:9:18
+      - func (c *Client) Close() error
   ~ Open: changed             store/store.go:14:6
       - func Open(path string) (*Client, error)
       + func Open(path string, o Options) (*Client, error)
   + (*Client).Ping: added     store/store.go:11:18
+      + func (c *Client) Ping() error
 ```
 
 Working tree positions are relative to the module root, so terminals and
 editors can open them.
 
-A `changed from X to Y` message is split into a small patch: the old
-declaration on a red `-` line and the new one on a green `+` line, so two
-long signatures can be compared column by column. The lines show the full
-declaration with parameter names (`func Open(path string) ...`,
-`func (c *Client) Ping() ...`, `const Version untyped int`, `field Timeout
-int` for a struct field) when the symbol can be looked up on both sides,
-and fall back to the bare types otherwise.
+Under each change sits the declaration it is about, on a red `-` line for
+the old one and a green `+` line for the new one: a removed symbol shows
+what went away, an added one what arrived, and a `changed from X to Y`
+message becomes a small patch of both, so two long signatures can be
+compared column by column. Declarations are printed as source would, with
+parameter names and foreign types qualified by package name (`func
+Open(path string) (*Client, error)`, `func (c *Client) Ping() error`,
+`type Options struct{Timeout int}`, `const Version untyped int = 1`,
+`field Timeout int` for a struct field, `func (Sizer) Size() int` for an
+interface method). A changed symbol that cannot be looked up on both sides
+falls back to the bare types quoted in the message.
+
+`--signatures=minimal` prints one line per change instead, with apidiff's
+message as is: `~ Open: changed from func(string) (*Client, error) to
+func(string, Options) (*Client, error)`.
 
 A constant whose value changed shows both values: `const Version untyped
 string = "1.4.0"` on the `-` line and the new value on the `+` line.

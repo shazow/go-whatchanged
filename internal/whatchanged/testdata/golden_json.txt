@@ -13,7 +13,8 @@
           "symbol": "Hello",
           "kind": "added",
           "compatible": true,
-          "message": "Hello: added"
+          "message": "Hello: added",
+          "after": "func Hello()"
         }
       ]
     },
@@ -25,7 +26,8 @@
           "symbol": "Gone",
           "kind": "removed",
           "compatible": false,
-          "message": "Gone: removed"
+          "message": "Gone: removed",
+          "before": "func Gone()"
         }
       ]
     },
@@ -37,7 +39,8 @@
           "symbol": "(*Client).Close",
           "kind": "removed",
           "compatible": false,
-          "message": "(*Client).Close: removed"
+          "message": "(*Client).Close: removed",
+          "before": "func (c *Client) Close() error"
         },
         {
           "symbol": "Config.Timeout",
@@ -67,19 +70,22 @@
           "symbol": "(*Client).Ping",
           "kind": "added",
           "compatible": true,
-          "message": "(*Client).Ping: added"
+          "message": "(*Client).Ping: added",
+          "after": "func (c *Client) Ping() error"
         },
         {
           "symbol": "Options",
           "kind": "added",
           "compatible": true,
-          "message": "Options: added"
+          "message": "Options: added",
+          "after": "type Options struct{Timeout int}"
         },
         {
           "symbol": "Point.Z",
           "kind": "added",
           "compatible": true,
-          "message": "Point.Z: added"
+          "message": "Point.Z: added",
+          "after": "field Z int"
         }
       ]
     },
@@ -91,7 +97,8 @@
           "symbol": "Sizer.Size",
           "kind": "added",
           "compatible": false,
-          "message": "Sizer.Size: added"
+          "message": "Sizer.Size: added",
+          "after": "func (Sizer) Size() int"
         },
         {
           "symbol": "Stringer",

@@ -64,11 +64,12 @@ func (p Position) String() string {
 
 // Change is one API change. Message is an apidiff message, "<symbol>: <what>",
 // or "package added" / "package removed" for a package without exported
-// symbols. Before and After optionally carry the declaration-style form of
-// the symbol on each side for "changed from X to Y" messages, such as "func
-// Open(path string) (*Client, error)"; when they are empty the renderer
-// falls back to the types quoted in the message. Pos locates the symbol's
-// declaration: on the base side for a removal, on the head side otherwise.
+// symbols. Before and After carry the declaration-style form of the symbol
+// on each side, such as "func Open(path string) (*Client, error)": Before
+// for a removal, After for an addition, both for a "changed from X to Y"
+// message (where the renderer falls back to the types quoted in the message
+// when they are empty). Pos locates the symbol's declaration: on the base
+// side for a removal, on the head side otherwise.
 type Change struct {
 	Message    string
 	Compatible bool
@@ -166,11 +167,37 @@ func ParseFormat(s string) (Format, error) {
 	return 0, fmt.Errorf("invalid format %q (want text, markdown or json)", s)
 }
 
+// Signatures selects how much of a symbol's declaration a change shows.
+type Signatures int
+
+const (
+	// FullSignatures shows the declaration of every added, removed or
+	// changed symbol on its own "-" or "+" line, like a small patch.
+	FullSignatures Signatures = iota
+	// MinimalSignatures prints one line per change, the apidiff message,
+	// with a changed symbol's old and new types quoted inline.
+	MinimalSignatures
+)
+
+// ParseSignatures parses a --signatures value: "full" or "minimal".
+func ParseSignatures(s string) (Signatures, error) {
+	switch strings.ToLower(s) {
+	case "full":
+		return FullSignatures, nil
+	case "minimal":
+		return MinimalSignatures, nil
+	}
+	return 0, fmt.Errorf("invalid signatures %q (want full or minimal)", s)
+}
+
 // Options controls rendering.
 type Options struct {
 	Color        bool
 	BreakingOnly bool
 	Format       Format
+	// Signatures selects whether declarations are shown; the zero value
+	// shows them in full.
+	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Internal adds a line summarizing the changes of internal packages,
@@ -282,22 +309,25 @@ func Write(w io.Writer, res Result, opts Options) error {
 	}
 }
 
-// line is one change reduced to a glyph, a head line and, for "changed from
-// X to Y" messages, the two values to show on their own "-" and "+" lines.
+// line is one change reduced to a glyph, a head line and the declarations
+// to show under it on their own "-" (from) and "+" (to) lines.
 type line struct {
 	glyph      string // "-", "!", "~" or "+"
 	head       string
-	from, to   string // both empty unless the change splits
+	from, to   string // the old and new declarations; either may be empty
 	pos        string // "" when unknown or not wanted
 	compatible bool
 }
 
-// describe reduces c to a line. "changed from X to Y" messages are split so
-// that the before and after values sit on their own lines, like a small
-// patch, which makes long signatures easy to compare.
+// describe reduces c to a line. With FullSignatures a removed symbol's
+// declaration goes on a "-" line, an added one's on a "+" line, and a
+// "changed from X to Y" message is split so that the before and after values
+// sit on their own lines, like a small patch, which makes long signatures
+// easy to compare.
 func describe(c Change, opts Options) line {
 	l := line{glyph: "~", head: c.Message, compatible: c.Compatible}
-	switch c.Kind() {
+	kind := c.Kind()
+	switch kind {
 	case "removed":
 		l.glyph = "-"
 	case "added":
@@ -307,14 +337,24 @@ func describe(c Change, opts Options) line {
 			l.glyph = "!"
 		}
 	}
-	if head, from, to, ok := splitChangedFromTo(c.Message); ok {
-		if c.Before != "" && c.After != "" {
-			from, to = c.Before, c.After
-		}
-		l.head, l.from, l.to = head, from, to
-	}
 	if opts.Positions {
 		l.pos = c.Pos.String()
+	}
+	if opts.Signatures == MinimalSignatures {
+		return l
+	}
+	switch kind {
+	case "removed":
+		l.from = c.Before
+	case "added":
+		l.to = c.After
+	default:
+		if head, from, to, ok := splitChangedFromTo(c.Message); ok {
+			if c.Before != "" && c.After != "" {
+				from, to = c.Before, c.After
+			}
+			l.head, l.from, l.to = head, from, to
+		}
 	}
 	return l
 }
@@ -425,9 +465,10 @@ func formatLine(st Style, l line, width int) []string {
 	}
 	out := []string{head}
 	if l.from != "" {
-		out = append(out,
-			"      "+st.Red("- "+l.from, bold),
-			"      "+st.Green("+ "+l.to, bold))
+		out = append(out, "      "+st.Red("- "+l.from, bold))
+	}
+	if l.to != "" {
+		out = append(out, "      "+st.Green("+ "+l.to, bold))
 	}
 	return out
 }
@@ -522,6 +563,8 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 			if l.from != "" {
 				b.WriteString("-   " + l.from + "\n")
+			}
+			if l.to != "" {
 				b.WriteString("+   " + l.to + "\n")
 			}
 		}

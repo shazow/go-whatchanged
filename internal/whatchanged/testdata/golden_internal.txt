@@ -1,16 +1,21 @@
 # stdout
 example.com/m/fresh (new)
   + Hello: added
+      + func Hello()
 
 example.com/m/gone (removed)
   - Gone: removed
+      - func Gone()
 
 example.com/m/internal/hidden (internal)
   - Hidden: removed
+      - func Hidden()
   + Added: added
+      + func Added()
 
 example.com/m/store
   - (*Client).Close: removed
+      - func (c *Client) Close() error
   ~ Config.Timeout: changed
       - field Timeout int
       + field Timeout int64
@@ -21,11 +26,15 @@ example.com/m/store
       - const Version untyped string = "1"
       + const Version untyped int = 1
   + (*Client).Ping: added
+      + func (c *Client) Ping() error
   + Options: added
+      + type Options struct{Timeout int}
   + Point.Z: added
+      + field Z int
 
 example.com/m/util
   ! Sizer.Size: added
+      + func (Sizer) Size() int
   ~ Stringer: changed
       - type Stringer interface{String() string}
       + type Stringer = fmt.Stringer

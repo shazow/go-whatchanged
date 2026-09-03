@@ -253,8 +253,8 @@ func TestAddedAndRemovedPackage(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"example.com/m/fresh (new)\n  + Hello: added\n",
-		"example.com/m/old (removed)\n  - Gone: removed\n  - T: removed\n",
+		"example.com/m/fresh (new)\n  + Hello: added\n      + func Hello()\n",
+		"example.com/m/old (removed)\n  - Gone: removed\n      - func Gone()\n  - T: removed\n      - type T struct{}\n",
 		"2 packages changed · 2 incompatible · 1 compatible · would require: MAJOR\n")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
@@ -455,7 +455,7 @@ func TestBreakingHidesCompatible(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	want := "example.com/m/a\n  - Drop: removed\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
+	want := "example.com/m/a\n  - Drop: removed\n      - func Drop()\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -816,7 +816,7 @@ func Describe(s fmt.Stringer) string { return s.String() }
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
-	want := "example.com/m/a\n  + Changes: added\n  + Describe: added\n\n1 package changed · 0 incompatible · 2 compatible · would require: MINOR\n"
+	want := "example.com/m/a\n  + Changes: added\n      + func Changes(r apidiff.Report) []apidiff.Change\n  + Describe: added\n      + func Describe(s fmt.Stringer) string\n\n1 package changed · 0 incompatible · 2 compatible · would require: MINOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -913,6 +913,7 @@ func TestGolden(t *testing.T) {
 		{"json", Options{Format: render.JSON}},
 		{"internal", Options{Internal: true}},
 		{"pos", Options{Positions: true}},
+		{"minimal", Options{Signatures: render.MinimalSignatures}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := f.run("v1.0.0", "", tc.opts)
@@ -1463,14 +1464,14 @@ func TestJSON(t *testing.T) {
 		!strings.HasPrefix(open.Message, "Open: changed from ") {
 		t.Errorf("Open = %+v", open)
 	}
-	if ping := store.Changes[4]; ping.Symbol != "(*Client).Ping" || ping.Kind != "added" || !ping.Compatible || ping.Before != "" {
+	if ping := store.Changes[4]; ping.Symbol != "(*Client).Ping" || ping.Kind != "added" || !ping.Compatible || ping.Before != "" || ping.After != "func (c *Client) Ping() error" {
 		t.Errorf("Ping = %+v", ping)
 	}
 	if timeout := store.Changes[1]; timeout.Symbol != "Config.Timeout" || timeout.Before != "field Timeout int" || timeout.After != "field Timeout int64" {
 		t.Errorf("Config.Timeout = %+v", timeout)
 	}
 	mustNotContain(t, r.stdout, `"pos"`, `"internal"`)
-	if closed := store.Changes[0]; closed.Symbol != "(*Client).Close" || closed.Kind != "removed" {
+	if closed := store.Changes[0]; closed.Symbol != "(*Client).Close" || closed.Kind != "removed" || closed.Before != "func (c *Client) Close() error" || closed.After != "" {
 		t.Errorf("Close = %+v", closed)
 	}
 
@@ -1554,6 +1555,7 @@ func TestPositions(t *testing.T) {
 	// package; a removed symbol is located on the base side.
 	want := "example.com/m/a\n" +
 		"  - Drop: removed  v0.1.0:a/a.go:5:6\n" +
+		"      - func Drop()\n" +
 		"  ~ T.M: changed   a/a.go:10:12\n" +
 		"      - func (t T) M(n int)\n" +
 		"      + func (t T) M(n int64)\n" +
@@ -1561,7 +1563,9 @@ func TestPositions(t *testing.T) {
 		"      - field X int\n" +
 		"      + field X int64\n" +
 		"  + Added: added   a/a.go:12:6\n" +
+		"      + func Added()\n" +
 		"  + T.Y: added     a/a.go:7:2\n" +
+		"      + field Y int\n" +
 		"\n" +
 		"example.com/m/b (new)\n" +
 		"  + package added\n" +
@@ -1576,7 +1580,7 @@ func TestPositions(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  - Drop: removed\n  ~ T.M: changed\n")
+	mustContain(t, r.stdout, "  - Drop: removed\n      - func Drop()\n  ~ T.M: changed\n")
 	mustNotContain(t, r.stdout, "a.go")
 
 	// Two committed revisions: both sides carry a revision prefix.
@@ -1606,14 +1610,14 @@ func TestPackageFilter(t *testing.T) {
 		want          string
 		stderr        string
 	}{
-		{"all", nil, nil, "example.com/m/a\n  + A2: added\n\nexample.com/m/store\n  + S2: added\n\nexample.com/m/store/sub\n  + Sub2: added\n\nexample.com/m/util (removed)\n  - U: removed\n\n4 packages changed · 1 incompatible · 3 compatible · would require: MAJOR\n", ""},
-		{"store", []string{"store/..."}, nil, "example.com/m/store\n  + S2: added\n\nexample.com/m/store/sub\n  + Sub2: added\n\n2 packages changed · 0 incompatible · 2 compatible · would require: MINOR\n", ""},
-		{"exact", []string{"example.com/m/store"}, nil, "example.com/m/store\n  + S2: added\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
-		{"two", []string{"./a", "util"}, nil, "example.com/m/a\n  + A2: added\n\nexample.com/m/util (removed)\n  - U: removed\n\n2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n", ""},
-		{"exclude", nil, []string{"store/...", "util"}, "example.com/m/a\n  + A2: added\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
-		{"both", []string{"store/..."}, []string{".../sub"}, "example.com/m/store\n  + S2: added\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
-		{"removed only on base", []string{"util"}, nil, "example.com/m/util (removed)\n  - U: removed\n\n1 package changed · 1 incompatible · 0 compatible · would require: MAJOR\n", ""},
-		{"typo", []string{"stor/...", "a"}, nil, "example.com/m/a\n  + A2: added\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", "warn: example.com/m: --pkg \"stor/...\" matched no packages\n"},
+		{"all", nil, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\nexample.com/m/store\n  + S2: added\n      + func S2()\n\nexample.com/m/store/sub\n  + Sub2: added\n      + func Sub2()\n\nexample.com/m/util (removed)\n  - U: removed\n      - func U()\n\n4 packages changed · 1 incompatible · 3 compatible · would require: MAJOR\n", ""},
+		{"store", []string{"store/..."}, nil, "example.com/m/store\n  + S2: added\n      + func S2()\n\nexample.com/m/store/sub\n  + Sub2: added\n      + func Sub2()\n\n2 packages changed · 0 incompatible · 2 compatible · would require: MINOR\n", ""},
+		{"exact", []string{"example.com/m/store"}, nil, "example.com/m/store\n  + S2: added\n      + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"two", []string{"./a", "util"}, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\nexample.com/m/util (removed)\n  - U: removed\n      - func U()\n\n2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n", ""},
+		{"exclude", nil, []string{"store/...", "util"}, "example.com/m/a\n  + A2: added\n      + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"both", []string{"store/..."}, []string{".../sub"}, "example.com/m/store\n  + S2: added\n      + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"removed only on base", []string{"util"}, nil, "example.com/m/util (removed)\n  - U: removed\n      - func U()\n\n1 package changed · 1 incompatible · 0 compatible · would require: MAJOR\n", ""},
+		{"typo", []string{"stor/...", "a"}, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", "warn: example.com/m: --pkg \"stor/...\" matched no packages\n"},
 		{"nothing", []string{"nothing"}, nil, "no exported API changes\n", "warn: example.com/m: --pkg \"nothing\" matched no packages\n"},
 	}
 	for _, tc := range tests {
@@ -1658,7 +1662,7 @@ func TestInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if want := "example.com/m/a\n  + Added: added\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
+	if want := "example.com/m/a\n  + Added: added\n      + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
 
@@ -1668,10 +1672,10 @@ func TestInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	want := "example.com/m/a\n  + Added: added\n\n" +
-		"example.com/m/a/internal/deep (internal)\n  + Deeper: added\n\n" +
-		"example.com/m/internal/fresh (internal, new)\n  + F: added\n\n" +
-		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n  + Renamed: added\n\n" +
+	want := "example.com/m/a\n  + Added: added\n      + func Added()\n\n" +
+		"example.com/m/a/internal/deep (internal)\n  + Deeper: added\n      + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + F: added\n      + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\n" +
 		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n" +
 		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
 	if r.stdout != want {
@@ -1701,14 +1705,14 @@ func TestInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
+	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
 		t.Errorf("breaking: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.run("HEAD", "", Options{Internal: true, Packages: []string{"internal/hidden"}})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n  + Renamed: added\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
+	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
 		t.Errorf("pkg: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
@@ -1735,4 +1739,68 @@ func TestInternalPackages(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout, "**example.com/m/internal/hidden (internal)**\n", "_no exported API changes_\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n")
+}
+
+func TestMinimalSignatures(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Open(name string) error { return nil }\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n")
+
+	// One line per change, with apidiff's message as is.
+	r := f.run("HEAD", "", Options{Signatures: render.MinimalSignatures})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want := "example.com/m/a\n" +
+		"  - Drop: removed\n" +
+		"  ~ Open: changed from func(string) error to func(string, int) error\n" +
+		"  + Added: added\n" +
+		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// The default shows every declaration.
+	r = f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want = "example.com/m/a\n" +
+		"  - Drop: removed\n      - func Drop()\n" +
+		"  ~ Open: changed\n      - func Open(name string) error\n      + func Open(name string, n int) error\n" +
+		"  + Added: added\n      + func Added()\n" +
+		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("full: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// Markdown and JSON follow the same knob.
+	r = f.run("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "```diff\n- Drop: removed\n! Open: changed from func(string) error to func(string, int) error\n+ Added: added\n```\n")
+	r = f.run("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustNotContain(t, r.stdout, `"before"`, `"after"`)
+	r = f.run("HEAD", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"before": "func Drop()"`, `"after": "func Added()"`, `"before": "func Open(name string) error"`)
+}
+
+func TestParseSignatures(t *testing.T) {
+	for in, want := range map[string]render.Signatures{"full": render.FullSignatures, "Minimal": render.MinimalSignatures} {
+		got, err := ParseSignatures(in)
+		if err != nil || got != want {
+			t.Errorf("ParseSignatures(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseSignatures("short"); err == nil {
+		t.Error("ParseSignatures accepted short")
+	}
 }

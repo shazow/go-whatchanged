@@ -54,6 +54,9 @@ type Options struct {
 	Internal bool
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
+	// Signatures selects whether each change shows the symbol's
+	// declaration; the zero value shows it in full.
+	Signatures render.Signatures
 	// Color enables ANSI escapes.
 	Color bool
 	// Strict turns type-check warnings into a fatal error.
@@ -121,6 +124,11 @@ func ParseFailOn(s string) (FailOn, error) {
 // ParseFormat parses a --format value: "text", "markdown" or "json".
 func ParseFormat(s string) (render.Format, error) {
 	return render.ParseFormat(s)
+}
+
+// ParseSignatures parses a --signatures value: "full" or "minimal".
+func ParseSignatures(s string) (render.Signatures, error) {
+	return render.ParseSignatures(s)
 }
 
 // threshold is the lowest level that fails, or ok=false for FailNever.
@@ -231,6 +239,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 		Color:        opts.Color,
 		BreakingOnly: opts.Breaking,
 		Format:       opts.Format,
+		Signatures:   opts.Signatures,
 		Positions:    opts.Positions,
 		Internal:     opts.Internal,
 	}
@@ -511,8 +520,7 @@ func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
 		}
 		for _, c := range apidiff.Changes(old, nw).Changes {
 			rc := render.FromAPIDiff(c)
-			rc.Before, rc.After = namedForms(old, nw, c.Message)
-			rc.Pos = changePosition(fset, base, head, old, nw, rc)
+			annotate(&rc, fset, base, head, old, nw)
 			pkg.Changes = append(pkg.Changes, rc)
 		}
 		// apidiff only sees symbols, so a package with no exported API
@@ -533,23 +541,37 @@ func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
 	return res, nil
 }
 
-// changePosition locates the declaration a change is about: on the base
-// side for a removal, on the head side otherwise. Whole-package changes and
-// symbols that cannot be looked up have no position.
-func changePosition(fset *token.FileSet, base, head *side, old, nw *types.Package, c render.Change) render.Position {
+// annotate fills in the declarations and the position of the symbol a
+// change is about. A removal is described by the base side's object, an
+// addition by the head side's, and a "changed from X to Y" message by both
+// (the declarations are only set when both can be looked up, so that the
+// renderer can fall back to the types quoted in the message). Whole-package
+// changes and symbols that cannot be looked up get neither.
+func annotate(c *render.Change, fset *token.FileSet, base, head *side, old, nw *types.Package) {
 	sym := c.Symbol()
 	if sym == "" {
-		return render.Position{}
+		return
 	}
-	s, pkg := head, nw
-	if c.Kind() == "removed" {
-		s, pkg = base, old
+	oldObj, newObj := lookupSymbol(old, sym), lookupSymbol(nw, sym)
+	switch c.Kind() {
+	case "removed":
+		if oldObj != nil {
+			c.Before = declString(oldObj, old)
+			c.Pos = base.position(fset.Position(oldObj.Pos()))
+		}
+	case "added":
+		if newObj != nil {
+			c.After = declString(newObj, nw)
+			c.Pos = head.position(fset.Position(newObj.Pos()))
+		}
+	default:
+		if newObj != nil {
+			c.Pos = head.position(fset.Position(newObj.Pos()))
+		}
+		if oldObj != nil && newObj != nil && strings.Contains(c.Message, "changed from ") {
+			c.Before, c.After = declString(oldObj, old), declString(newObj, nw)
+		}
 	}
-	obj := lookupSymbol(pkg, sym)
-	if obj == nil {
-		return render.Position{}
-	}
-	return s.position(fset.Position(obj.Pos()))
 }
 
 // collectWarnings merges both sides' warnings, rewriting synthetic mount

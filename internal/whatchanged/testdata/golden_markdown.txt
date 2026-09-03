@@ -3,18 +3,21 @@
 
 ```diff
 + Hello: added
++   func Hello()
 ```
 
 **example.com/m/gone (removed)**
 
 ```diff
 - Gone: removed
+-   func Gone()
 ```
 
 **example.com/m/store**
 
 ```diff
 - (*Client).Close: removed
+-   func (c *Client) Close() error
 ! Config.Timeout: changed
 -   field Timeout int
 +   field Timeout int64
@@ -25,14 +28,18 @@
 -   const Version untyped string = "1"
 +   const Version untyped int = 1
 + (*Client).Ping: added
++   func (c *Client) Ping() error
 + Options: added
++   type Options struct{Timeout int}
 + Point.Z: added
++   field Z int
 ```
 
 **example.com/m/util**
 
 ```diff
 ! Sizer.Size: added
++   func (Sizer) Size() int
 ! Stringer: changed
 -   type Stringer interface{String() string}
 +   type Stringer = fmt.Stringer
