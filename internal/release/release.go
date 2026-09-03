@@ -5,7 +5,6 @@ package release
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
 
 	"golang.org/x/mod/module"
@@ -103,21 +102,7 @@ func parse(v string) (major, minor, patch int, ok bool) {
 	if v == "" || semver.Canonical(v) != v {
 		return 0, 0, 0, false
 	}
-	core := strings.TrimPrefix(v, "v")
-	if i := strings.IndexAny(core, "-+"); i >= 0 {
-		core = core[:i]
-	}
-	parts := strings.Split(core, ".")
-	if len(parts) != 3 {
-		return 0, 0, 0, false
-	}
-	nums := make([]int, 3)
-	for i, p := range parts {
-		n, err := strconv.Atoi(p)
-		if err != nil || n < 0 {
-			return 0, 0, 0, false
-		}
-		nums[i] = n
-	}
-	return nums[0], nums[1], nums[2], true
+	// Scanning stops at the pre-release suffix, if any.
+	_, err := fmt.Sscanf(v, "v%d.%d.%d", &major, &minor, &patch)
+	return major, minor, patch, err == nil
 }

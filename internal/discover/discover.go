@@ -5,7 +5,7 @@ import (
 	"go/build"
 	"io/fs"
 	"path"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -17,8 +17,8 @@ type FS interface {
 
 // Package is a candidate package.
 type Package struct {
-	ImportPath string
-	Dir        string
+	Dir   string
+	Build *build.Package // the directory as go/build imported it
 	// Internal is set when an element of the package's path within the
 	// module is "internal": the package is importable only from within the
 	// module and is not part of its public API.
@@ -45,15 +45,13 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal bool)
 			importPath = modPath + "/" + rel
 		}
 		bp, ierr := ctxt.ImportDir(dir, 0)
-		switch e := ierr.(type) {
+		switch ierr.(type) {
 		case nil:
 			if bp.Name != "main" && len(bp.GoFiles) > 0 {
-				pkgs[importPath] = Package{ImportPath: importPath, Dir: dir, Internal: isInternal}
+				pkgs[importPath] = Package{Dir: dir, Build: bp, Internal: isInternal}
 			}
 		case *build.NoGoError:
 			// Nothing to diff here; still descend.
-		case *build.MultiplePackageError:
-			problems[importPath] = e.Error()
 		default:
 			problems[importPath] = ierr.Error()
 		}
@@ -62,16 +60,13 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal bool)
 		if rerr != nil {
 			return rerr
 		}
-		names := make([]string, 0, len(entries))
-		byName := make(map[string]fs.FileInfo, len(entries))
+		var names []string
 		for _, e := range entries {
-			if !e.IsDir() {
-				continue
+			if e.IsDir() {
+				names = append(names, e.Name())
 			}
-			names = append(names, e.Name())
-			byName[e.Name()] = e
 		}
-		sort.Strings(names)
+		slices.Sort(names)
 		for _, name := range names {
 			if skipDir(name) || (name == "internal" && !internal) {
 				continue

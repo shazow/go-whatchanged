@@ -1,6 +1,7 @@
-// Command go-whatchanged prints a colorized diff of a Go module's exported API
-// between a commit and the working tree. With no arguments it compares HEAD
-// against the current, possibly uncommitted, state of the checkout.
+// Command go-whatchanged prints a semantic diff of a Go module's exported API
+// between two git revisions, or a revision and the working tree, as colorized
+// text, Markdown or JSON. With no arguments it compares HEAD against the
+// current, possibly uncommitted, state of the checkout.
 package main
 
 import (
@@ -73,7 +74,7 @@ func run(args []string) int {
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
 	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
 	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")
-	fs.StringVar(&format, "format", "text", "output layout: text, markdown or json")
+	fs.StringVar(&format, "format", "text", "output layout: text, markdown (md) or json")
 	fs.BoolVar(&showVersion, "version", false, "print the version of go-whatchanged and exit")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -156,7 +157,7 @@ type patterns []string
 func (p *patterns) String() string { return strings.Join(*p, ",") }
 
 func (p *patterns) Set(s string) error {
-	for _, v := range strings.Split(s, ",") {
+	for v := range strings.SplitSeq(s, ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			*p = append(*p, v)
 		}

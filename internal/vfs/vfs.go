@@ -1,5 +1,5 @@
 // Package vfs builds read-only go/build contexts whose filesystem hooks are
-// served from a git tree, a billy filesystem, or the real disk.
+// served from a git tree, any FS implementation, or the real disk.
 //
 // A Context never writes anywhere: every hook is a pure read. Paths under a
 // mount are answered by the mounted FS; every other path falls through to the
@@ -14,7 +14,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -48,15 +48,13 @@ func NewOverlay(mounts ...Mount) *Overlay {
 		m.Path = cleanAbs(m.Path)
 		ms = append(ms, m)
 	}
-	sort.SliceStable(ms, func(i, j int) bool { return len(ms[i].Path) > len(ms[j].Path) })
+	slices.SortStableFunc(ms, func(a, b Mount) int { return len(b.Path) - len(a.Path) })
 	return &Overlay{mounts: ms}
 }
 
 // cleanAbs normalizes p to a slash-separated cleaned path.
 func cleanAbs(p string) string {
-	p = filepath.ToSlash(p)
-	p = path.Clean(p)
-	return p
+	return path.Clean(filepath.ToSlash(p))
 }
 
 // lookup returns the mount serving name and the path relative to that mount.

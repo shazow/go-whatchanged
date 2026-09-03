@@ -2,12 +2,12 @@
 
 What changed in the public API?
 
-Pretty semantic diff of a Go module's exported API, powered by 
+Pretty semantic diff of a Go module's exported API, powered by
 [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff).
 
 Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 
-## Usage
+## Example
 
 ```
 $ go-whatchanged @latest
@@ -58,7 +58,7 @@ Flags:
   --signatures       full | minimal: show each change as its old and new
                      declarations, or as one message line (default full)
   --pos              annotate changes with source positions (see below)
-  --format string    text | markdown | json (default text; see below)
+  --format string    text | markdown (or md) | json (default text; see below)
   --color string     auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
   --exit-fail LEVEL  exit 100/101/102 when the required bump is major, minor
@@ -192,6 +192,13 @@ full diff.
           "message": "Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)",
           "before": "func Open(path string) (*Client, error)",
           "after": "func Open(path string, o Options) (*Client, error)"
+        },
+        {
+          "symbol": "(*Client).Ping",
+          "kind": "added",
+          "compatible": true,
+          "message": "(*Client).Ping: added",
+          "after": "func (c *Client) Ping() error"
         }
       ]
     }
@@ -221,7 +228,14 @@ present with `--signatures=minimal`.
 With `--pos`, each change also carries a `pos` object locating the
 declaration, `{"rev": "v1.4.0", "file": "store/store.go", "line": 9,
 "col": 18}`, where `rev` is absent for the working tree. `release` is
-`major`, `minor` or `patch`.
+`major`, `minor` or `patch`. A change whose declaration lies outside the
+module, a field or method promoted from a dependency, has no `pos`, since
+positions are relative to the module root. `warnings` holds the warnings
+that stderr shows as `warn: <package>: <message>` lines (type-check
+problems, `--pkg` patterns that matched nothing, the `go` directive note),
+one `{"package": ..., "message": ...}` object each, and `summary.internal`
+has the `packages_changed`, `incompatible` and `compatible` counts of the
+internal packages.
 
 ### In GitHub Actions
 
@@ -250,10 +264,13 @@ jobs:
 
 On a `pull_request` event the base defaults to the merge-base of the pull
 request and its base branch, so the diff is exactly what the pull request
-does to the API. On any other event it defaults to `@latest`: a workflow
-that runs on a tag push gets the release notes of the tag. Every flag of the
-command has an input, with `fail-on` standing in for `--exit-fail`. Here
-they are with their defaults:
+does to the API; when the checkout is too shallow to find the merge-base,
+the tip of the base branch stands in, with a warning. On any other event it
+defaults to `@latest`: a workflow that runs on a tag push gets the release
+notes of the tag. Every flag that applies in CI has an input: `fail-on`
+stands in for `--exit-fail` and `working-directory` for `--repo`, and the
+action picks the format itself, JSON for the outputs and markdown for the
+summary. Here they are with their defaults:
 
 ```yaml
       - uses: shazow/go-whatchanged@main
@@ -399,7 +416,8 @@ example.com/m/store
 ```
 
 Working tree positions are relative to the module root, so terminals and
-editors can open them.
+editors can open them. A field or method promoted from a dependency is
+declared outside the module and has no position.
 
 A change with no declaration to show keeps apidiff's message instead, one
 line marked with a glyph, and `--signatures=minimal` prints every change
@@ -448,11 +466,11 @@ The tool is safe to run at any time, in any state of your checkout,
 including a linked worktree created with `git worktree add`:
 
 - **No disk writes.** No temporary directories, no checkouts, no build cache,
-  no `go.sum` edits. It only reads the repository, `.git`, `$GOROOT/src` and
-  `$GOMODCACHE`.
+  no `go.sum` edits. It only reads the repository, `.git`, `$GOROOT/src`,
+  `$GOMODCACHE` and the directories that `replace` directives point at.
 - **No `go` command.** Both sides are parsed and type-checked in-process with
-  `go/build`, `go/parser` and `go/types`. Cgo is disabled; `import "C"` is
-  faked.
+  `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
+  `import "C"` are skipped, so an API declared only in them is not diffed.
 - **No network.** A dependency missing from the module cache is a clear
   error: run `go mod download` and try again.
 - **No repository mutation.** Only go-git's object store is used. The

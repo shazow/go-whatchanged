@@ -8,8 +8,6 @@ import (
 	"io"
 	"strings"
 	"unicode/utf8"
-
-	"golang.org/x/exp/apidiff"
 )
 
 // Status says on which sides a package exists.
@@ -76,11 +74,6 @@ type Change struct {
 	Before     string
 	After      string
 	Pos        Position
-}
-
-// FromAPIDiff converts an apidiff change without named forms.
-func FromAPIDiff(c apidiff.Change) Change {
-	return Change{Message: c.Message, Compatible: c.Compatible}
 }
 
 // Symbol returns the object the message is about: "Open", "(*Client).Ping",
@@ -154,7 +147,7 @@ const (
 	JSON
 )
 
-// ParseFormat parses a --format value: "text", "markdown" or "json".
+// ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
 func ParseFormat(s string) (Format, error) {
 	switch strings.ToLower(s) {
 	case "text":
@@ -412,11 +405,14 @@ func describe(c Change, opts Options) line {
 	case "added":
 		l.to, l.decls = c.After, c.After != ""
 	default:
-		if head, from, to, ok := splitChangedFromTo(c.Message); ok {
-			if c.Before != "" && c.After != "" {
-				from, to, l.decls = c.Before, c.After, true
-			}
-			l.head, l.from, l.to = head, from, to
+		head, rest, ok := strings.Cut(c.Message, "changed from ")
+		if !ok {
+			break
+		}
+		if c.Before != "" && c.After != "" {
+			l.head, l.from, l.to, l.decls = head+"changed", c.Before, c.After, true
+		} else if from, to, ok := splitFromTo(rest); ok {
+			l.head, l.from, l.to = head+"changed", from, to
 		}
 	}
 	return l
@@ -449,11 +445,7 @@ func posWidth(lines []line, text func(line) string) int {
 
 // padding returns the spaces that align a position after text at width.
 func padding(text string, width int) string {
-	n := width - utf8.RuneCountInString(text)
-	if n < 0 {
-		n = 0
-	}
-	return strings.Repeat(" ", n)
+	return strings.Repeat(" ", max(0, width-utf8.RuneCountInString(text)))
 }
 
 func header(p Package) string {
@@ -552,18 +544,19 @@ func formatLine(st Style, l line, width int) []string {
 			return []string{"  " + located(to, st.Green(to, bold))}
 		}
 	}
-	var paint func(string) string
+	// Removals and incompatible additions are red, compatible additions
+	// green, other changes cyan or, when incompatible, yellow.
+	code := codeYellow
 	switch {
 	case l.glyph == "-" || l.glyph == "!":
-		paint = func(s string) string { return st.Red(s, true) }
+		code = codeRed
 	case l.glyph == "+":
-		paint = func(s string) string { return st.Green(s, false) }
+		code = codeGreen
 	case l.compatible:
-		paint = func(s string) string { return st.Cyan(s, false) }
-	default:
-		paint = func(s string) string { return st.Yellow(s, true) }
+		code = codeCyan
 	}
-	out := []string{"  " + located(l.message(), paint(l.message()))}
+	msg := l.message()
+	out := []string{"  " + located(msg, st.color(msg, bold, code))}
 	if l.from != "" {
 		out = append(out, "      "+st.Grey(from))
 	}
@@ -573,21 +566,53 @@ func formatLine(st Style, l line, width int) []string {
 	return out
 }
 
-// splitChangedFromTo decomposes "<obj>: [value ]changed from X to Y" into
-// "<obj>: [value ]changed", X and Y. Type strings never contain " to "
-// themselves, so the first occurrence after "changed from " is the split.
-func splitChangedFromTo(msg string) (head, from, to string, ok bool) {
-	const marker = "changed from "
-	i := strings.Index(msg, marker)
-	if i < 0 {
-		return "", "", "", false
+// splitFromTo splits the "X to Y" that follows "changed from " in a message
+// into X and Y. A type string can itself contain " to " (a nested func's
+// parameter names, a struct's field names or tags), but only inside
+// brackets or a string literal, so the split is the first " to " that
+// leaves X complete. When none does, which happens when go/constant has
+// abbreviated a long string value with "..." and no closing quote, the
+// first " to " is taken.
+func splitFromTo(s string) (from, to string, ok bool) {
+	const sep = " to "
+	first := strings.Index(s, sep)
+	if first <= 0 || first+len(sep) >= len(s) {
+		return "", "", false // no " to ", or nothing on one side of it
 	}
-	rest := msg[i+len(marker):]
-	from, to, found := strings.Cut(rest, " to ")
-	if !found || from == "" || to == "" {
-		return "", "", "", false
+	for i := first; i+len(sep) < len(s); {
+		if complete(s[:i]) {
+			return s[:i], s[i+len(sep):], true
+		}
+		j := strings.Index(s[i+len(sep):], sep)
+		if j < 0 {
+			break
+		}
+		i += len(sep) + j
 	}
-	return msg[:i] + "changed", from, to, true
+	return s[:first], s[first+len(sep):], true
+}
+
+// complete reports whether every bracket and string literal in s is closed.
+func complete(s string) bool {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch q := s[i]; q {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '"', '`':
+			for i++; i < len(s) && s[i] != q; i++ {
+				if q == '"' && s[i] == '\\' {
+					i++ // an escaped character, possibly a quote
+				}
+			}
+			if i == len(s) {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // noChanges is the message for an empty diff, naming the base release when

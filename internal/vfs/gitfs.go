@@ -45,11 +45,7 @@ func (g *GitFS) Stat(name string) (fs.FileInfo, error) {
 	if err != nil {
 		return nil, &fs.PathError{Op: "stat", Path: name, Err: fs.ErrNotExist}
 	}
-	size := int64(0)
-	if entry.Mode.IsFile() {
-		size, _ = g.root.Size(rel)
-	}
-	return gitInfo{name: path.Base(rel), mode: entry.Mode, size: size}, nil
+	return gitInfo{name: path.Base(rel), mode: entry.Mode, tree: g.root, path: rel}, nil
 }
 
 // ReadDir implements FS.
@@ -70,11 +66,7 @@ func (g *GitFS) ReadDir(name string) ([]fs.FileInfo, error) {
 	}
 	infos := make([]fs.FileInfo, 0, len(tree.Entries))
 	for _, e := range tree.Entries {
-		size := int64(0)
-		if e.Mode.IsFile() {
-			size, _ = tree.Size(e.Name)
-		}
-		infos = append(infos, gitInfo{name: e.Name, mode: e.Mode, size: size})
+		infos = append(infos, gitInfo{name: e.Name, mode: e.Mode, tree: tree, path: e.Name})
 	}
 	return infos, nil
 }
@@ -89,15 +81,25 @@ func (g *GitFS) Open(name string) (io.ReadCloser, error) {
 	return f.Reader()
 }
 
-// gitInfo adapts a tree entry to fs.FileInfo.
+// gitInfo adapts a tree entry to fs.FileInfo. The size is looked up on
+// demand: it costs an object-store read per file, and go/build never asks.
 type gitInfo struct {
 	name string
 	mode filemode.FileMode
-	size int64
+	tree *object.Tree // holds the entry at path; nil for the root itself
+	path string
 }
 
 func (i gitInfo) Name() string { return i.name }
-func (i gitInfo) Size() int64  { return i.size }
+
+func (i gitInfo) Size() int64 {
+	if i.tree == nil || !i.mode.IsFile() {
+		return 0
+	}
+	size, _ := i.tree.Size(i.path)
+	return size
+}
+
 func (i gitInfo) Mode() fs.FileMode {
 	m, err := i.mode.ToOSFileMode()
 	if err != nil {

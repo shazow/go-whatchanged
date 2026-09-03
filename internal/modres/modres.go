@@ -1,6 +1,7 @@
 // Package modres resolves import paths to directories for one side of a diff
-// using only go.mod, GOROOT and the module cache. It never runs the go
-// command and never touches the network.
+// using only go.mod, GOROOT, the module cache and the directories that
+// replace directives name. It never runs the go command and never touches
+// the network.
 package modres
 
 import (
@@ -16,6 +17,8 @@ import (
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
+
+	"github.com/shazow/go-whatchanged/internal/vfs"
 )
 
 // FS is the read-only filesystem surface the resolver needs.
@@ -32,10 +35,12 @@ type Env struct {
 
 // DefaultEnv locates GOROOT and GOMODCACHE from the runtime and environment.
 func DefaultEnv() (Env, error) {
+	// runtime.GOROOT is deprecated in favour of asking the go command, which
+	// this tool never runs. It returns $GOROOT when set and the root the
+	// binary was built with otherwise, and the check below catches a stale
+	// one.
+	//lint:ignore SA1019 the go command is off limits; see above.
 	goroot := runtime.GOROOT()
-	if goroot == "" {
-		goroot = os.Getenv("GOROOT")
-	}
 	if goroot == "" {
 		return Env{}, errors.New("cannot locate GOROOT: set the GOROOT environment variable")
 	}
@@ -108,7 +113,9 @@ func New(fs FS, root string, env Env) (*Resolver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w (GOPATH mode is not supported)", gomod, err)
 	}
-	mf, err := modfile.ParseLax(gomod, data, nil)
+	// This is the main module's go.mod, so parse it in full: the lax parser
+	// meant for dependencies drops replace directives.
+	mf, err := modfile.Parse(gomod, data, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -160,9 +167,6 @@ func New(fs FS, root string, env Env) (*Resolver, error) {
 	return r, nil
 }
 
-// Root returns the main module's root directory.
-func (r *Resolver) Root() string { return r.root }
-
 // ModPath returns the main module path.
 func (r *Resolver) ModPath() string { return r.modPath }
 
@@ -174,9 +178,6 @@ func (r *Resolver) GoVersion() string { return r.goVersion }
 // version when that file cannot be read.
 func (r *Resolver) StdGoVersion() string { return r.stdGo }
 
-// Env returns the toolchain locations in use.
-func (r *Resolver) Env() Env { return r.env }
-
 // Resolve maps importPath to a directory. fromDir is the directory of the
 // importing package (or "" when unknown); it is used to honour GOROOT's
 // vendor directory when standard library packages import golang.org/x code.
@@ -185,12 +186,24 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 		return Location{}, fmt.Errorf("relative import %q is not supported", importPath)
 	}
 
-	// Main module.
-	if importPath == r.modPath {
-		return Location{Dir: r.root, Kind: Main, GoVersion: r.goVersion}, nil
+	// The module providing a package is the one with the longest matching
+	// path among the main module and the require directives, as in the go
+	// command: a nested module that go.mod requires serves its packages
+	// from the module cache (or its replacement), not from the main
+	// module's tree, which discover skips for it anyway.
+	var best module.Version
+	for _, req := range r.requires {
+		if (importPath == req.Path || strings.HasPrefix(importPath, req.Path+"/")) && len(req.Path) > len(best.Path) {
+			best = req
+		}
 	}
-	if rest, ok := strings.CutPrefix(importPath, r.modPath+"/"); ok {
-		return Location{Dir: joinPath(r.root, rest), Kind: Main, GoVersion: r.goVersion}, nil
+	if len(best.Path) <= len(r.modPath) {
+		if importPath == r.modPath {
+			return Location{Dir: r.root, Kind: Main, GoVersion: r.goVersion}, nil
+		}
+		if rest, ok := strings.CutPrefix(importPath, r.modPath+"/"); ok {
+			return Location{Dir: joinPath(r.root, rest), Kind: Main, GoVersion: r.goVersion}, nil
+		}
 	}
 
 	// Standard library, including GOROOT/src/vendor for std-internal imports.
@@ -201,21 +214,16 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 			return Location{Dir: vendored, Kind: Std, GoVersion: r.stdGo}, nil
 		}
 	}
+	// A path whose first element has no dot is a standard library package
+	// when GOROOT has it; otherwise a module may still provide it, which
+	// the go command allows for replaced modules.
 	if first, _, _ := strings.Cut(importPath, "/"); !strings.Contains(first, ".") {
 		dir := filepath.Join(gorootSrc, filepath.FromSlash(importPath))
-		if !r.fs.IsDir(dir) {
-			return Location{}, fmt.Errorf("not found in GOROOT (%s)", r.env.GOROOT)
+		if r.fs.IsDir(dir) {
+			return Location{Dir: dir, Kind: Std, GoVersion: r.stdGo}, nil
 		}
-		return Location{Dir: dir, Kind: Std, GoVersion: r.stdGo}, nil
-	}
-
-	// Longest-prefix match over require directives.
-	var best module.Version
-	for _, req := range r.requires {
-		if importPath == req.Path || strings.HasPrefix(importPath, req.Path+"/") {
-			if len(req.Path) > len(best.Path) {
-				best = req
-			}
+		if best.Path == "" {
+			return Location{}, fmt.Errorf("not found in GOROOT (%s)", r.env.GOROOT)
 		}
 	}
 	if best.Path == "" {
@@ -280,7 +288,7 @@ func (r *Resolver) moduleGoVersion(modRoot string) string {
 // joinPath joins a root with a slash-separated relative path, preserving the
 // root's flavour (synthetic slash paths vs. host paths).
 func joinPath(root, rel string) string {
-	if strings.HasPrefix(root, "/@") {
+	if strings.HasPrefix(root, vfs.SyntheticPrefix) {
 		return path.Join(root, rel)
 	}
 	return filepath.Join(root, filepath.FromSlash(rel))

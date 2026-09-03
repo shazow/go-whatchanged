@@ -1,20 +1,20 @@
-// Package whatchanged computes a colorized diff of a Go module's exported API
-// between a git commit and the working tree (or another commit), without
+// Package whatchanged computes a semantic diff of a Go module's exported API
+// between two git revisions, or a revision and the working tree, without
 // writing to disk or invoking the go command.
 package whatchanged
 
 import (
 	"fmt"
-	"go/build"
 	"go/token"
 	"go/types"
 	"go/version"
 	"io"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 
@@ -122,7 +122,7 @@ func ParseFailOn(s string) (FailOn, error) {
 	}
 }
 
-// ParseFormat parses a --format value: "text", "markdown" or "json".
+// ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
 func ParseFormat(s string) (render.Format, error) {
 	return render.ParseFormat(s)
 }
@@ -138,7 +138,7 @@ func ParseFilter(s string) (render.Visibility, error) {
 }
 
 // threshold is the lowest level that fails, or ok=false for FailNever.
-func (f FailOn) threshold() (min render.Level, ok bool) {
+func (f FailOn) threshold() (floor render.Level, ok bool) {
 	switch f {
 	case FailMajor:
 		return render.Major, true
@@ -258,7 +258,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 // exitCode derives the exit code from the summary and the --exit-fail
 // threshold.
 func exitCode(sum render.Summary, fail FailOn) int {
-	min, ok := fail.threshold()
+	floor, ok := fail.threshold()
 	if !ok {
 		if sum.Incompatible > 0 {
 			return ExitIncompatible
@@ -266,7 +266,7 @@ func exitCode(sum render.Summary, fail FailOn) int {
 		return ExitClean
 	}
 	lvl := sum.Level()
-	if lvl < min {
+	if lvl < floor {
 		return ExitClean
 	}
 	switch lvl {
@@ -288,38 +288,49 @@ type sideSpec struct {
 	mounts []vfs.Mount // extra mounts, such as a test's in-memory module cache
 }
 
-// side is a fully loaded side.
+// side is one side of the diff: sideSpec.mount serves its tree and loadSide
+// type-checks its packages.
 type side struct {
-	rev      string // git revision, empty for a directory side
-	label    string
-	prefix   string // path prefix rewritten to label+":" in messages
-	overlay  *vfs.Overlay
-	ctxt     build.Context
-	res      *modres.Resolver
-	ld       *loader.Loader
-	pkgs     map[string]*types.Package
-	internal map[string]bool // import paths of internal packages
-	all      []string        // every import path Options.Filter selects, before Options.Packages and Exclude
-	problem  map[string]string
-	notes    []string // module-level warnings, reported under the module path
+	rev       string // git revision, empty for a directory side
+	label     string
+	mountPath string // synthetic path the side's tree is mounted at, "" on disk
+	overlay   *vfs.Overlay
+	root      string // the module root within the overlay
+	prefix    string // root as a path prefix, rewritten to label+":" in messages
+	res       *modres.Resolver
+	ld        *loader.Loader
+	pkgs      map[string]*types.Package
+	internal  map[string]bool // import paths of internal packages
+	all       []string        // every import path Options.Filter selects, before Options.Packages and Exclude
+	problem   map[string]string
+	notes     []string // module-level warnings, reported under the module path
 }
 
 // rewrite turns the synthetic mount paths in a message into "<rev>:"
 // prefixes, so that positions read like git paths; on the working tree side
-// positions become module-relative, like git diff.
+// positions become module-relative, like git diff. A file outside the module
+// root but inside the mounted tree (a directory replacement) is named
+// relative to the tree instead.
 func (s *side) rewrite(msg string) string {
-	if s.rev == "" {
-		return strings.ReplaceAll(msg, s.prefix, "")
+	label := ""
+	if s.rev != "" {
+		label = s.label + ":"
 	}
-	return strings.ReplaceAll(msg, s.prefix, s.label+":")
+	msg = strings.ReplaceAll(msg, s.prefix, label)
+	if s.mountPath != "" {
+		msg = strings.ReplaceAll(msg, s.mountPath+"/", label)
+	}
+	return msg
 }
 
 // position converts a token position on this side into a render.Position.
+// Positions are relative to the module root, so a declaration outside it
+// (a field or method promoted from a dependency) has none.
 func (s *side) position(p token.Position) render.Position {
-	if !p.IsValid() {
+	file, ok := strings.CutPrefix(p.Filename, s.prefix)
+	if !p.IsValid() || !ok {
 		return render.Position{}
 	}
-	file := strings.TrimPrefix(p.Filename, s.prefix)
 	return render.Position{Rev: s.rev, File: filepath.ToSlash(file), Line: p.Line, Col: p.Column}
 }
 
@@ -337,7 +348,7 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 	if head.rev == LatestRelease {
 		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
 	}
-	rev, baseVersion, err := resolveBase(open, base.rev, head, rel)
+	rev, baseVersion, err := resolveBase(open, base.rev, head, rel, env)
 	if err != nil {
 		return nil, err
 	}
@@ -357,13 +368,10 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 		sides [2]*side
 		errs  [2]error
 	)
-	specs := [2]sideSpec{base, head}
-	for i := range specs {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			sides[i], errs[i] = loadSide(open, specs[i], rel, env, opts, fset, shared)
-		}(i)
+	for i, spec := range [2]sideSpec{base, head} {
+		wg.Go(func() {
+			sides[i], errs[i] = loadSide(open, spec, rel, env, opts, fset, shared)
+		})
 	}
 	wg.Wait()
 	for _, err := range errs {
@@ -371,10 +379,7 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 			return nil, err
 		}
 	}
-	res, err := diffSides(sides[0], sides[1], fset)
-	if err != nil {
-		return nil, err
-	}
+	res := diffSides(sides[0], sides[1], fset)
 	res.Base, res.Head = sides[0].label, sides[1].label
 	if baseVersion != "" {
 		res.BaseVersion = baseVersion
@@ -389,14 +394,10 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 	var out []render.Warning
 	for _, pat := range patterns {
-		matched := false
-		for _, s := range []*side{base, head} {
-			for _, p := range s.all {
-				if discover.MatchPattern(pat, s.res.ModPath(), p) {
-					matched = true
-				}
-			}
-		}
+		p := discover.Compile(pat)
+		matched := slices.ContainsFunc([]*side{base, head}, func(s *side) bool {
+			return slices.ContainsFunc(s.all, func(path string) bool { return p.Match(s.res.ModPath(), path) })
+		})
 		if !matched {
 			out = append(out, render.Warning{Package: head.res.ModPath(), Message: fmt.Sprintf("--pkg %q matched no packages", pat)})
 		}
@@ -404,10 +405,11 @@ func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 	return out
 }
 
-func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
-	goos, goarch := opts.GOOS, opts.GOARCH
+// mount serves the tree the spec names, from the git revision, the
+// filesystem or the directory on disk, and returns the side with its label,
+// its overlay and the module root within it; loadSide does the rest.
+func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 	s := &side{rev: spec.rev}
-	var root string
 	switch {
 	case spec.rev != "":
 		repo, err := open()
@@ -419,43 +421,51 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			return nil, err
 		}
 		s.label = spec.rev
-		mount := vfs.GitMountPath(tree)
-		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
-		root = path.Join(mount, rel)
-		s.prefix = root + "/"
+		s.mountPath = vfs.GitMountPath(tree)
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
+		s.root = path.Join(s.mountPath, rel)
+		s.prefix = s.root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
-		mount := vfs.SyntheticPrefix + "worktree"
-		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: mount, FS: spec.fs}}, spec.mounts...)...)
-		root = path.Join(mount, rel)
-		s.prefix = root + "/"
+		s.mountPath = vfs.SyntheticPrefix + "worktree"
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: spec.fs}}, spec.mounts...)...)
+		s.root = path.Join(s.mountPath, rel)
+		s.prefix = s.root + "/"
 	default:
 		s.label = "working tree"
 		s.overlay = vfs.NewOverlay(spec.mounts...)
-		root = spec.dir
-		s.prefix = root + string(filepath.Separator)
+		s.root = spec.dir
+		s.prefix = s.root + string(filepath.Separator)
 	}
-	s.ctxt = vfs.Context(s.overlay, goos, goarch)
+	return s, nil
+}
 
-	res, err := modres.New(s.overlay, root, env)
+func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+	s, err := spec.mount(open, rel)
+	if err != nil {
+		return nil, err
+	}
+	ctxt := vfs.Context(s.overlay, opts.GOOS, opts.GOARCH)
+
+	res, err := modres.New(s.overlay, s.root, env)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
 	s.res = res
-	s.ld = loader.New(s.ctxt, fset, res, shared)
+	s.ld = loader.New(ctxt, fset, res, shared)
 	if limit := s.ld.MaxGoVersion(); limit != "" && version.Compare(version.Lang("go"+res.GoVersion()), limit) > 0 {
 		s.notes = append(s.notes, fmt.Sprintf("go.mod requires go %s but go-whatchanged was built with %s; type-checking as %s",
 			res.GoVersion(), limit, limit))
 	}
 
-	found, problems, err := discover.Packages(&s.ctxt, s.overlay, root, res.ModPath(), opts.Filter != render.Public)
+	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), opts.Filter != render.Public)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
 	s.problem = problems
 	s.pkgs = make(map[string]*types.Package, len(found))
 	s.internal = make(map[string]bool)
-	filter := discover.Filter{Include: opts.Packages, Exclude: opts.Exclude}
+	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
 		if !opts.Filter.Includes(found[p].Internal) {
@@ -466,10 +476,10 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			paths = append(paths, p)
 		}
 	}
-	sort.Strings(s.all)
-	sort.Strings(paths)
+	slices.Sort(s.all)
+	slices.Sort(paths)
 	for _, p := range paths {
-		pkg, err := s.ld.Load(p, found[p].Dir)
+		pkg, err := s.ld.Load(p, found[p].Dir, found[p].Build)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s.label, err)
 		}
@@ -498,7 +508,7 @@ func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {
 	return commit.Tree()
 }
 
-func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
+func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 	union := map[string]bool{}
 	for p := range base.pkgs {
 		union[p] = true
@@ -506,14 +516,9 @@ func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
 	for p := range head.pkgs {
 		union[p] = true
 	}
-	paths := make([]string, 0, len(union))
-	for p := range union {
-		paths = append(paths, p)
-	}
-	sort.Strings(paths)
 
 	res := &render.Result{}
-	for _, p := range paths {
+	for _, p := range slices.Sorted(maps.Keys(union)) {
 		old, inBase := base.pkgs[p]
 		nw, inHead := head.pkgs[p]
 		pkg := render.Package{Path: p, Internal: base.internal[p] || head.internal[p]}
@@ -528,7 +533,7 @@ func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
 			nw = types.NewPackage(p, old.Name())
 		}
 		for _, c := range apidiff.Changes(old, nw).Changes {
-			rc := render.FromAPIDiff(c)
+			rc := render.Change{Message: c.Message, Compatible: c.Compatible}
 			annotate(&rc, fset, base, head, old, nw)
 			pkg.Changes = append(pkg.Changes, rc)
 		}
@@ -547,7 +552,7 @@ func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
 	}
 
 	res.Warnings = collectWarnings(base, head)
-	return res, nil
+	return res
 }
 
 // annotate fills in the declarations and the position of the symbol a
@@ -598,27 +603,16 @@ func collectWarnings(sides ...*side) []render.Warning {
 		out = append(out, render.Warning{Package: pkg, Message: msg})
 	}
 	for _, s := range sides {
-		rewrite := s.rewrite
 		for _, n := range s.notes {
 			add(s.res.ModPath(), n)
 		}
-		pkgs := make([]string, 0)
-		for p := range s.problem {
-			pkgs = append(pkgs, p)
-		}
-		sort.Strings(pkgs)
-		for _, p := range pkgs {
-			add(p, rewrite(s.problem[p]))
+		for _, p := range slices.Sorted(maps.Keys(s.problem)) {
+			add(p, s.rewrite(s.problem[p]))
 		}
 		warnings := s.ld.Warnings()
-		pkgs = pkgs[:0]
-		for p := range warnings {
-			pkgs = append(pkgs, p)
-		}
-		sort.Strings(pkgs)
-		for _, p := range pkgs {
+		for _, p := range slices.Sorted(maps.Keys(warnings)) {
 			for _, m := range warnings[p] {
-				add(p, rewrite(m))
+				add(p, s.rewrite(m))
 			}
 		}
 	}
