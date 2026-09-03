@@ -7,9 +7,9 @@
 What changed in the public API?
 
 `go-whatchanged` prints a semantic diff of a Go module's exported API between
-two git revisions, or between a revision and whatever is in your working
-tree, and names the semantic version the changes call for. The comparison
-itself is done by [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff);
+two git revisions, or between a revision and your uncommitted work, and
+names the semantic version the changes call for. The comparison itself is
+done by [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff);
 this tool makes it work on any git history without touching your checkout.
 
 - **Read-only.** No temporary directories, no clones, no worktrees, no `go`
@@ -49,10 +49,12 @@ example.com/m/util
 go install github.com/shazow/go-whatchanged@latest
 ```
 
-Building needs Go 1.26 or newer. The tool never downloads anything, so the
-module's dependencies must already be in the module cache: run `go mod
-download` first. When the base revision pins other versions than the
-checkout, download those from a copy of its `go.mod`:
+Needs Go 1.26 or newer to build. Nothing is ever downloaded at run time,
+so the module's dependencies have to be in the module cache already: `go
+mod download` in the checkout covers what its `go.mod` pins. If the base
+revision pins versions your checkout does not have, the error names the
+missing module, and the quickest fix is to download from a copy of that
+revision's `go.mod`:
 
 ```
 mkdir -p /tmp/base && git show v1.4.0:go.mod > /tmp/base/go.mod && (cd /tmp/base && go mod download)
@@ -98,17 +100,11 @@ Options:
 `GOOS` and `GOARCH` in the environment select the build target, as for the
 `go` command.
 
-### Since the last release
+### Cutting a release
 
-`@latest` as the base stands for the highest release tag of the module
-among the ancestors of the head commit (`HEAD` when the head is the working
-tree). Release tags are the ones the `go` command would publish: `v1.4.0`,
-`sub/v1.4.0` for a module below the repository root, `v2.x.y` for a `/v2`
-module. Tags like `1.4.0` or `v1.4` are ignored, and a tag on a branch that
-was never merged is not an ancestor.
-
-The head commit's own tags are skipped, so on a freshly tagged commit
-`@latest` is the *previous* release and the diff describes the new one:
+Before tagging, `go-whatchanged @latest` shows everything since the last
+release and the version it calls for. After tagging, `go-whatchanged
+@latest v1.4.0` lists what the tag ships, for the release notes:
 
 ```
 $ go-whatchanged @latest v1.4.0
@@ -124,48 +120,54 @@ example.com/m/internal/cache (internal)
 internal: 1 package changed · 1 incompatible · 1 compatible
 ```
 
-The flip side: with uncommitted changes on top of the commit that carries
-the latest tag, `@latest` skips that tag and picks the release before it,
-or fails when there is none. Name the tag instead: `go-whatchanged v1.4.0`.
+`@latest` is the highest release tag among the ancestors of the head
+commit (`HEAD` when the head is the working tree), skipping the head
+commit's own tags, which is why the second command reports `v1.3.0 →
+v1.4.0` rather than an empty diff. Release tags are the ones the `go`
+command would publish: `v1.4.0`, `sub/v1.4.0` for a module below the
+repository root, `v2.x.y` for a `/v2` module. Tags like `1.4.0` or `v1.4`
+are ignored, and a tag on an unmerged branch is not an ancestor.
 
-Whenever the base is a release tag, the summary names the version the
-changes call for. An incompatible change asks for the next major, or the
-next minor while the module is still at `v0`; a pre-release always suggests
-its final release.
+One gotcha: with uncommitted changes on the tagged commit itself, `@latest`
+skips that tag and picks the release before it, or fails when there is
+none. Name the tag: `go-whatchanged v1.4.0`.
 
-### Choosing packages
+The version the summary suggests is the next major for an incompatible
+change, or the next minor while the module is still at `v0`; a
+pre-release always suggests its final release.
 
-`--pkg` and `--exclude` take import paths or module-relative paths, and
-`...` matches anything, as in the `go` command: `store/...` is the store
-package and everything below it. The summary and the exit code then
-describe the selected packages only. `main` packages are never diffed.
+### Large modules and applications
 
-By default the public API comes first with its summary line, and the
-internal packages follow with a summary line of their own, as above.
-Internal packages never count towards the public API's totals, the
-required release or the exit code, which keeps the default useful for
-reviewing an application, not only a library. `--filter=public` leaves
-them out, `--filter=internal` shows them alone, and `breaking` narrows any
-of these to incompatible changes: `--filter=public,breaking`. The counts
-in the summary always describe the full diff.
+In a large module, `--pkg` and `--exclude` narrow the diff. They take
+import paths or module-relative paths, and `...` matches anything, as in
+the `go` command: `store/...` is the store package and everything below
+it. The summary and the exit code then describe the selection only. `main`
+packages are never diffed.
+
+When you are reviewing an application rather than a library, the internal
+packages matter too. By default they are listed after the public API with
+a summary line of their own, as in the example above, and they never count
+towards the public API's totals, the required release or the exit code.
+`--filter=public` leaves them out, `--filter=internal` shows only them, and
+`breaking` narrows any of these to incompatible changes:
+`--filter=public,breaking`. The counts in the summary always describe the
+full diff.
 
 ## Reading the output
 
 Bold marks an incompatible change: a removal, a changed signature, a
 method added to an interface. A changed symbol shows its old declaration
-greyed out above the new one in orange, rather than red and green, so
-that the pair reads as one edit and long signatures can be compared
-column by column.
+greyed out above the new one in orange, rather than red and green, so that
+the pair reads as one edit and long signatures line up for comparison.
 
-With `--pos`, each change ends with the position of its declaration:
-prefixed with the revision on the base side (`v1.4.0:store/store.go:11:18`)
-and relative to the module root in the working tree, so that editors can
-open it.
+`--pos` appends the position of each declaration: prefixed with the
+revision on the base side (`v1.4.0:store/store.go:11:18`), and relative to
+the module root in the working tree, so that your editor can open it.
 
-`--signatures=minimal` prints apidiff's message instead, one line per
-change, such as `~ Open: changed from func(string) (*Client, error) to
-func(string, Options) (*Client, error)`. The full layout uses the same
-line for a change with no declaration to show, such as `+ package added`.
+`--signatures=minimal` prints apidiff's one-line message per change
+instead, such as `~ Open: changed from func(string) (*Client, error) to
+func(string, Options) (*Client, error)`. The full layout falls back to the
+same line when there is no declaration to show, as in `+ package added`.
 
 | Glyph | Meaning |
 |---|---|
@@ -176,8 +178,8 @@ line for a change with no declaration to show, such as `+ package added`.
 
 ## Output formats
 
-`--format=markdown` renders each package as a fenced `diff` block, which
-GitHub colors, for a pull request comment or a job summary. A code block
+For a pull request comment or a job summary, `--format=markdown` renders
+each package as a fenced `diff` block, which GitHub colors. A code block
 has no bold, so an incompatible `+` or `~` line is marked `!` instead,
 which GitHub colors orange; a removal keeps its `-`:
 
@@ -202,8 +204,8 @@ $ go-whatchanged --format=markdown @latest
 2 packages changed · 3 incompatible · 2 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
 ````
 
-`--format=json` prints one document for tools and bots; its field names
-are part of the tool's interface:
+For scripts and bots, `--format=json` prints one document whose field
+names are part of the tool's interface:
 
 ```json
 {
@@ -251,10 +253,11 @@ lines stderr would show.
 
 ## Exit codes
 
-The exit code is 0 when no change is incompatible, 1 when one is, and 2
-on an error. For CI, `--exit-fail=LEVEL` turns the semantic version bump
-the changes would require into the exit code, whenever that bump is
-`LEVEL` or higher, so `--exit-fail=patch` reports the bump itself:
+In a script, the exit code is 0 when no change is incompatible, 1 when
+one is, and 2 on an error. To gate on a release level instead,
+`--exit-fail=LEVEL` exits with a code naming the bump the changes would
+require, whenever it is `LEVEL` or higher; `--exit-fail=patch` therefore
+always reports the bump:
 
 | Required bump | `--exit-fail=major` | `--exit-fail=minor` | `--exit-fail=patch` |
 |---|---:|---:|---:|
@@ -264,8 +267,9 @@ the changes would require into the exit code, whenever that bump is
 
 ## GitHub Action
 
-The repository is also an action. It builds the tool from the ref that pins
-it, runs it on the checkout and appends the diff to the job summary:
+To get the diff on every pull request, add the action to a workflow. It
+builds the tool from the ref that pins it, runs it on the checkout and
+appends the diff to the job summary:
 
 ```yaml
 on: pull_request
@@ -311,9 +315,9 @@ to the checkout.
 | `summary` | `true` | Append the diff to the job summary. |
 | `title` | `API changes` | Heading above the diff in the summary. Empty for none. |
 
-The summary line becomes an annotation on the run, a warning when there
-are incompatible changes, and the report and its numbers are outputs for
-later steps:
+To use the result in later steps: the summary line becomes an annotation
+on the run, a warning when there are incompatible changes, and the report
+and its numbers are outputs:
 
 | Output | Value |
 |---|---|
@@ -324,7 +328,7 @@ later steps:
 | `summary` | the summary line(s) as plain text |
 | `markdown`, `json` | the whole report in either format |
 
-A pull request comment is one more step:
+To post it as a pull request comment, add one step:
 
 ```yaml
       - uses: shazow/go-whatchanged@main
@@ -336,7 +340,8 @@ A pull request comment is one more step:
         run: gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
 ```
 
-Without the action, the same job in plain steps:
+On another CI system, or without the action, the same job is a few plain
+steps:
 
 ```yaml
 - uses: actions/checkout@v4
@@ -355,8 +360,8 @@ Without the action, the same job in plain steps:
 
 ## Guarantees
 
-The tool is safe to run at any time, in any state of your checkout,
-including a linked worktree created with `git worktree add`:
+Run it on a dirty checkout, on a shared CI runner, in a linked worktree
+from `git worktree add`: nothing is changed.
 
 - **No disk writes.** No temporary directories, no checkouts, no build
   cache, no `go.sum` edits. It only reads the repository, `.git`,
@@ -372,17 +377,18 @@ including a linked worktree created with `git worktree add`:
 
 ## How it works
 
-Each side gets its own `go/build` context whose filesystem hooks are served
-either from the git tree, mounted at a synthetic path, or from the working
-directory; everything outside the module falls through to the real
-filesystem, so `$GOROOT` and the module cache stay reachable. Import paths
-are resolved from `go.mod` alone, which is sound for modules at `go 1.17`
-or newer because graph pruning guarantees that every module providing an
-imported package is listed. The two sides load concurrently, and dependency
-packages are type-checked once and shared between them when their imports
-resolve identically on both; otherwise, as when a dependency imports the
-main module, they are checked once per side, so that neither side is ever
-linked against the other side's packages.
+For the curious, and for anyone debugging an import that resolves
+unexpectedly: each side gets its own `go/build` context whose filesystem
+hooks are served either from the git tree, mounted at a synthetic path, or
+from the working directory; everything outside the module falls through
+to the real filesystem, so `$GOROOT` and the module cache stay reachable.
+Import paths are resolved from `go.mod` alone, which is sound for modules
+at `go 1.17` or newer because graph pruning guarantees that every module
+providing an imported package is listed. The two sides load concurrently,
+and dependency packages are type-checked once and shared between them when
+their imports resolve identically on both; otherwise, as when a dependency
+imports the main module, they are checked once per side, so that neither
+side is ever linked against the other side's packages.
 
 ## Limitations
 
