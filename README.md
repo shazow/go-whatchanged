@@ -53,7 +53,8 @@ Options:
   --repo=DIR         path inside a git repository (default: current directory)
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
-  --filter=WHICH     all | public | internal: which packages take part, and
+  --filter=WHICH     all | public | internal: which packages take part, main
+                     to include main packages too, and
                      breaking: only incompatible changes; comma-separated or
                      repeatable (default all; see below)
   --signatures=HOW   full | minimal: show each change as its old and new
@@ -122,6 +123,25 @@ line, so it never fails a build. `breaking` narrows the diff to
 incompatible changes and combines with the others, comma-separated or
 repeated: `--filter=public,breaking`, or `--filter internal --filter
 breaking`. The summary always counts the full diff.
+
+Main packages, the commands, are left out by default: nothing can import
+them, so they have no API to speak of. `main` adds them, and since they are
+no more public than an `internal` package they are listed in the internal
+section, marked `(main)`, and never count towards the public totals, the
+required release or the exit code. It combines with the others the same way:
+`--filter=main` is every package including the commands, and
+`--filter=public,main` the importable API followed by the commands outside
+`internal` directories.
+
+```
+$ go-whatchanged --filter=main
+no exported API changes
+
+example.com/m/cmd/m (main)
+  - func Version() string
+
+internal: 1 package changed · 1 incompatible · 0 compatible
+```
 
 ### Since the last release
 
@@ -231,10 +251,10 @@ full diff.
 `head` is the revision given or the literal `working tree`. `base_version`
 and `next_version` appear when the base is a release tag. A package's
 `status` is `changed`, `new` or `removed`, and `"internal": true` marks an
-internal package, which the summary also counts separately under
-`summary.internal` unless `--filter=public` left them out (the public
-counts and `release` describe the public packages in the selection, none
-under `--filter=internal`). A change's `kind` is `added`,
+internal package and `"main": true` a main package (with `--filter=main`),
+both of which the summary counts separately under `summary.internal` unless
+`--filter=public` left them out (the public counts and `release` describe
+the public packages in the selection, none under `--filter=internal`). A change's `kind` is `added`,
 `removed` or `changed`, and `symbol` is empty for a whole-package change
 (`package added`). `before` and `after` hold what the text layout prints on
 its `-` and `+` lines: the old declaration of a removed symbol, the new one
@@ -295,7 +315,7 @@ summary. Here they are with their defaults:
           working-directory: . # the module, for repositories with several
           pkg: ""             # patterns, comma- or newline-separated
           exclude: ""
-          filter: all         # all | public | internal
+          filter: all         # all | public | internal, plus main for commands
           breaking: false
           signatures: full    # full | minimal
           pos: false

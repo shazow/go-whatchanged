@@ -105,14 +105,20 @@ func (c Change) Kind() string {
 }
 
 // Package is the diff of one package. An Internal package (one below an
-// internal directory) is shown but kept out of the public API's counts and
-// required release level.
+// internal directory) or a Main package (a command) is shown but kept out
+// of the public API's counts and required release level.
 type Package struct {
 	Path     string
 	Status   Status
 	Internal bool
+	Main     bool
 	Changes  []Change
 }
+
+// secondary reports whether the package is kept out of the public API: an
+// internal package or a main package, neither of which can be imported from
+// outside the module.
+func (p Package) secondary() bool { return p.Internal || p.Main }
 
 // Warning is a non-fatal problem encountered while loading one side.
 type Warning struct {
@@ -253,7 +259,8 @@ func Summarize(res Result) Summary {
 	return summarize(res, false)
 }
 
-// SummarizeInternal counts the changes of internal packages.
+// SummarizeInternal counts the changes of the packages outside the public
+// API: internal packages and main packages.
 func SummarizeInternal(res Result) Summary {
 	return summarize(res, true)
 }
@@ -261,7 +268,7 @@ func SummarizeInternal(res Result) Summary {
 func summarize(res Result, internal bool) Summary {
 	var s Summary
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 || p.Internal != internal {
+		if len(p.Changes) == 0 || p.secondary() != internal {
 			continue
 		}
 		s.PackagesChanged++
@@ -494,6 +501,9 @@ func header(p Package) string {
 	if p.Internal {
 		notes = append(notes, "internal")
 	}
+	if p.Main {
+		notes = append(notes, "main")
+	}
 	switch p.Status {
 	case New:
 		notes = append(notes, "new")
@@ -520,8 +530,9 @@ type section struct {
 
 // sections splits res into the sections opts.Filter selects. The public
 // API comes first, reduced to its summary line when nothing changed, and
-// the internal packages after it; with All the internal section appears
-// only when some internal package changed.
+// the internal packages (and main packages, which never are public) after
+// it; unless Internal, the internal section appears only when some package
+// in it changed.
 func sections(res Result, opts Options) []section {
 	var out []section
 	if opts.Filter != Internal {
@@ -532,12 +543,12 @@ func sections(res Result, opts Options) []section {
 		}
 		out = append(out, s)
 	}
-	if isum := SummarizeInternal(res); opts.Filter == Internal || (opts.Filter == All && isum.PackagesChanged > 0) {
-		out = append(out, section{internal: true, summary: internalSummary(isum), secondary: opts.Filter == All})
+	if isum := SummarizeInternal(res); opts.Filter == Internal || isum.PackagesChanged > 0 {
+		out = append(out, section{internal: true, summary: internalSummary(isum), secondary: opts.Filter != Internal})
 	}
 	for i := range out {
 		for _, p := range res.Packages {
-			if p.Internal != out[i].internal {
+			if p.secondary() != out[i].internal {
 				continue
 			}
 			if rows, _ := packageRows(p, opts); len(rows) > 0 {
@@ -781,6 +792,7 @@ type jsonPackage struct {
 	Path     string       `json:"path"`
 	Status   string       `json:"status"`
 	Internal bool         `json:"internal,omitempty"`
+	Main     bool         `json:"main,omitempty"`
 	Changes  []jsonChange `json:"changes"`
 }
 
@@ -828,15 +840,14 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			Release:         strings.ToLower(sum.Release()),
 		},
 	}
-	if opts.Filter != Public {
-		isum := SummarizeInternal(res)
+	if isum := SummarizeInternal(res); opts.Filter != Public || isum.PackagesChanged > 0 {
 		rep.Summary.Internal = &jsonCounts{PackagesChanged: isum.PackagesChanged, Incompatible: isum.Incompatible, Compatible: isum.Compatible}
 	}
 	for _, p := range res.Packages {
 		if len(p.Changes) == 0 {
 			continue
 		}
-		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Changes: []jsonChange{}}
+		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Main: p.Main, Changes: []jsonChange{}}
 		for _, c := range p.Changes {
 			if opts.BreakingOnly && c.Compatible {
 				continue
