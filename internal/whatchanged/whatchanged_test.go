@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"maps"
 	"os"
 	"path"
 	"path/filepath"
@@ -822,14 +823,36 @@ func TestReplaceDirectory(t *testing.T) {
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
+}
 
-	// A type error in the replaced module is reported against the tree it
-	// was read from, never as a synthetic mount path.
+// A replacement outside the module root but inside the repository, ../lib
+// from sub, is read from the tree like the module itself, so a problem in
+// it is named by its path in the tree rather than by a synthetic mount
+// path.
+func TestReplaceDirectoryOutsideModule(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.remove("go.mod")
+	f.write("sub/go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/lib v0.0.0\n\nreplace example.com/lib => ../lib\n")
+	f.write("lib/go.mod", "module example.com/lib\n\ngo 1.24\n")
 	f.write("lib/lib.go", "package lib\n\ntype Conn struct{}\n\nvar Broken undefinedType\n")
-	f.commit("broken")
-	r = f.mustRun("HEAD", "", Options{})
-	if want := "warn: example.com/lib: HEAD:lib/lib.go:5:12: undefined: undefinedType\nwarn: example.com/lib: lib/lib.go:5:12: undefined: undefinedType\n"; r.stderr != want {
-		t.Errorf("stderr = %q\nwant     %q", r.stderr, want)
+	f.write("sub/a/a.go", "package a\n\nimport \"example.com/lib\"\n\nfunc Open() lib.Conn { return lib.Conn{} }\n")
+	f.commit("base")
+
+	var out, errb bytes.Buffer
+	opts := Options{Stdout: &out, Stderr: &errb}
+	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := finish(res, opts); err != nil {
+		t.Fatal(err)
+	}
+	if want := "warn: example.com/lib: HEAD:lib/lib.go:5:12: undefined: undefinedType\nwarn: example.com/lib: lib/lib.go:5:12: undefined: undefinedType\n"; errb.String() != want {
+		t.Errorf("stderr = %q\nwant     %q", errb.String(), want)
+	}
+	if want := "no exported API changes\n"; out.String() != want {
+		t.Errorf("stdout = %q, want %q", out.String(), want)
 	}
 }
 
@@ -1071,9 +1094,9 @@ func goCache() string {
 // asserts that GOROOT, the module cache, the build cache and the repository
 // itself are untouched. It is the one sequential test of the package, so
 // nothing else runs in this process meanwhile; the go command, though, may
-// still be compiling other packages into GOCACHE, so a root that changed
-// is checked again with a fresh run. Something the tool itself wrote would
-// show up every time.
+// still be compiling this module's other test binaries into GOCACHE when
+// the test starts, so the baseline is taken once nothing has changed for a
+// moment.
 func TestWriteGuard(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping filesystem snapshot in -short mode")
@@ -1092,40 +1115,50 @@ func TestWriteGuard(t *testing.T) {
 		"GOCACHE":    goCache(),
 		"repo":       repoDir,
 	}
-	for attempt := 1; ; attempt++ {
-		before := snapshots(t, roots)
-		var out, errb bytes.Buffer
-		code, err := Run(Options{
-			Repo:   repoDir,
-			Base:   "HEAD",
-			GOOS:   runtime.GOOS,
-			GOARCH: runtime.GOARCH,
-			Stdout: &out,
-			Stderr: &errb,
-		})
-		if err != nil {
-			t.Fatalf("Run: %v (stderr: %s)", err, errb.String())
+	before := snapshots(t, roots)
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); {
+		time.Sleep(500 * time.Millisecond)
+		now := snapshots(t, roots)
+		if maps.Equal(now, before) {
+			break
 		}
-		if code == ExitError {
-			t.Fatalf("Run exited %d: %s", code, errb.String())
-		}
-		t.Logf("diff of HEAD vs working tree:\n%s%s", out.String(), errb.String())
-
-		var changed []string
-		for name, root := range roots {
-			if b, a := before[name], snapshotOf(t, root); b != a {
-				changed = append(changed, fmt.Sprintf("%s (%s): %d files before, %d after", name, root, b.count, a.count))
-			}
-		}
-		if len(changed) == 0 {
-			return
-		}
-		if attempt == 3 {
-			t.Errorf("changed during the run:\n%s", strings.Join(changed, "\n"))
-			return
-		}
-		t.Logf("attempt %d: %s; running again", attempt, strings.Join(changed, "; "))
+		t.Logf("waiting: something else is writing to %v", changedRoots(before, now))
+		before = now
 	}
+
+	var out, errb bytes.Buffer
+	code, err := Run(Options{
+		Repo:   repoDir,
+		Base:   "HEAD",
+		GOOS:   runtime.GOOS,
+		GOARCH: runtime.GOARCH,
+		Stdout: &out,
+		Stderr: &errb,
+	})
+	if err != nil {
+		t.Fatalf("Run: %v (stderr: %s)", err, errb.String())
+	}
+	if code == ExitError {
+		t.Fatalf("Run exited %d: %s", code, errb.String())
+	}
+	t.Logf("diff of HEAD vs working tree:\n%s%s", out.String(), errb.String())
+
+	after := snapshots(t, roots)
+	for _, name := range changedRoots(before, after) {
+		t.Errorf("%s (%s) changed during the run: %d files before, %d after", name, roots[name], before[name].count, after[name].count)
+	}
+}
+
+// changedRoots names the roots whose snapshots differ, in order.
+func changedRoots(before, after map[string]snapshot) []string {
+	var out []string
+	for name := range before {
+		if before[name] != after[name] {
+			out = append(out, name)
+		}
+	}
+	slices.Sort(out)
+	return out
 }
 
 func TestExitFail(t *testing.T) {
