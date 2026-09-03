@@ -13,6 +13,7 @@ import (
 	"path"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,6 +225,16 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	return runResult{stdout: out.String(), stderr: errb.String(), code: code, err: err}
 }
 
+// mustRun is run for a diff that is expected to succeed.
+func (f *fixture) mustRun(base, head string, opts Options) runResult {
+	f.t.Helper()
+	r := f.run(base, head, opts)
+	if r.err != nil {
+		f.t.Fatal(r.err)
+	}
+	return r
+}
+
 func mustContain(t *testing.T, got string, want ...string) {
 	t.Helper()
 	for _, w := range want {
@@ -243,13 +254,11 @@ func mustNotContain(t *testing.T, got string, unwanted ...string) {
 }
 
 func TestUnchanged(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d", r.code, ExitClean)
 	}
@@ -262,15 +271,13 @@ func TestUnchanged(t *testing.T) {
 }
 
 func TestAddedAndRemovedPackage(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("old/old.go", "package old\n\nfunc Gone() {}\n\ntype T struct{}\n")
 	f.commit("base")
 	f.remove("old/old.go")
 	f.write("fresh/fresh.go", "package fresh\n\nfunc Hello() {}\n")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout,
 		"example.com/m/fresh (new)\n  + func Hello()\n",
 		"example.com/m/old (removed)\n  - func Gone()\n  - type T struct{}\n",
@@ -281,14 +288,12 @@ func TestAddedAndRemovedPackage(t *testing.T) {
 }
 
 func TestRemovedFunc(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout, "example.com/m/a\n  - func Drop()\n", "would require: MAJOR")
 	mustNotContain(t, r.stdout, "Keep")
 	if r.code != ExitIncompatible {
@@ -297,14 +302,12 @@ func TestRemovedFunc(t *testing.T) {
 }
 
 func TestChangedSignature(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\ntype Client struct{}\n\nfunc (c *Client) Do(n int) {}\n\nfunc Open(name string) error { return nil }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\ntype Client struct{}\n\nfunc (c *Client) Do(n int, tags ...string) {}\n\ntype Options struct{}\n\nfunc Open(name string, o Options) error { return nil }\n")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout,
 		"  - func (c *Client) Do(n int)\n  + func (c *Client) Do(n int, tags ...string)\n",
 		"  - func Open(name string) error\n  + func Open(name string, o Options) error\n",
@@ -313,14 +316,12 @@ func TestChangedSignature(t *testing.T) {
 }
 
 func TestAddedStructFieldIsCompatible(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\ntype Point struct{ X, Y int }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\ntype Point struct{ X, Y, Z int }\n")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout, "  + field Point.Z int\n", "would require: MINOR")
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d (compatible change)", r.code, ExitClean)
@@ -328,14 +329,12 @@ func TestAddedStructFieldIsCompatible(t *testing.T) {
 }
 
 func TestAddedInterfaceMethodIsIncompatibleAddition(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\ntype Sizer interface{ Len() int }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\ntype Sizer interface {\n\tLen() int\n\tSize() int\n}\n")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout, "  + func (Sizer) Size() int\n", "would require: MAJOR")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d", r.code)
@@ -343,6 +342,7 @@ func TestAddedInterfaceMethodIsIncompatibleAddition(t *testing.T) {
 }
 
 func TestIgnoredDirectories(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
@@ -356,10 +356,7 @@ func TestIgnoredDirectories(t *testing.T) {
 	f.write("_skip/s.go", "package skip\n\nfunc Skipped() {}\n")
 	f.write(".hidden/h.go", "package hidden\n\nfunc Dot() {}\n")
 	f.write("a/a_test.go", "package a\n\nfunc TestOnly() {}\n")
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stdout != "no exported API changes\n" {
 		t.Errorf("stdout = %q", r.stdout)
 	}
@@ -369,6 +366,7 @@ func TestIgnoredDirectories(t *testing.T) {
 }
 
 func TestCommittedDirectorySymlinkIsIgnored(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	symlinks, ok := f.fs.(billy.Symlink)
@@ -380,61 +378,62 @@ func TestCommittedDirectorySymlinkIsIgnored(t *testing.T) {
 	}
 	f.commit("base")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stdout != "no exported API changes\n" {
 		t.Errorf("stdout = %q", r.stdout)
 	}
 }
 
 func TestGOOSFiltering(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
 	f.write("a/a_windows.go", "package a\n\nfunc WindowsOnly() {}\n")
 	f.write("a/tagged.go", "//go:build plan9\n\npackage a\n\nfunc Plan9Only() {}\n")
 
-	r := f.run("HEAD", "", Options{GOOS: "linux", GOARCH: "amd64"})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{GOOS: "linux", GOARCH: "amd64"})
 	if r.stdout != "no exported API changes\n" {
 		t.Errorf("linux stdout = %q", r.stdout)
 	}
 
-	r = f.run("HEAD", "", Options{GOOS: "windows", GOARCH: "amd64"})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{GOOS: "windows", GOARCH: "amd64"})
 	mustContain(t, r.stdout, "  + func WindowsOnly()\n")
 	mustNotContain(t, r.stdout, "Plan9Only")
 
-	r = f.run("HEAD", "", Options{GOOS: "plan9", GOARCH: "amd64"})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{GOOS: "plan9", GOARCH: "amd64"})
 	mustContain(t, r.stdout, "  + func Plan9Only()\n")
 	mustNotContain(t, r.stdout, "WindowsOnly")
 }
 
 func TestTypeErrorWarnsButDiffs(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nvar Broken undefinedType\n")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout, "  + func B()\n", "  + var Broken invalid type\n")
 	if want := "warn: example.com/m/a: a/a.go:7:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
 	if r.code != ExitClean {
 		t.Errorf("exit = %d", r.code)
+	}
+
+	// JSON carries the same warning, split into its package and message,
+	// and stderr still gets the line.
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	var rep struct{ Warnings []render.Warning }
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if want := []render.Warning{{Package: "example.com/m/a", Message: "a/a.go:7:12: undefined: undefinedType"}}; !slices.Equal(rep.Warnings, want) {
+		t.Errorf("json warnings = %+v, want %+v", rep.Warnings, want)
+	}
+	if want := "warn: example.com/m/a: a/a.go:7:12: undefined: undefinedType\n"; r.stderr != want {
+		t.Errorf("json: stderr = %q, want %q", r.stderr, want)
 	}
 
 	r = f.run("HEAD", "", Options{Strict: true})
@@ -448,15 +447,13 @@ func TestTypeErrorWarnsButDiffs(t *testing.T) {
 }
 
 func TestTypeErrorOnBaseSideNamesRevision(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nvar Broken undefinedType\n")
 	h := f.commit("base")
 	f.tag("v0.1.0", h)
 	f.write("a/a.go", "package a\n\nvar Broken int\n")
-	r := f.run("v0.1.0", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("v0.1.0", "", Options{})
 	if want := "warn: example.com/m/a: v0.1.0:a/a.go:3:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
@@ -464,16 +461,14 @@ func TestTypeErrorOnBaseSideNamesRevision(t *testing.T) {
 }
 
 func TestBreakingHidesCompatible(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc Drop() {}\n")
 	f.write("b/b.go", "package b\n\nfunc B() {}\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc Added() {}\n")
 	f.write("b/b.go", "package b\n\nfunc B() {}\n\nfunc B2() {}\n")
-	r := f.run("HEAD", "", Options{Breaking: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{Breaking: true})
 	want := "example.com/m/a\n  - func Drop()\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
@@ -481,14 +476,12 @@ func TestBreakingHidesCompatible(t *testing.T) {
 }
 
 func TestBreakingWithOnlyCompatibleChanges(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Added() {}\n")
-	r := f.run("HEAD", "", Options{Breaking: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{Breaking: true})
 	want := "1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
@@ -496,6 +489,7 @@ func TestBreakingWithOnlyCompatibleChanges(t *testing.T) {
 }
 
 func TestHeadCommit(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("one")
@@ -503,17 +497,11 @@ func TestHeadCommit(t *testing.T) {
 	f.commit("two")
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc Uncommitted() {}\n")
 
-	r := f.run("HEAD~1", "HEAD", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD~1", "HEAD", Options{})
 	mustContain(t, r.stdout, "  + func B()\n")
 	mustNotContain(t, r.stdout, "Uncommitted")
 
-	r = f.run("HEAD~1", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD~1", "", Options{})
 	mustContain(t, r.stdout, "  + func B()\n", "  + func Uncommitted()\n")
 }
 
@@ -534,33 +522,12 @@ func diskFixture(t *testing.T) (dir string, base, head plumbing.Hash) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	write := func(name, content string) {
-		t.Helper()
-		full := filepath.Join(dir, name)
-		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
-			t.Fatal(err)
-		}
-	}
-	commit := func(msg string) plumbing.Hash {
-		t.Helper()
-		if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
-			t.Fatal(err)
-		}
-		sig := testSignature()
-		h, err := wt.Commit(msg, &git.CommitOptions{Author: sig, Committer: sig})
-		if err != nil {
-			t.Fatal(err)
-		}
-		return h
-	}
-	write("go.mod", "module example.com/m\n\ngo 1.24\n")
-	write("a/a.go", "package a\n\nfunc A() {}\n")
-	base = commit("base")
-	write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
-	head = commit("head")
+	f := &fixture{t: t, repo: repo, fs: wt.Filesystem}
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	base = f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	head = f.commit("head")
 
 	if err := repo.RepackObjects(&git.RepackConfig{}); err != nil {
 		t.Fatal(err)
@@ -583,6 +550,7 @@ func diskFixture(t *testing.T) (dir string, base, head plumbing.Hash) {
 }
 
 func TestTwoRevisionsOnPackedRepository(t *testing.T) {
+	t.Parallel()
 	dir, base, head := diskFixture(t)
 	// The race this guards against is timing dependent; a handful of runs
 	// made it show up reliably before the fix.
@@ -606,6 +574,7 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 }
 
 func TestLinkedWorktree(t *testing.T) {
+	t.Parallel()
 	main, base, head := diskFixture(t)
 
 	// Lay out what "git worktree add <linked> <head>" produces: a .git file
@@ -655,16 +624,14 @@ func TestLinkedWorktree(t *testing.T) {
 }
 
 func TestNewerGoDirectiveIsClamped(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("go.mod", "module example.com/m\n\ngo 1.99\n")
 	f.write("a/a.go", "package a\n\nimport \"fmt\"\n\nfunc A() { fmt.Println() }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nimport \"fmt\"\n\nfunc A() { fmt.Println() }\n\nfunc B() {}\n")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout, "  + func B()\n")
 	// One module-level warning, deduplicated across the two sides, instead
 	// of go/types' per-package "package requires newer Go version" error.
@@ -684,6 +651,7 @@ func TestNewerGoDirectiveIsClamped(t *testing.T) {
 }
 
 func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("one")
@@ -691,10 +659,7 @@ func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
 	f.commit("two")
 	f.write("a/a.go", "package a\n\nfunc Committed() {}\n\nfunc Uncommitted() {}\n")
 
-	r := f.run("", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("", "", Options{})
 	// Only the dirty state relative to HEAD shows up: the earlier commit's
 	// addition is on both sides.
 	mustContain(t, r.stdout, "  - func A()\n", "  + func Uncommitted()\n")
@@ -705,10 +670,7 @@ func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
 
 	// Clean checkout: nothing changed.
 	f.commit("three")
-	r = f.run("", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("", "", Options{})
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d:\n%s", r.code, ExitClean, r.stdout)
 	}
@@ -716,6 +678,7 @@ func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
 }
 
 func TestBadRevision(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n")
 	f.commit("base")
@@ -727,6 +690,7 @@ func TestBadRevision(t *testing.T) {
 }
 
 func TestMissingGoMod(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.remove("go.mod")
 	f.write("a/a.go", "package a\n")
@@ -739,6 +703,7 @@ func TestMissingGoMod(t *testing.T) {
 }
 
 func TestUnresolvableImportIsFatal(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n")
 	f.commit("base")
@@ -787,6 +752,7 @@ func ownDeps(t *testing.T, paths ...string) map[string]string {
 }
 
 func TestDependencies(t *testing.T) {
+	t.Parallel()
 	deps := ownDeps(t, "golang.org/x/exp", "golang.org/x/tools")
 	f := newFixture(t)
 	f.write("go.mod", fmt.Sprintf("module example.com/m\n\ngo 1.24\n\nrequire (\n\tgolang.org/x/exp %s\n\tgolang.org/x/tools %s // indirect\n)\n",
@@ -828,10 +794,7 @@ func Changes(r apidiff.Report) []apidiff.Change { return r.Changes }
 
 func Describe(s fmt.Stringer) string { return s.String() }
 `)
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
@@ -842,6 +805,7 @@ func Describe(s fmt.Stringer) string { return s.String() }
 }
 
 func TestReplaceDirectory(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/lib v0.0.0\n\nreplace example.com/lib => ./lib\n")
 	f.write("lib/go.mod", "module example.com/lib\n\ngo 1.24\n")
@@ -850,10 +814,7 @@ func TestReplaceDirectory(t *testing.T) {
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nimport \"example.com/lib\"\n\nfunc Open() lib.Conn { return lib.Conn{} }\n\nfunc Close(c lib.Conn) {}\n")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
@@ -866,16 +827,14 @@ func TestReplaceDirectory(t *testing.T) {
 	// was read from, never as a synthetic mount path.
 	f.write("lib/lib.go", "package lib\n\ntype Conn struct{}\n\nvar Broken undefinedType\n")
 	f.commit("broken")
-	r = f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{})
 	if want := "warn: example.com/lib: HEAD:lib/lib.go:5:12: undefined: undefinedType\nwarn: example.com/lib: lib/lib.go:5:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q\nwant     %q", r.stderr, want)
 	}
 }
 
 func TestReplaceVersion(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.useFakeModcache()
 	// Only the replacement is in the cache: resolving the required version
@@ -885,10 +844,7 @@ func TestReplaceVersion(t *testing.T) {
 	f.write("a/a.go", "package a\n\nimport \"example.com/q\"\n\nfunc A() q.T { return q.T{} }\n")
 	f.commit("base")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stderr != "" || r.stdout != "no exported API changes\n" {
 		t.Errorf("stdout = %q, stderr = %q", r.stdout, r.stderr)
 	}
@@ -897,6 +853,7 @@ func TestReplaceVersion(t *testing.T) {
 // A nested module that go.mod requires is served from the module cache, as
 // the go command does, not from its directory in the tree.
 func TestRequiredNestedModuleComesFromModuleCache(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.useFakeModcache()
 	f.writeModule("example.com/m/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nconst FromCache = 1\n"})
@@ -906,10 +863,7 @@ func TestRequiredNestedModuleComesFromModuleCache(t *testing.T) {
 	f.write("a/a.go", "package a\n\nimport \"example.com/m/sub\"\n\nconst A = sub.FromCache\n")
 	f.commit("base")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stderr != "" || r.stdout != "no exported API changes\n" {
 		t.Errorf("stdout = %q, stderr = %q", r.stdout, r.stderr)
 	}
@@ -918,6 +872,7 @@ func TestRequiredNestedModuleComesFromModuleCache(t *testing.T) {
 // A replaced module may have a path without a dot, which otherwise marks
 // the standard library.
 func TestReplacedModuleWithoutDot(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire foo v0.0.0\n\nreplace foo => ./foo\n")
 	f.write("foo/go.mod", "module foo\n\ngo 1.24\n")
@@ -925,16 +880,14 @@ func TestReplacedModuleWithoutDot(t *testing.T) {
 	f.write("a/a.go", "package a\n\nimport \"foo/bar\"\n\nfunc A() bar.Baz { return bar.Baz{} }\n")
 	f.commit("base")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if r.stderr != "" || r.stdout != "no exported API changes\n" {
 		t.Errorf("stdout = %q, stderr = %q", r.stdout, r.stderr)
 	}
 }
 
 func TestSubdirectoryModule(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.remove("go.mod")
 	f.write("README", "not a go module at the root\n")
@@ -1013,6 +966,7 @@ var Default func(string) (*Client, error)
 }
 
 func TestGolden(t *testing.T) {
+	t.Parallel()
 	f := goldenFixture(t)
 	for _, tc := range []struct {
 		name string
@@ -1028,9 +982,11 @@ func TestGolden(t *testing.T) {
 		// Internal packages alone: no public API in the selection.
 		{"internal", Options{Filter: render.Internal}, ExitClean},
 		{"pos", Options{Positions: true}, ExitIncompatible},
+		{"json_pos", Options{Format: render.JSON, Positions: true}, ExitIncompatible},
 		{"minimal", Options{Signatures: render.MinimalSignatures}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			r := f.run("v1.0.0", "", tc.opts)
 			if r.err != nil {
 				t.Fatal(r.err)
@@ -1056,16 +1012,30 @@ func TestGolden(t *testing.T) {
 	}
 }
 
-// snapshot hashes the names, sizes and mtimes of every file under root.
-// Missing roots hash to the empty string.
-func snapshot(t *testing.T, root string) (digest string, count int) {
+// snapshot describes every file under a directory tree.
+type snapshot struct {
+	digest string // of the names, sizes and mtimes; "" for a missing root
+	count  int
+}
+
+func snapshots(t *testing.T, roots map[string]string) map[string]snapshot {
+	t.Helper()
+	out := map[string]snapshot{}
+	for name, root := range roots {
+		out[name] = snapshotOf(t, root)
+	}
+	return out
+}
+
+func snapshotOf(t *testing.T, root string) snapshot {
 	t.Helper()
 	if root == "" {
-		return "", 0
+		return snapshot{}
 	}
 	if _, err := os.Stat(root); err != nil {
-		return "", 0
+		return snapshot{}
 	}
+	var s snapshot
 	h := sha256.New()
 	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -1075,14 +1045,15 @@ func snapshot(t *testing.T, root string) (digest string, count int) {
 		if err != nil {
 			return nil
 		}
-		count++
+		s.count++
 		fmt.Fprintf(h, "%s\x00%d\x00%d\x00%d\n", p, info.Mode(), info.Size(), info.ModTime().UnixNano())
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return hex.EncodeToString(h.Sum(nil)), count
+	s.digest = hex.EncodeToString(h.Sum(nil))
+	return s
 }
 
 func goCache() string {
@@ -1098,8 +1069,11 @@ func goCache() string {
 
 // TestWriteGuard runs the tool against this repository's own history and
 // asserts that GOROOT, the module cache, the build cache and the repository
-// itself are untouched. It must run alone in its test binary: another go
-// process compiling concurrently would legitimately write to GOCACHE.
+// itself are untouched. It is the one sequential test of the package, so
+// nothing else runs in this process meanwhile; the go command, though, may
+// still be compiling other packages into GOCACHE, so a root that changed
+// is checked again with a fresh run. Something the tool itself wrote would
+// show up every time.
 func TestWriteGuard(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping filesystem snapshot in -short mode")
@@ -1118,38 +1092,44 @@ func TestWriteGuard(t *testing.T) {
 		"GOCACHE":    goCache(),
 		"repo":       repoDir,
 	}
-	before := map[string][2]any{}
-	for name, root := range roots {
-		d, n := snapshot(t, root)
-		before[name] = [2]any{d, n}
-	}
-
-	var out, errb bytes.Buffer
-	code, err := Run(Options{
-		Repo:   repoDir,
-		Base:   "HEAD",
-		GOOS:   runtime.GOOS,
-		GOARCH: runtime.GOARCH,
-		Stdout: &out,
-		Stderr: &errb,
-	})
-	if err != nil {
-		t.Fatalf("Run: %v (stderr: %s)", err, errb.String())
-	}
-	if code == ExitError {
-		t.Fatalf("Run exited %d: %s", code, errb.String())
-	}
-	t.Logf("diff of HEAD vs working tree:\n%s%s", out.String(), errb.String())
-
-	for name, root := range roots {
-		d, n := snapshot(t, root)
-		if b := before[name]; b[0] != d || b[1] != n {
-			t.Errorf("%s (%s) changed during the run: %d files before, %d after", name, root, b[1], n)
+	for attempt := 1; ; attempt++ {
+		before := snapshots(t, roots)
+		var out, errb bytes.Buffer
+		code, err := Run(Options{
+			Repo:   repoDir,
+			Base:   "HEAD",
+			GOOS:   runtime.GOOS,
+			GOARCH: runtime.GOARCH,
+			Stdout: &out,
+			Stderr: &errb,
+		})
+		if err != nil {
+			t.Fatalf("Run: %v (stderr: %s)", err, errb.String())
 		}
+		if code == ExitError {
+			t.Fatalf("Run exited %d: %s", code, errb.String())
+		}
+		t.Logf("diff of HEAD vs working tree:\n%s%s", out.String(), errb.String())
+
+		var changed []string
+		for name, root := range roots {
+			if b, a := before[name], snapshotOf(t, root); b != a {
+				changed = append(changed, fmt.Sprintf("%s (%s): %d files before, %d after", name, root, b.count, a.count))
+			}
+		}
+		if len(changed) == 0 {
+			return
+		}
+		if attempt == 3 {
+			t.Errorf("changed during the run:\n%s", strings.Join(changed, "\n"))
+			return
+		}
+		t.Logf("attempt %d: %s; running again", attempt, strings.Join(changed, "; "))
 	}
 }
 
 func TestExitFail(t *testing.T) {
+	t.Parallel()
 	// One fixture per required level: major (removed func), minor (added
 	// func) and patch (no exported API change).
 	levels := map[string]func(f *fixture){
@@ -1197,6 +1177,7 @@ func TestExitFail(t *testing.T) {
 }
 
 func TestExitFailStrictErrorWins(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
@@ -1208,6 +1189,7 @@ func TestExitFailStrictErrorWins(t *testing.T) {
 }
 
 func TestParseFailOn(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		in   string
 		want FailOn
@@ -1228,6 +1210,7 @@ func TestParseFailOn(t *testing.T) {
 }
 
 func TestPackageWithoutExportedAPIRemovedOrAdded(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
@@ -1235,10 +1218,7 @@ func TestPackageWithoutExportedAPIRemovedOrAdded(t *testing.T) {
 	f.remove("plugin/plugin.go")
 	f.write("other/other.go", "package other\n\nfunc init() {}\n")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	want := "example.com/m/other (new)\n  + package added\n\n" +
 		"example.com/m/plugin (removed)\n  - package removed\n\n" +
 		"2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n"
@@ -1252,24 +1232,19 @@ func TestPackageWithoutExportedAPIRemovedOrAdded(t *testing.T) {
 	// A nested module is not part of this module's API on either side.
 	f.write("plugin/go.mod", "module example.com/m/plugin\n\ngo 1.24\n")
 	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
-	r = f.run("HEAD", "", Options{Breaking: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Breaking: true})
 	mustContain(t, r.stdout, "example.com/m/plugin (removed)\n  - package removed\n")
 	mustNotContain(t, r.stdout, "package added")
 }
 
 func TestConstantValueChange(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nconst Version = \"1.2.0\"\n\nconst Limit int64 = 10\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nconst Version = \"1.3.0-dev\"\n\nconst Limit int64 = 20\n")
 
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout,
 		"  - const Limit int64 = 10\n  + const Limit int64 = 20\n",
 		"  - const Version untyped string = \"1.2.0\"\n  + const Version untyped string = \"1.3.0-dev\"\n")
@@ -1281,6 +1256,7 @@ func TestConstantValueChange(t *testing.T) {
 // the other side see two distinct core.Client types and report bogus type
 // errors, even when both sides are identical.
 func TestDependencyImportingMainModuleIsNotShared(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.useFakeModcache()
 	f.writeModule("example.com/dep", "v1.0.0", map[string]string{
@@ -1292,10 +1268,7 @@ func TestDependencyImportingMainModuleIsNotShared(t *testing.T) {
 	f.commit("base")
 
 	for i := range 5 {
-		r := f.run("HEAD", "", Options{})
-		if r.err != nil {
-			t.Fatal(r.err)
-		}
+		r := f.mustRun("HEAD", "", Options{})
 		if r.stderr != "" {
 			t.Fatalf("run %d: stderr = %q, want none", i, r.stderr)
 		}
@@ -1305,10 +1278,7 @@ func TestDependencyImportingMainModuleIsNotShared(t *testing.T) {
 	}
 
 	// The same holds for two committed revisions of the same tree.
-	r := f.run("HEAD", "HEAD", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "HEAD", Options{})
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
@@ -1319,6 +1289,7 @@ func TestDependencyImportingMainModuleIsNotShared(t *testing.T) {
 // checked once per side; otherwise one side links it against the other
 // side's version of the dependency.
 func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.useFakeModcache()
 	f.writeModule("example.com/q", "v1.0.0", map[string]string{"q.go": "package q\n\ntype T struct{}\n"})
@@ -1332,10 +1303,7 @@ func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire (\n\texample.com/p v1.0.0\n\texample.com/q v1.1.0\n)\n")
 
 	for i := range 5 {
-		r := f.run("HEAD", "", Options{})
-		if r.err != nil {
-			t.Fatal(r.err)
-		}
+		r := f.mustRun("HEAD", "", Options{})
 		if r.stderr != "" {
 			t.Fatalf("run %d: stderr = %q, want none", i, r.stderr)
 		}
@@ -1346,6 +1314,7 @@ func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
 }
 
 func TestLatestRelease(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	one := f.commit("one")
@@ -1370,10 +1339,7 @@ func TestLatestRelease(t *testing.T) {
 	three := f.commit("three")
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n\nfunc D() {}\n")
 
-	r := f.run(LatestRelease, "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun(LatestRelease, "", Options{})
 	mustContain(t, r.stdout, "  + func C()\n", "  + func D()\n",
 		"1 package changed · 0 incompatible · 2 compatible · would require: MINOR (v0.2.0 → v0.3.0)\n")
 	mustNotContain(t, r.stdout, "func B()", "Side")
@@ -1385,10 +1351,7 @@ func TestLatestRelease(t *testing.T) {
 	// commit, @latest names the previous release, so the diff describes
 	// the new one.
 	f.tag("v0.3.0", three)
-	r = f.run(LatestRelease, "HEAD", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun(LatestRelease, "HEAD", Options{})
 	mustContain(t, r.stdout, "  + func C()\n", "would require: MINOR (v0.2.0 → v0.3.0)\n")
 	mustNotContain(t, r.stdout, "func D()")
 
@@ -1402,20 +1365,14 @@ func TestLatestRelease(t *testing.T) {
 	}
 
 	// A commit with no differences names the release in the empty message.
-	r = f.run("v0.3.0", "HEAD", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("v0.3.0", "HEAD", Options{})
 	if want := "no exported API changes since v0.3.0\n"; r.stdout != want {
 		t.Errorf("stdout = %q, want %q", r.stdout, want)
 	}
 
 	// Breaking changes since a v0 release bump the minor version.
 	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
-	r = f.run(LatestRelease, "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun(LatestRelease, "", Options{})
 	mustContain(t, r.stdout, "  - func A()\n", "would require: MAJOR (v0.2.0 → v0.3.0)\n")
 
 	// @latest is only meaningful as the base.
@@ -1427,6 +1384,7 @@ func TestLatestRelease(t *testing.T) {
 }
 
 func TestLatestReleasePrerelease(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.tag("v0.9.0", f.commit("one"))
@@ -1435,22 +1393,17 @@ func TestLatestReleasePrerelease(t *testing.T) {
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
 	f.commit("three")
 
-	r := f.run(LatestRelease, "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun(LatestRelease, "", Options{})
 	mustContain(t, r.stdout, "  + func C()\n", "would require: MINOR (v1.0.0-rc.1 → v1.0.0)\n")
 	mustNotContain(t, r.stdout, "func B()")
 
 	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
-	r = f.run(LatestRelease, "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun(LatestRelease, "", Options{})
 	mustContain(t, r.stdout, "  - func A()\n", "would require: MAJOR (v1.0.0-rc.1 → v1.0.0)\n")
 }
 
 func TestLatestReleaseMajorSuffix(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("go.mod", "module example.com/m/v2\n\ngo 1.24\n")
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
@@ -1463,15 +1416,13 @@ func TestLatestReleaseMajorSuffix(t *testing.T) {
 	f.commit("three")
 	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
 
-	r := f.run(LatestRelease, "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun(LatestRelease, "", Options{})
 	mustContain(t, r.stdout, "  - func A()\n", "  + func C()\n", "would require: MAJOR (v2.0.0 → v3.0.0)\n")
 	mustNotContain(t, r.stdout, "func B()")
 }
 
 func TestLatestReleaseSubdirectoryModule(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.remove("go.mod")
 	f.write("sub/go.mod", "module example.com/m/sub\n\ngo 1.24\n")
@@ -1502,6 +1453,7 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 }
 
 func TestLatestReleaseErrors(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	one := f.commit("one")
@@ -1527,11 +1479,9 @@ func TestLatestReleaseErrors(t *testing.T) {
 }
 
 func TestJSON(t *testing.T) {
+	t.Parallel()
 	f := goldenFixture(t)
-	r := f.run("v1.0.0", "", Options{Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("v1.0.0", "", Options{Format: render.JSON})
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d", r.code)
 	}
@@ -1591,10 +1541,7 @@ func TestJSON(t *testing.T) {
 	}
 
 	// --breaking drops compatible changes from the lists but not the counts.
-	r = f.run("v1.0.0", "", Options{Format: render.JSON, Breaking: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("v1.0.0", "", Options{Format: render.JSON, Breaking: true})
 	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
 		t.Fatal(err)
 	}
@@ -1611,38 +1558,32 @@ func TestJSON(t *testing.T) {
 }
 
 func TestJSONPackageWithoutSymbols(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
 	f.commit("base")
 	f.remove("plugin/plugin.go")
-	r := f.run("HEAD", "", Options{Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"symbol": "",`, `"kind": "removed",`, `"message": "package removed"`)
 }
 
 func TestFormatsWithoutChanges(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.commit("base")
-	r := f.run("HEAD", "", Options{Format: render.Markdown})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{Format: render.Markdown})
 	if want := "_no exported API changes_\n"; r.stdout != want {
 		t.Errorf("markdown = %q, want %q", r.stdout, want)
 	}
-	r = f.run("HEAD", "", Options{Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"base": "HEAD"`, `"packages": [],`, `"release": "patch"`)
 	mustNotContain(t, r.stdout, "base_version", "next_version")
 }
 
 func TestParseFormat(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]render.Format{"text": render.Text, "markdown": render.Markdown, "md": render.Markdown, "JSON": render.JSON} {
 		got, err := ParseFormat(in)
 		if err != nil || got != want {
@@ -1655,6 +1596,7 @@ func TestParseFormat(t *testing.T) {
 }
 
 func TestPositions(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\ntype T struct {\n\tX int\n}\n\nfunc (t T) M(n int) {}\n")
 	h := f.commit("base")
@@ -1662,10 +1604,7 @@ func TestPositions(t *testing.T) {
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\ntype T struct {\n\tX int64\n\tY int\n}\n\nfunc (t T) M(n int64) {}\n\nfunc Added() {}\n")
 	f.write("b/b.go", "package b\n\nfunc init() {}\n")
 
-	r := f.run("v0.1.0", "", Options{Positions: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("v0.1.0", "", Options{Positions: true})
 	// A position sits on the line of the declaration it locates, the new
 	// one of a change or an addition and the old one of a removal, two
 	// spaces past the widest such line of the package.
@@ -1687,19 +1626,13 @@ func TestPositions(t *testing.T) {
 	}
 
 	// Positions are off by default; the layout is then the plain one.
-	r = f.run("v0.1.0", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("v0.1.0", "", Options{})
 	mustContain(t, r.stdout, "  - func Drop()\n  - func (t T) M(n int)\n  + func (t T) M(n int64)\n")
 	mustNotContain(t, r.stdout, "a.go")
 
 	// Two committed revisions: both sides carry a revision prefix.
 	f.commit("head")
-	r = f.run("v0.1.0", "HEAD", Options{Positions: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("v0.1.0", "HEAD", Options{Positions: true})
 	mustContain(t, r.stdout, "  - func Drop()            v0.1.0:a/a.go:5:6\n", "  + func Added()           HEAD:a/a.go:12:6\n")
 }
 
@@ -1709,6 +1642,7 @@ func TestPositions(t *testing.T) {
 // be looked up, so the renderer falls back to the types quoted in the
 // message even when those contain " to " themselves.
 func TestPromotedMembersFromDependency(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.useFakeModcache()
 	f.writeModule("example.com/dep", "v1.0.0", map[string]string{"dep.go": "package dep\n\ntype Base struct{ X int }\n\nfunc (b *Base) M(fn func(from, to string)) {}\n"})
@@ -1718,10 +1652,7 @@ func TestPromotedMembersFromDependency(t *testing.T) {
 	f.commit("base")
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.1.0\n")
 
-	r := f.run("HEAD", "", Options{Positions: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{Positions: true})
 	want := "example.com/m/a\n" +
 		"  ~ example.com/dep.(*Base).M: changed\n" +
 		"      - func(func(from string, to string))\n" +
@@ -1732,15 +1663,13 @@ func TestPromotedMembersFromDependency(t *testing.T) {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
 
-	r = f.run("HEAD", "", Options{Positions: true, Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Positions: true, Format: render.JSON})
 	mustContain(t, r.stdout, `"before": "func(func(from string, to string))"`, `"after": "func(func(from string, to string)) error"`)
 	mustNotContain(t, r.stdout, `"pos"`)
 }
 
 func TestPackageFilter(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.write("store/store.go", "package store\n\nfunc S() {}\n")
@@ -1795,6 +1724,7 @@ func TestPackageFilter(t *testing.T) {
 }
 
 func TestFilterInternalPackages(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.write("internal/hidden/h.go", "package hidden\n\nfunc Hidden() {}\n")
@@ -1806,20 +1736,14 @@ func TestFilterInternalPackages(t *testing.T) {
 	f.write("internal/fresh/f.go", "package fresh\n\nfunc F() {}\n")
 
 	// Without the option internal packages do not exist.
-	r := f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{})
 	if want := "example.com/m/a\n  + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
 
 	// With --filter=all they are shown and marked, but the summary, the
 	// release and the exit code still describe the public API only.
-	r = f.run("HEAD", "", Options{Filter: render.All})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All})
 	want := "example.com/m/a\n  + func Added()\n\n" +
 		"example.com/m/a/internal/deep (internal)\n  + func Deeper()\n\n" +
 		"example.com/m/internal/fresh (internal, new)\n  + func F()\n\n" +
@@ -1839,27 +1763,18 @@ func TestFilterInternalPackages(t *testing.T) {
 
 	// Only internal changes: the public API is untouched.
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
-	r = f.run("HEAD", "", Options{Filter: render.All})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All})
 	mustContain(t, r.stdout, "\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n")
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d", r.code, ExitClean)
 	}
 
 	// --breaking and --pkg apply to internal packages too.
-	r = f.run("HEAD", "", Options{Filter: render.All, Breaking: true})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All, Breaking: true})
 	if want := "example.com/m/internal/hidden (internal)\n  - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
 		t.Errorf("breaking: stdout = %q\nwant     %q", r.stdout, want)
 	}
-	r = f.run("HEAD", "", Options{Filter: render.All, Packages: []string{"internal/hidden"}})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All, Packages: []string{"internal/hidden"}})
 	if want := "example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
 		t.Errorf("pkg: stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -1867,10 +1782,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	// --filter=internal shows internal packages alone, with only their
 	// summary line; there is no public API in the selection, so the exit
 	// code is the clean one.
-	r = f.run("HEAD", "", Options{Filter: render.Internal, ExitFail: FailMajor})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, ExitFail: FailMajor})
 	want = "example.com/m/a/internal/deep (internal)\n  + func Deeper()\n\n" +
 		"example.com/m/internal/fresh (internal, new)\n  + func F()\n\n" +
 		"example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\n" +
@@ -1881,10 +1793,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	if r.code != ExitClean {
 		t.Errorf("internal: exit = %d, want %d", r.code, ExitClean)
 	}
-	r = f.run("HEAD", "", Options{Filter: render.Internal, Packages: []string{"a"}})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Packages: []string{"a"}})
 	if want := "warn: example.com/m: --pkg \"a\" matched no packages\n"; r.stderr != want {
 		t.Errorf("internal --pkg a: stderr = %q, want %q", r.stderr, want)
 	}
@@ -1894,58 +1803,38 @@ func TestFilterInternalPackages(t *testing.T) {
 
 	// Nothing changed anywhere.
 	f.commit("all")
-	r = f.run("HEAD", "", Options{Filter: render.All})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All})
 	if want := "no exported API changes\ninternal: no changes\n"; r.stdout != want {
 		t.Errorf("clean: stdout = %q\nwant     %q", r.stdout, want)
 	}
-	r = f.run("HEAD", "", Options{Filter: render.Internal})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Internal})
 	if want := "internal: no changes\n"; r.stdout != want {
 		t.Errorf("clean internal: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
 	// Machine-readable layouts carry the same split.
 	f.write("internal/hidden/h.go", "package hidden\n\nfunc Renamed() {}\n\nfunc More() {}\n")
-	r = f.run("HEAD", "", Options{Filter: render.All, Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All, Format: render.JSON})
 	mustContain(t, r.stdout, `"internal": true,`, `"release": "patch",`,
 		"\"internal\": {\n      \"packages_changed\": 1,\n      \"incompatible\": 0,\n      \"compatible\": 1\n    }")
-	r = f.run("HEAD", "", Options{Filter: render.All, Format: render.Markdown})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.All, Format: render.Markdown})
 	mustContain(t, r.stdout, "**example.com/m/internal/hidden (internal)**\n", "_no exported API changes_\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n")
-	r = f.run("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
 	mustContain(t, r.stdout, "```\n\ninternal: 1 package changed · 0 incompatible · 1 compatible\n")
 	mustNotContain(t, r.stdout, "exported API")
-	r = f.run("HEAD", "", Options{Filter: render.Internal, Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Format: render.JSON})
 	mustContain(t, r.stdout, `"packages_changed": 0,`, `"release": "patch",`, "\"internal\": {\n      \"packages_changed\": 1,")
 }
 
 func TestMinimalSignatures(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Open(name string) error { return nil }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n")
 
 	// One line per change, with apidiff's message as is.
-	r := f.run("HEAD", "", Options{Signatures: render.MinimalSignatures})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r := f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures})
 	want := "example.com/m/a\n" +
 		"  - Drop: removed\n" +
 		"  ~ Open: changed from func(string) error to func(string, int) error\n" +
@@ -1956,10 +1845,7 @@ func TestMinimalSignatures(t *testing.T) {
 	}
 
 	// The default shows every declaration.
-	r = f.run("HEAD", "", Options{})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{})
 	want = "example.com/m/a\n" +
 		"  - func Drop()\n" +
 		"  - func Open(name string) error\n  + func Open(name string, n int) error\n" +
@@ -1970,24 +1856,16 @@ func TestMinimalSignatures(t *testing.T) {
 	}
 
 	// Markdown and JSON follow the same knob.
-	r = f.run("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.Markdown})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.Markdown})
 	mustContain(t, r.stdout, "```diff\n- Drop: removed\n! Open: changed from func(string) error to func(string, int) error\n+ Added: added\n```\n")
-	r = f.run("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.JSON})
 	mustNotContain(t, r.stdout, `"before"`, `"after"`)
-	r = f.run("HEAD", "", Options{Format: render.JSON})
-	if r.err != nil {
-		t.Fatal(r.err)
-	}
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"before": "func Drop()"`, `"after": "func Added()"`, `"before": "func Open(name string) error"`)
 }
 
 func TestParseFilter(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]render.Visibility{"public": render.Public, "internal": render.Internal, "ALL": render.All} {
 		got, err := ParseFilter(in)
 		if err != nil || got != want {
@@ -2000,6 +1878,7 @@ func TestParseFilter(t *testing.T) {
 }
 
 func TestParseSignatures(t *testing.T) {
+	t.Parallel()
 	for in, want := range map[string]render.Signatures{"full": render.FullSignatures, "Minimal": render.MinimalSignatures} {
 		got, err := ParseSignatures(in)
 		if err != nil || got != want {
