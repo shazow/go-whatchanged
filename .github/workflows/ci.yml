@@ -13,8 +13,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # history and tags, for the API diff below
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
@@ -22,9 +20,3 @@ jobs:
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - run: go vet ./...
       - run: go test ./...
-      # Dogfood: show what the change does to this module's own (internal)
-      # API in the job summary. Exit code 1 only means incompatible changes.
-      - name: API changes
-        if: github.event_name == 'pull_request'
-        run: |
-          go run . --filter=all --format=markdown "origin/$GITHUB_BASE_REF" HEAD >> "$GITHUB_STEP_SUMMARY" || [ $? -eq 1 ]

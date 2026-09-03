@@ -232,8 +232,93 @@ declaration, `{"rev": "v1.4.0", "file": "store/store.go", "line": 9,
 
 ### In GitHub Actions
 
-A job that posts the API changes of a pull request to its summary, and
-fails when they are incompatible:
+The repository is also an action. It builds the tool from the ref that pins
+it, runs it on the checkout and appends the diff to the job summary, where
+GitHub colors the `diff` blocks:
+
+```yaml
+on: pull_request
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # history and tags, for the merge-base and @latest
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - uses: shazow/go-whatchanged@main
+```
+
+On a `pull_request` event the base defaults to the merge-base of the pull
+request and its base branch, so the diff is exactly what the pull request
+does to the API. On any other event it defaults to `@latest`: a workflow
+that runs on a tag push gets the release notes of the tag. Every flag of the
+command has an input, with `fail-on` standing in for `--exit-fail`. Here
+they are with their defaults:
+
+```yaml
+      - uses: shazow/go-whatchanged@main
+        with:
+          base: ""            # commit-ish or @latest; see above for the default
+          head: HEAD          # commit-ish; empty for the working tree
+          working-directory: . # the module, for repositories with several
+          pkg: ""             # patterns, comma- or newline-separated
+          exclude: ""
+          filter: public      # public | internal | all
+          breaking: false
+          signatures: full    # full | minimal
+          pos: false
+          strict: false
+          goos: ""            # the runner's, unless set
+          goarch: ""
+          fail-on: ""         # major | minor | patch: fail at that level or above
+          summary: true       # append the diff to the job summary
+          title: API changes  # heading above the diff
+```
+
+The step needs a Go toolchain on `PATH` (`actions/setup-go` above; the
+action's own `go.mod` makes `go` fetch a newer toolchain if the runner's is
+too old) and `jq`, which GitHub-hosted runners have. Since the tool never
+fetches anything, the action runs `go mod download` in the checkout for the
+head side and, for the base side, downloads what the base revision's
+`go.mod` pins from a copy in the runner's temp directory, so nothing in the
+checkout is written. The dependencies of the tag `@latest` resolves to are
+downloaded once the tool has named it.
+
+The summary line of the report becomes an annotation on the run, a warning
+when there are incompatible changes, and the report and its numbers are
+outputs for later steps:
+
+| Output | Value |
+|--------|-------|
+| `release` | `major`, `minor` or `patch` (no changes) |
+| `packages-changed`, `incompatible`, `compatible` | the counts of the summary line |
+| `base`, `head` | the revisions as diffed; `base` is the tag `@latest` picked |
+| `base-version`, `next-version` | when the base is a release tag |
+| `summary` | the summary line(s) as plain text |
+| `markdown`, `json` | the whole report in either format |
+
+Internal packages (`filter: all` or `internal`) never count in the outputs
+or towards `fail-on`, as on the command line. A pull request comment is one
+more step:
+
+```yaml
+      - uses: shazow/go-whatchanged@main
+        id: api
+      - if: steps.api.outputs.packages-changed != '0'
+        env:
+          GH_TOKEN: ${{ github.token }} # with permissions: pull-requests: write
+          BODY: ${{ steps.api.outputs.markdown }}
+        run: gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
+```
+
+Without the action, the same job in plain steps:
 
 ```yaml
 - uses: actions/checkout@v4
@@ -251,7 +336,9 @@ fails when they are incompatible:
 ```
 
 `go mod download` is the one write: the tool itself never fetches, and a
-dependency that is not in the module cache is an error.
+dependency that is not in the module cache is an error, so a base revision
+that pins other versions than the checkout needs them downloaded too (see
+the action's script for one way).
 
 ### Failing on a release level
 
