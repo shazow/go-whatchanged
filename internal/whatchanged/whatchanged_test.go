@@ -906,13 +906,13 @@ func TestGolden(t *testing.T) {
 		name string
 		opts Options
 	}{
-		{"nocolor", Options{Positions: true}},
-		{"color", Options{Positions: true, Color: true}},
-		{"breaking", Options{Positions: true, Breaking: true}},
-		{"markdown", Options{Positions: true, Format: render.Markdown}},
-		{"json", Options{Positions: true, Format: render.JSON}},
-		{"internal", Options{Positions: true, Internal: true}},
-		{"nopos", Options{}},
+		{"nocolor", Options{}},
+		{"color", Options{Color: true}},
+		{"breaking", Options{Breaking: true}},
+		{"markdown", Options{Format: render.Markdown}},
+		{"json", Options{Format: render.JSON}},
+		{"internal", Options{Internal: true}},
+		{"pos", Options{Positions: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := f.run("v1.0.0", "", tc.opts)
@@ -1571,8 +1571,7 @@ func TestPositions(t *testing.T) {
 		t.Errorf("stdout = \n%s\nwant\n%s", r.stdout, want)
 	}
 
-	// Positions are off by default in the library and can be turned off in
-	// the CLI; the layout is then the plain one.
+	// Positions are off by default; the layout is then the plain one.
 	r = f.run("v0.1.0", "", Options{})
 	if r.err != nil {
 		t.Fatal(r.err)

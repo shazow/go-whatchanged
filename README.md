@@ -12,15 +12,15 @@ Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 ```
 $ go-whatchanged @latest
 example.com/m/store
-  - (*Client).Close: removed  v1.4.0:store/store.go:9:18
-  ~ Open: changed             store/store.go:14:6
+  - (*Client).Close: removed
+  ~ Open: changed
       - func Open(path string) (*Client, error)
       + func Open(path string, o Options) (*Client, error)
-  + (*Client).Ping: added     store/store.go:11:18
-  + Options: added            store/store.go:12:6
+  + (*Client).Ping: added
+  + Options: added
 
 example.com/m/util
-  ! Sizer.Size: added  util/util.go:5:2
+  ! Sizer.Size: added
 
 2 packages changed · 3 incompatible · 2 compatible · would require: MAJOR (v1.4.0 → v2.0.0)
 ```
@@ -55,8 +55,7 @@ Flags:
   --exclude PATTERN  skip packages matching PATTERN (repeatable)
   --internal         also show internal packages (see below)
   --breaking         show only incompatible changes
-  --pos              annotate changes with source positions (default true;
-                     --pos=false to hide them)
+  --pos              annotate changes with source positions (see below)
   --format string    text | markdown | json (default text; see below)
   --color string     auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
@@ -92,11 +91,11 @@ be combined with `--exit-fail`:
 
 ```
 $ go-whatchanged --internal
-example.com/m/internal/store
-  - Open: removed  HEAD:internal/store/store.go:5:6
+example.com/m/internal/store (internal)
+  - Open: removed
 
 example.com/m/util
-  + Pad: added  util/util.go:9:6
+  + Pad: added
 
 1 package changed · 0 incompatible · 1 compatible · would require: MINOR
 internal: 1 package changed · 1 incompatible · 0 compatible
@@ -145,11 +144,11 @@ comment or a job summary:
 **example.com/m/store**
 
 ```diff
-- (*Client).Close: removed  v1.4.0:store/store.go:9:18
-! Open: changed             store/store.go:14:6
+- (*Client).Close: removed
+! Open: changed
 -   func Open(path string) (*Client, error)
 +   func Open(path string, o Options) (*Client, error)
-+ (*Client).Ping: added     store/store.go:11:18
++ (*Client).Ping: added
 ```
 
 1 package changed · 2 incompatible · 1 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
@@ -174,8 +173,7 @@ full diff.
           "symbol": "(*Client).Close",
           "kind": "removed",
           "compatible": false,
-          "message": "(*Client).Close: removed",
-          "pos": {"rev": "v1.4.0", "file": "store/store.go", "line": 9, "col": 18}
+          "message": "(*Client).Close: removed"
         },
         {
           "symbol": "Open",
@@ -183,8 +181,7 @@ full diff.
           "compatible": false,
           "message": "Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)",
           "before": "func Open(path string) (*Client, error)",
-          "after": "func Open(path string, o Options) (*Client, error)",
-          "pos": {"file": "store/store.go", "line": 14, "col": 6}
+          "after": "func Open(path string, o Options) (*Client, error)"
         }
       ]
     }
@@ -207,8 +204,10 @@ separately under `summary.internal`. A change's `kind` is `added`,
 `removed` or `changed`, and `symbol` is empty for a whole-package change
 (`package added`). `before` and `after` are present for `changed from X to
 Y` messages and hold what the text layout prints on its `-` and `+` lines.
-`pos` locates the declaration (see below); `rev` is absent for the working
-tree. `release` is `major`, `minor` or `patch`.
+With `--pos`, each change also carries a `pos` object locating the
+declaration, `{"rev": "v1.4.0", "file": "store/store.go", "line": 9,
+"col": 18}`, where `rev` is absent for the working tree. `release` is
+`major`, `minor` or `patch`.
 
 ### In GitHub Actions
 
@@ -271,13 +270,23 @@ Changes are grouped by package, one line per change:
 | `~`   | compatible change | cyan |
 | `+`   | compatible addition | green |
 
-Each change ends with the position of the declaration it is about, dimmed
-and aligned per package: on the head side for an addition or a change,
-where the new declaration is, and on the base side for a removal, prefixed
-with the revision like the positions in warnings (`v1.4.0:store/store.go:9:18`).
+With `--pos`, each change ends with the position of the declaration it is
+about, dimmed and aligned per package: on the head side for an addition or
+a change, where the new declaration is, and on the base side for a removal,
+prefixed with the revision like the positions in warnings:
+
+```
+$ go-whatchanged --pos @latest
+example.com/m/store
+  - (*Client).Close: removed  v1.4.0:store/store.go:9:18
+  ~ Open: changed             store/store.go:14:6
+      - func Open(path string) (*Client, error)
+      + func Open(path string, o Options) (*Client, error)
+  + (*Client).Ping: added     store/store.go:11:18
+```
+
 Working tree positions are relative to the module root, so terminals and
-editors can open them. `--pos=false` hides them, for output you want to
-compare between runs.
+editors can open them.
 
 A `changed from X to Y` message is split into a small patch: the old
 declaration on a red `-` line and the new one on a green `+` line, so two
