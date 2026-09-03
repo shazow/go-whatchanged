@@ -6,11 +6,13 @@ import (
 )
 
 // declString renders obj as it would appear in source, for example "func
-// Open(path string) (*Client, error)" or "field Z int". go/types prints
-// methods as "func (*T).M(...)"; this prints the conventional
-// "func (r *T) M(...)" instead, and adds the value of a constant, which is
-// what a "value changed" message is about.
-func declString(obj types.Object, pkg *types.Package) string {
+// Open(path string) (*Client, error)" or "field Point.Z int", where sym is
+// the symbol as apidiff names it ("Point.Z"). go/types prints methods as
+// "func (*T).M(...)"; this prints the conventional "func (r *T) M(...)"
+// instead, names the struct a field belongs to, which go/types leaves out
+// and the line would otherwise not say, and adds the value of a constant,
+// which is what a "value changed" message is about.
+func declString(obj types.Object, pkg *types.Package, sym string) string {
 	// Qualify foreign types by package name, as source does ("apidiff.Report"
 	// rather than "golang.org/x/exp/apidiff.Report").
 	qual := func(p *types.Package) string {
@@ -19,8 +21,14 @@ func declString(obj types.Object, pkg *types.Package) string {
 		}
 		return p.Name()
 	}
-	if c, ok := obj.(*types.Const); ok {
-		return types.ObjectString(obj, qual) + " = " + c.Val().String()
+	switch o := obj.(type) {
+	case *types.Const:
+		return types.ObjectString(obj, qual) + " = " + o.Val().String()
+	case *types.Var:
+		if o.IsField() {
+			return "field " + sym + " " + types.TypeString(o.Type(), qual)
+		}
+		return types.ObjectString(obj, qual)
 	}
 	f, ok := obj.(*types.Func)
 	if !ok {

@@ -69,7 +69,7 @@ func run(args []string) int {
 	fs.Var((*patterns)(&opts.Exclude), "exclude", "skip packages matching `pattern` (repeatable)")
 	fs.StringVar(&filter, "filter", "public", "packages to diff: public, internal or all (internal ones never count in the summary or exit code)")
 	fs.BoolVar(&opts.Positions, "pos", false, "annotate each change with its source position")
-	fs.StringVar(&signatures, "signatures", "full", "show declarations under each change: full or minimal")
+	fs.StringVar(&signatures, "signatures", "full", "show each change as its declarations (full) or as one message line (minimal)")
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
 	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
 	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")

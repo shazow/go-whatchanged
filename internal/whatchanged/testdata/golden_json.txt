@@ -47,8 +47,8 @@
           "kind": "changed",
           "compatible": false,
           "message": "Config.Timeout: changed from int to int64",
-          "before": "field Timeout int",
-          "after": "field Timeout int64"
+          "before": "field Config.Timeout int",
+          "after": "field Config.Timeout int64"
         },
         {
           "symbol": "Open",
@@ -85,7 +85,7 @@
           "kind": "added",
           "compatible": true,
           "message": "Point.Z: added",
-          "after": "field Z int"
+          "after": "field Point.Z int"
         }
       ]
     },

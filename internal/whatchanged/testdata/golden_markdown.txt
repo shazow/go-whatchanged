@@ -19,8 +19,8 @@
 - (*Client).Close: removed
 -   func (c *Client) Close() error
 ! Config.Timeout: changed
--   field Timeout int
-+   field Timeout int64
+-   field Config.Timeout int
++   field Config.Timeout int64
 ! Open: changed
 -   func Open(path string) (*Client, error)
 +   func Open(path string, o Options) (*Client, error)
@@ -32,7 +32,7 @@
 + Options: added
 +   type Options struct{Timeout int}
 + Point.Z: added
-+   field Z int
++   field Point.Z int
 ```
 
 **example.com/m/util**

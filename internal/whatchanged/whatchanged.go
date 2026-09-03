@@ -565,12 +565,12 @@ func annotate(c *render.Change, fset *token.FileSet, base, head *side, old, nw *
 	switch c.Kind() {
 	case "removed":
 		if oldObj != nil {
-			c.Before = declString(oldObj, old)
+			c.Before = declString(oldObj, old, sym)
 			c.Pos = base.position(fset.Position(oldObj.Pos()))
 		}
 	case "added":
 		if newObj != nil {
-			c.After = declString(newObj, nw)
+			c.After = declString(newObj, nw, sym)
 			c.Pos = head.position(fset.Position(newObj.Pos()))
 		}
 	default:
@@ -578,7 +578,7 @@ func annotate(c *render.Change, fset *token.FileSet, base, head *side, old, nw *
 			c.Pos = head.position(fset.Position(newObj.Pos()))
 		}
 		if oldObj != nil && newObj != nil && strings.Contains(c.Message, "changed from ") {
-			c.Before, c.After = declString(oldObj, old), declString(newObj, nw)
+			c.Before, c.After = declString(oldObj, old, sym), declString(newObj, nw, sym)
 		}
 	}
 }

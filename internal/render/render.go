@@ -171,8 +171,9 @@ func ParseFormat(s string) (Format, error) {
 type Signatures int
 
 const (
-	// FullSignatures shows the declaration of every added, removed or
-	// changed symbol on its own "-" or "+" line, like a small patch.
+	// FullSignatures shows each change as the declaration of its symbol,
+	// like a small patch: the old one on a "-" line, the new one on a "+"
+	// line, both for a changed symbol.
 	FullSignatures Signatures = iota
 	// MinimalSignatures prints one line per change, the apidiff message,
 	// with a changed symbol's old and new types quoted inline.
@@ -349,14 +350,36 @@ func Write(w io.Writer, res Result, opts Options) error {
 	}
 }
 
-// line is one change reduced to a glyph, a head line and the declarations
-// to show under it on their own "-" (from) and "+" (to) lines.
+// line is one change reduced to a glyph, a message ("Open: changed") and
+// the old and new declarations to show on "-" (from) and "+" (to) lines.
+// In the text layout the declarations stand in for the message; decls says
+// that from and to are declarations, as opposed to the bare types quoted in
+// a "changed from X to Y" message whose symbol could not be looked up on
+// both sides, which do not name the symbol.
 type line struct {
 	glyph      string // "-", "!", "~" or "+"
 	head       string
 	from, to   string // the old and new declarations; either may be empty
+	decls      bool
 	pos        string // "" when unknown or not wanted
 	compatible bool
+}
+
+// message is the line's message with its glyph: "~ Open: changed".
+func (l line) message() string { return l.glyph + " " + l.head }
+
+// posText is the text the text layout appends l's position to: the
+// declaration the position locates when declarations are shown (the new
+// one, or the old one of a removal), and the message otherwise.
+func (l line) posText() string {
+	switch {
+	case !l.decls:
+		return l.message()
+	case l.to != "":
+		return "+ " + l.to
+	default:
+		return "- " + l.from
+	}
 }
 
 // describe reduces c to a line. With FullSignatures a removed symbol's
@@ -385,13 +408,13 @@ func describe(c Change, opts Options) line {
 	}
 	switch kind {
 	case "removed":
-		l.from = c.Before
+		l.from, l.decls = c.Before, c.Before != ""
 	case "added":
-		l.to = c.After
+		l.to, l.decls = c.After, c.After != ""
 	default:
 		if head, from, to, ok := splitChangedFromTo(c.Message); ok {
 			if c.Before != "" && c.After != "" {
-				from, to = c.Before, c.After
+				from, to, l.decls = c.Before, c.After, true
 			}
 			l.head, l.from, l.to = head, from, to
 		}
@@ -399,27 +422,34 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
-// packageLines returns the changes of p to show, honoring BreakingOnly, and
-// the width of the widest "glyph head" text among lines that carry a
-// position, so that positions line up in a column.
-func packageLines(p Package, opts Options) (lines []line, width int) {
-	lines = make([]line, 0, len(p.Changes))
+// packageLines returns the changes of p to show, honoring BreakingOnly.
+func packageLines(p Package, opts Options) []line {
+	lines := make([]line, 0, len(p.Changes))
 	for _, c := range p.Changes {
 		if opts.BreakingOnly && c.Compatible {
 			continue
 		}
-		l := describe(c, opts)
-		if l.pos != "" {
-			width = max(width, utf8.RuneCountInString(l.glyph+" "+l.head))
-		}
-		lines = append(lines, l)
+		lines = append(lines, describe(c, opts))
 	}
-	return lines, width
+	return lines
 }
 
-// padding returns the spaces that align l's position at width.
-func padding(l line, width int) string {
-	n := width - utf8.RuneCountInString(l.glyph+" "+l.head)
+// posWidth returns the width of the widest text among the lines that carry
+// a position, so that positions line up in a column; text says which of a
+// line's texts the layout appends the position to.
+func posWidth(lines []line, text func(line) string) int {
+	width := 0
+	for _, l := range lines {
+		if l.pos != "" {
+			width = max(width, utf8.RuneCountInString(text(l)))
+		}
+	}
+	return width
+}
+
+// padding returns the spaces that align a position after text at width.
+func padding(text string, width int) string {
+	n := width - utf8.RuneCountInString(text)
 	if n < 0 {
 		n = 0
 	}
@@ -450,10 +480,11 @@ func writeText(w io.Writer, res Result, opts Options) error {
 	var b strings.Builder
 	first := true
 	for _, p := range res.Packages {
-		lines, width := packageLines(p, opts)
+		lines := packageLines(p, opts)
 		if len(lines) == 0 {
 			continue
 		}
+		width := posWidth(lines, line.posText)
 		if !first {
 			b.WriteString("\n")
 		}
@@ -492,8 +523,35 @@ func writeText(w io.Writer, res Result, opts Options) error {
 }
 
 // formatLine maps a line to one or more indented, colored terminal lines.
+// A change with declarations is the declarations alone, like a patch: a
+// removal is its old declaration on a red "-" line, an addition its new one
+// on a green "+" line, both bold when incompatible, and a changed symbol is
+// the pair, the old declaration greyed out and the new one in orange (bold
+// when incompatible), so that it reads as one edit rather than as a removal
+// and an addition. A change without declarations keeps its message line
+// ("package added", "T: no longer implements fmt.Stringer"), with any bare
+// types quoted in the message under it.
 func formatLine(st Style, l line, width int) []string {
 	bold := !l.compatible
+	// located appends l's position, aligned at width, to painted, the
+	// colored form of text.
+	located := func(text, painted string) string {
+		if l.pos == "" {
+			return painted
+		}
+		return painted + padding(text, width) + "  " + st.Dim(l.pos)
+	}
+	from, to := "- "+l.from, "+ "+l.to
+	if l.decls {
+		switch {
+		case l.from != "" && l.to != "":
+			return []string{"  " + st.Grey(from), "  " + located(to, st.Orange(to, bold))}
+		case l.from != "":
+			return []string{"  " + located(from, st.Red(from, bold))}
+		default:
+			return []string{"  " + located(to, st.Green(to, bold))}
+		}
+	}
 	var paint func(string) string
 	switch {
 	case l.glyph == "-" || l.glyph == "!":
@@ -505,16 +563,12 @@ func formatLine(st Style, l line, width int) []string {
 	default:
 		paint = func(s string) string { return st.Yellow(s, true) }
 	}
-	head := "  " + paint(l.glyph+" "+l.head)
-	if l.pos != "" {
-		head += padding(l, width) + "  " + st.Dim(l.pos)
-	}
-	out := []string{head}
+	out := []string{"  " + located(l.message(), paint(l.message()))}
 	if l.from != "" {
-		out = append(out, "      "+st.Red("- "+l.from, bold))
+		out = append(out, "      "+st.Grey(from))
 	}
 	if l.to != "" {
-		out = append(out, "      "+st.Green("+ "+l.to, bold))
+		out = append(out, "      "+st.Orange(to, bold))
 	}
 	return out
 }
@@ -592,10 +646,11 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 
 	var b strings.Builder
 	for _, p := range res.Packages {
-		lines, width := packageLines(p, opts)
+		lines := packageLines(p, opts)
 		if len(lines) == 0 {
 			continue
 		}
+		width := posWidth(lines, line.message)
 		fmt.Fprintf(&b, "**%s**\n\n```diff\n", header(p))
 		for _, l := range lines {
 			glyph := l.glyph
@@ -604,7 +659,7 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			}
 			b.WriteString(glyph + " " + l.head)
 			if l.pos != "" {
-				b.WriteString(padding(l, width) + "  " + l.pos)
+				b.WriteString(padding(l.message(), width) + "  " + l.pos)
 			}
 			b.WriteString("\n")
 			if l.from != "" {
