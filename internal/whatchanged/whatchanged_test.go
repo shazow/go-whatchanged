@@ -1248,6 +1248,21 @@ func TestConstantValueChange(t *testing.T) {
 	mustContain(t, r.stdout,
 		"  - const Limit int64 = 10\n  + const Limit int64 = 20\n",
 		"  - const Version untyped string = \"1.2.0\"\n  + const Version untyped string = \"1.3.0-dev\"\n")
+
+	// go/constant abbreviates a long string value with "..." and no closing
+	// quote, in the declarations and in apidiff's message alike; the
+	// declarations are shown all the same.
+	long := strings.Repeat("a", 80)
+	f.write("a/a.go", "package a\n\nconst Long = \""+long+"\"\n")
+	f.commit("long")
+	f.write("a/a.go", "package a\n\nconst Long = \""+long+"b\"\n")
+	r = f.mustRun("HEAD", "", Options{})
+	abbreviated := "\"" + strings.Repeat("a", 68) + "..."
+	if want := "example.com/m/a\n  - const Long untyped string = " + abbreviated + "\n  + const Long untyped string = " + abbreviated + "\n"; !strings.HasPrefix(r.stdout, want) {
+		t.Errorf("stdout = %q\nwant prefix %q", r.stdout, want)
+	}
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	mustContain(t, r.stdout, `"before": "const Long untyped string = \"`+strings.Repeat("a", 68)+`..."`)
 }
 
 // A dependency that imports the main module (grpc-go and go-control-plane

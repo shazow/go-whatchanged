@@ -405,11 +405,14 @@ func describe(c Change, opts Options) line {
 	case "added":
 		l.to, l.decls = c.After, c.After != ""
 	default:
-		if head, from, to, ok := splitChangedFromTo(c.Message); ok {
-			if c.Before != "" && c.After != "" {
-				from, to, l.decls = c.Before, c.After, true
-			}
-			l.head, l.from, l.to = head, from, to
+		head, rest, ok := strings.Cut(c.Message, "changed from ")
+		if !ok {
+			break
+		}
+		if c.Before != "" && c.After != "" {
+			l.head, l.from, l.to, l.decls = head+"changed", c.Before, c.After, true
+		} else if from, to, ok := splitFromTo(rest); ok {
+			l.head, l.from, l.to = head+"changed", from, to
 		}
 	}
 	return l
@@ -563,27 +566,30 @@ func formatLine(st Style, l line, width int) []string {
 	return out
 }
 
-// splitChangedFromTo decomposes "<obj>: [value ]changed from X to Y" into
-// "<obj>: [value ]changed", X and Y. A type string can itself contain " to "
-// (a nested func's parameter names, a struct's field names or tags), but
-// only inside brackets or a string literal, so the split is the first
-// " to " after "changed from " that leaves X complete.
-func splitChangedFromTo(msg string) (head, from, to string, ok bool) {
-	head, rest, ok := strings.Cut(msg, "changed from ")
-	if !ok {
-		return "", "", "", false
-	}
+// splitFromTo splits the "X to Y" that follows "changed from " in a message
+// into X and Y. A type string can itself contain " to " (a nested func's
+// parameter names, a struct's field names or tags), but only inside
+// brackets or a string literal, so the split is the first " to " that
+// leaves X complete. When none does, which happens when go/constant has
+// abbreviated a long string value with "..." and no closing quote, the
+// first " to " is taken.
+func splitFromTo(s string) (from, to string, ok bool) {
 	const sep = " to "
-	for i := 0; ; i += len(sep) {
-		j := strings.Index(rest[i:], sep)
-		if j < 0 {
-			return "", "", "", false
-		}
-		i += j
-		if from, to := rest[:i], rest[i+len(sep):]; from != "" && to != "" && complete(from) {
-			return head + "changed", from, to, true
-		}
+	first := strings.Index(s, sep)
+	if first <= 0 || first+len(sep) >= len(s) {
+		return "", "", false // no " to ", or nothing on one side of it
 	}
+	for i := first; i+len(sep) < len(s); {
+		if complete(s[:i]) {
+			return s[:i], s[i+len(sep):], true
+		}
+		j := strings.Index(s[i+len(sep):], sep)
+		if j < 0 {
+			break
+		}
+		i += len(sep) + j
+	}
+	return s[:first], s[first+len(sep):], true
 }
 
 // complete reports whether every bracket and string literal in s is closed.
