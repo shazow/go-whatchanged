@@ -115,10 +115,19 @@ type Package struct {
 	Changes  []Change
 }
 
-// secondary reports whether the package is kept out of the public API: an
-// internal package or a main package, neither of which can be imported from
-// outside the module.
-func (p Package) secondary() bool { return p.Internal || p.Main }
+// part returns the part of the module the package belongs to: Main for a
+// command, whatever its directory, Internal for a package below an internal
+// directory, and Public otherwise. Only public packages can be imported
+// from outside the module.
+func (p Package) part() Visibility {
+	switch {
+	case p.Main:
+		return Main
+	case p.Internal:
+		return Internal
+	}
+	return Public
+}
 
 // Warning is a non-fatal problem encountered while loading one side.
 type Warning struct {
@@ -190,20 +199,28 @@ func ParseSignatures(s string) (Signatures, error) {
 	return 0, fmt.Errorf("invalid signatures %q (want full or minimal)", s)
 }
 
-// Visibility selects which packages take part in a diff.
+// Visibility is the set of parts of a module that take part in a diff:
+// any combination of Public, Internal and Main, combined with |. The zero
+// value selects All.
 type Visibility int
 
 const (
-	// All selects every package: the public API and the internal packages.
-	All Visibility = iota
 	// Public selects the packages importable from outside the module:
-	// everything but internal packages.
-	Public
-	// Internal selects internal packages only.
+	// everything but internal packages and main packages.
+	Public Visibility = 1 << iota
+	// Internal selects the packages below an internal directory, other
+	// than main packages.
 	Internal
+	// Main selects main packages (commands), wherever they are.
+	Main
+
+	// All selects every package: the public API, the internal packages and
+	// the main packages.
+	All = Public | Internal | Main
 )
 
-// ParseVisibility parses a --filter value: "all", "public" or "internal".
+// ParseVisibility parses one --filter term: "all", "public", "internal" or
+// "main".
 func ParseVisibility(s string) (Visibility, error) {
 	switch strings.ToLower(s) {
 	case "all":
@@ -212,20 +229,43 @@ func ParseVisibility(s string) (Visibility, error) {
 		return Public, nil
 	case "internal":
 		return Internal, nil
+	case "main":
+		return Main, nil
 	}
-	return 0, fmt.Errorf("invalid filter %q (want all, public or internal)", s)
+	return 0, fmt.Errorf("invalid filter %q (want all, public, internal or main)", s)
 }
 
-// Includes reports whether a package with the given internal status is
-// selected.
-func (v Visibility) Includes(internal bool) bool {
-	switch v {
-	case Public:
-		return !internal
-	case Internal:
-		return internal
+// String returns the terms of v, comma-separated, as --filter takes them.
+func (v Visibility) String() string {
+	if v.Has(All) {
+		return "all"
 	}
-	return true
+	var terms []string
+	for _, part := range []struct {
+		v    Visibility
+		name string
+	}{{Public, "public"}, {Internal, "internal"}, {Main, "main"}} {
+		if v.Has(part.v) {
+			terms = append(terms, part.name)
+		}
+	}
+	return strings.Join(terms, ",")
+}
+
+// Has reports whether v selects every part in parts. The zero value
+// selects everything.
+func (v Visibility) Has(parts Visibility) bool {
+	if v == 0 {
+		v = All
+	}
+	return v&parts == parts
+}
+
+// Includes reports whether a package with the given internal and main
+// status is selected: a main package by Main, and otherwise an internal
+// package by Internal and any other by Public.
+func (v Visibility) Includes(internal, main bool) bool {
+	return v.Has(Package{Internal: internal, Main: main}.part())
 }
 
 // Options controls rendering.
@@ -238,11 +278,13 @@ type Options struct {
 	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
-	// Filter says which packages took part: the public API, its packages
-	// and summary line, is printed unless it is Internal, and the internal
-	// packages with their own summary line after it unless it is Public
-	// (with All, only when some internal package changed). Internal
-	// packages never count towards the public API's summary.
+	// Filter says which packages took part. The public API, its packages
+	// and summary line, is printed when Public is selected; the internal
+	// packages follow with a summary line of their own when Internal is,
+	// and the main packages likewise when Main is. When the public API is
+	// printed the other sections appear only when some package in them
+	// changed. Internal and main packages never count towards the public
+	// API's summary.
 	Filter Visibility
 }
 
@@ -254,21 +296,28 @@ type Summary struct {
 }
 
 // Summarize counts the changes of the public API: every package that is
-// not internal.
+// neither internal nor a main package.
 func Summarize(res Result) Summary {
-	return summarize(res, false)
+	return summarize(res, Public)
 }
 
-// SummarizeInternal counts the changes of the packages outside the public
-// API: internal packages and main packages.
+// SummarizeInternal counts the changes of the internal packages, main
+// packages among them excluded.
 func SummarizeInternal(res Result) Summary {
-	return summarize(res, true)
+	return summarize(res, Internal)
 }
 
-func summarize(res Result, internal bool) Summary {
+// SummarizeMain counts the changes of the main packages.
+func SummarizeMain(res Result) Summary {
+	return summarize(res, Main)
+}
+
+// summarize counts the changes of the packages of one part: Public,
+// Internal or Main.
+func summarize(res Result, part Visibility) Summary {
 	var s Summary
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 || p.secondary() != internal {
+		if len(p.Changes) == 0 || p.part() != part {
 			continue
 		}
 		s.PackagesChanged++
@@ -516,39 +565,45 @@ func header(p Package) string {
 	return p.Path + " (" + strings.Join(notes, ", ") + ")"
 }
 
-// section is one of the two halves of the text and Markdown layouts: the
-// public API or the internal packages, each its packages followed by its
-// summary line.
+// section is one part of the text and Markdown layouts: the public API,
+// the internal packages or the main packages, each its packages followed
+// by its summary line.
 type section struct {
-	internal bool
-	packages []Package // the ones with rows to show
-	summary  string    // the summary line, without markup
-	// secondary marks the internal section of an --filter=all diff, which
-	// the text layout dims and the Markdown layout italicizes.
+	part     Visibility // Public, Internal or Main
+	packages []Package  // the ones with rows to show
+	// summary is the summary line, without markup: always set for the
+	// internal and main sections, and for the public one only when nothing
+	// changed (otherwise the layouts format the full summary themselves).
+	summary string
+	// secondary marks an internal or main section printed below the public
+	// API, which the text layout dims and the Markdown layout italicizes.
 	secondary bool
 }
 
 // sections splits res into the sections opts.Filter selects. The public
-// API comes first, reduced to its summary line when nothing changed, and
-// the internal packages (and main packages, which never are public) after
-// it; unless Internal, the internal section appears only when some package
-// in it changed.
+// API comes first, reduced to its summary line when nothing changed, then
+// the internal packages and then the main packages (which never are
+// public, wherever they live); when the public API is shown, the other
+// sections appear only when some package in them changed.
 func sections(res Result, opts Options) []section {
+	f := opts.Filter
 	var out []section
-	if opts.Filter != Internal {
-		sum := Summarize(res)
-		s := section{summary: noChanges(res, opts.Filter)}
-		if sum.PackagesChanged > 0 {
+	if f.Has(Public) {
+		s := section{part: Public, summary: noChanges(res, f)}
+		if Summarize(res).PackagesChanged > 0 {
 			s.summary = ""
 		}
 		out = append(out, s)
 	}
-	if isum := SummarizeInternal(res); opts.Filter == Internal || isum.PackagesChanged > 0 {
-		out = append(out, section{internal: true, summary: internalSummary(isum), secondary: opts.Filter != Internal})
+	for _, part := range []Visibility{Internal, Main} {
+		sum := summarize(res, part)
+		if f.Has(part) && (!f.Has(Public) || sum.PackagesChanged > 0) {
+			out = append(out, section{part: part, summary: partSummary(part, sum), secondary: f.Has(Public)})
+		}
 	}
 	for i := range out {
 		for _, p := range res.Packages {
-			if p.secondary() != out[i].internal {
+			if p.part() != out[i].part {
 				continue
 			}
 			if rows, _ := packageRows(p, opts); len(rows) > 0 {
@@ -584,9 +639,9 @@ func writeText(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		switch {
-		case s.internal && s.secondary:
+		case s.part != Public && s.secondary:
 			b.WriteString(st.Dim(s.summary)) // secondary to the public API's line
-		case s.internal:
+		case s.part != Public:
 			b.WriteString(s.summary)
 		case s.summary != "":
 			b.WriteString(st.Dim(s.summary))
@@ -686,7 +741,7 @@ func noChanges(res Result, filter Visibility) string {
 	if res.BaseVersion != "" {
 		s += " since " + res.BaseVersion
 	}
-	if filter == Public {
+	if !filter.Has(Internal) {
 		s += "; add --filter=all to include internal API changes"
 	}
 	return s
@@ -707,13 +762,14 @@ func formatSummary(st Style, sum Summary, res Result) string {
 		plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, colored, versions(res))
 }
 
-// internalSummary is the extra summary line for internal packages.
-func internalSummary(isum Summary) string {
-	if isum.PackagesChanged == 0 {
-		return "internal: no changes"
+// partSummary is the summary line of the internal or the main section:
+// "internal: 2 packages changed · 1 incompatible · 1 compatible".
+func partSummary(part Visibility, sum Summary) string {
+	if sum.PackagesChanged == 0 {
+		return part.String() + ": no changes"
 	}
-	return fmt.Sprintf("internal: %s · %d incompatible · %d compatible",
-		plural(isum.PackagesChanged, "package"), isum.Incompatible, isum.Compatible)
+	return fmt.Sprintf("%s: %s · %d incompatible · %d compatible",
+		part, plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible)
 }
 
 // versions is the " (v1.4.0 → v1.5.0)" suffix of the summary line, or "".
@@ -763,9 +819,9 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("```\n\n")
 		}
 		switch {
-		case s.internal && s.secondary, !s.internal && s.summary != "":
+		case s.part != Public && s.secondary, s.part == Public && s.summary != "":
 			fmt.Fprintf(&b, "_%s_\n", s.summary)
-		case s.internal:
+		case s.part != Public:
 			fmt.Fprintf(&b, "%s\n", s.summary)
 		default:
 			sum := Summarize(res)
@@ -812,6 +868,7 @@ type jsonSummary struct {
 	Compatible      int         `json:"compatible"`
 	Release         string      `json:"release"`
 	Internal        *jsonCounts `json:"internal,omitempty"`
+	Main            *jsonCounts `json:"main,omitempty"`
 }
 
 type jsonCounts struct {
@@ -840,8 +897,13 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			Release:         strings.ToLower(sum.Release()),
 		},
 	}
-	if isum := SummarizeInternal(res); opts.Filter != Public || isum.PackagesChanged > 0 {
+	// The internal and main counts appear when their packages took part,
+	// or when one of them changed anyway (a --pkg pattern can name one).
+	if isum := SummarizeInternal(res); opts.Filter.Has(Internal) || isum.PackagesChanged > 0 {
 		rep.Summary.Internal = &jsonCounts{PackagesChanged: isum.PackagesChanged, Incompatible: isum.Incompatible, Compatible: isum.Compatible}
+	}
+	if msum := SummarizeMain(res); opts.Filter.Has(Main) || msum.PackagesChanged > 0 {
+		rep.Summary.Main = &jsonCounts{PackagesChanged: msum.PackagesChanged, Incompatible: msum.Incompatible, Compatible: msum.Compatible}
 	}
 	for _, p := range res.Packages {
 		if len(p.Changes) == 0 {

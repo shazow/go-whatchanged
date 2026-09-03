@@ -210,6 +210,11 @@
       "packages_changed": 1,
       "incompatible": 1,
       "compatible": 1
+    },
+    "main": {
+      "packages_changed": 0,
+      "incompatible": 0,
+      "compatible": 0
     }
   }
 }
