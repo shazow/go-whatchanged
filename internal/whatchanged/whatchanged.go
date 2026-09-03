@@ -58,6 +58,9 @@ type Options struct {
 	Filter render.Visibility
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
+	// Width is the number of columns the text layout may use, 0 for no
+	// limit; see render.Options.Width.
+	Width int
 	// Signatures selects whether each change shows the symbol's
 	// declaration; the zero value shows it in full.
 	Signatures render.Signatures
@@ -251,6 +254,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 		Format:       opts.Format,
 		Signatures:   opts.Signatures,
 		Positions:    opts.Positions,
+		Width:        opts.Width,
 		Filter:       opts.Filter,
 	}
 	if err := render.Write(opts.Stdout, *res, ro); err != nil {

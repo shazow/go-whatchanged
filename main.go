@@ -135,6 +135,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Filter:    o.Filter.visibility(),
 		Breaking:  o.Filter.breaking(),
 		Positions: o.Pos,
+		Width:     terminalWidth(),
 		Strict:    o.Strict,
 		Base:      o.Args.Base,
 		Head:      o.Args.Head,
@@ -242,6 +243,19 @@ func version() string {
 		v = info.Main.Version
 	}
 	return fmt.Sprintf("go-whatchanged %s (built with %s)", v, runtime.Version())
+}
+
+// terminalWidth returns the width of the terminal on stdout, or 0 when
+// stdout is not a terminal or its size is unknown.
+func terminalWidth() int {
+	if !term.IsTerminal(int(os.Stdout.Fd())) {
+		return 0
+	}
+	width, _, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || width <= 0 {
+		return 0
+	}
+	return width
 }
 
 func autoColor() bool {

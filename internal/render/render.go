@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -278,6 +279,12 @@ type Options struct {
 	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
+	// Width is the number of columns the text layout may use, 0 for no
+	// limit. Positions line up in a column that fits within it; a row too
+	// wide for that column gets its position after two spaces regardless,
+	// so that one long declaration does not push the whole column past
+	// the edge and wrap every line of the package.
+	Width int
 	// Filter says which packages took part. The public API, its packages
 	// and summary line, is printed when Public is selected; the internal
 	// packages follow with a summary line of their own when Internal is,
@@ -523,21 +530,53 @@ func (l line) rows() []row {
 }
 
 // packageRows returns the rows of the changes of p to show, honoring
-// BreakingOnly, and the width of the widest labeled row among those that
-// carry a position, so that positions line up in a column.
-func packageRows(p Package, opts Options) (rows []row, width int) {
+// BreakingOnly, and the column at which their positions line up: the
+// width of the widest labeled row among those that carry a position. With
+// a width limit, rows whose position would then run past the limit are
+// left out of the column, and it narrows to the widest row that fits,
+// with indent columns before the label and two between it and the
+// position; those rows print their position unaligned instead.
+func packageRows(p Package, opts Options, limit, indent int) (rows []row, width int) {
 	for _, c := range p.Changes {
 		if opts.BreakingOnly && c.Compatible {
 			continue
 		}
-		for _, r := range describe(c, opts).rows() {
-			if r.pos != "" {
-				width = max(width, utf8.RuneCountInString(r.label()))
-			}
-			rows = append(rows, r)
+		rows = append(rows, describe(c, opts).rows()...)
+	}
+	return rows, column(rows, limit, indent)
+}
+
+// column returns the width of the widest labeled row with a position, or
+// with limit > 0, of the widest such row at which every row up to that
+// width fits its position within limit.
+func column(rows []row, limit, indent int) int {
+	var widths []int
+	for _, r := range rows {
+		if r.pos != "" {
+			widths = append(widths, utf8.RuneCountInString(r.label()))
 		}
 	}
-	return rows, width
+	sort.Sort(sort.Reverse(sort.IntSlice(widths)))
+	for _, w := range widths {
+		if limit <= 0 || fits(rows, w, limit, indent) {
+			return w
+		}
+	}
+	return 0
+}
+
+// fits reports whether every row with a position labeled at most width
+// wide fits its position within limit when aligned at width.
+func fits(rows []row, width, limit, indent int) bool {
+	for _, r := range rows {
+		if r.pos == "" || utf8.RuneCountInString(r.label()) > width {
+			continue
+		}
+		if indent+width+2+utf8.RuneCountInString(r.pos) > limit {
+			return false
+		}
+	}
+	return true
 }
 
 // padding returns the spaces that align a position after text at width.
@@ -606,7 +645,7 @@ func sections(res Result, opts Options) []section {
 			if p.part() != out[i].part {
 				continue
 			}
-			if rows, _ := packageRows(p, opts); len(rows) > 0 {
+			if rows, _ := packageRows(p, opts, 0, 0); len(rows) > 0 {
 				out[i].packages = append(out[i].packages, p)
 			}
 		}
@@ -622,7 +661,7 @@ func writeText(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		for _, p := range s.packages {
-			rows, width := packageRows(p, opts)
+			rows, width := packageRows(p, opts, opts.Width, 2)
 			b.WriteString(st.Bold(header(p)))
 			b.WriteString("\n")
 			for _, r := range rows {
@@ -800,7 +839,7 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		for _, p := range s.packages {
-			rows, width := packageRows(p, opts)
+			rows, width := packageRows(p, opts, 0, 0)
 			fmt.Fprintf(&b, "**%s**\n\n```diff\n", header(p))
 			for _, r := range rows {
 				glyph, sep := r.glyph, " "
