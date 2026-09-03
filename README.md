@@ -228,11 +228,14 @@ present with `--signatures=minimal`.
 With `--pos`, each change also carries a `pos` object locating the
 declaration, `{"rev": "v1.4.0", "file": "store/store.go", "line": 9,
 "col": 18}`, where `rev` is absent for the working tree. `release` is
-`major`, `minor` or `patch`. `warnings` holds the type-check problems that
-stderr shows as `warn: <package>: <message>` lines, one `{"package": ...,
-"message": ...}` object each, and `summary.internal` has the
-`packages_changed`, `incompatible` and `compatible` counts of the internal
-packages.
+`major`, `minor` or `patch`. A change whose declaration lies outside the
+module, a field or method promoted from a dependency, has no `pos`, since
+positions are relative to the module root. `warnings` holds the warnings
+that stderr shows as `warn: <package>: <message>` lines (type-check
+problems, `--pkg` patterns that matched nothing, the `go` directive note),
+one `{"package": ..., "message": ...}` object each, and `summary.internal`
+has the `packages_changed`, `incompatible` and `compatible` counts of the
+internal packages.
 
 ### In GitHub Actions
 
@@ -413,7 +416,8 @@ example.com/m/store
 ```
 
 Working tree positions are relative to the module root, so terminals and
-editors can open them.
+editors can open them. A field or method promoted from a dependency is
+declared outside the module and has no position.
 
 A change with no declaration to show keeps apidiff's message instead, one
 line marked with a glyph, and `--signatures=minimal` prints every change

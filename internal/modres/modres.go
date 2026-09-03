@@ -1,6 +1,7 @@
 // Package modres resolves import paths to directories for one side of a diff
-// using only go.mod, GOROOT and the module cache. It never runs the go
-// command and never touches the network.
+// using only go.mod, GOROOT, the module cache and the directories that
+// replace directives name. It never runs the go command and never touches
+// the network.
 package modres
 
 import (

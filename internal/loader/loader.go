@@ -183,9 +183,9 @@ func (l *Loader) pop() {
 }
 
 // Load type-checks the main-module package at dir with the given import
-// path; whatchanged calls it for each package discover found. bp is the
-// directory as discover imported it, reused so that it is not listed and
-// its files not scanned a second time.
+// path; whatchanged calls it for each package the package filters select.
+// bp is the directory as discover imported it, reused so that it is not
+// listed and its files not scanned a second time.
 func (l *Loader) Load(importPath, dir string, bp *build.Package) (*types.Package, error) {
 	if bp != nil {
 		l.mu.Lock()

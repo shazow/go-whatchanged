@@ -64,9 +64,6 @@ func (s Style) Green(text string, bold bool) string { return s.color(text, bold,
 // Yellow renders text in yellow, bold when bold is set.
 func (s Style) Yellow(text string, bold bool) string { return s.color(text, bold, codeYellow) }
 
-// Cyan renders text in cyan, bold when bold is set.
-func (s Style) Cyan(text string, bold bool) string { return s.color(text, bold, codeCyan) }
-
 // DimYellow renders text in dim yellow.
 func (s Style) DimYellow(text string) string { return s.wrap(text, codeDim, codeYellow) }
 

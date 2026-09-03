@@ -1,5 +1,5 @@
 // Package vfs builds read-only go/build contexts whose filesystem hooks are
-// served from a git tree, a billy filesystem, or the real disk.
+// served from a git tree, any FS implementation, or the real disk.
 //
 // A Context never writes anywhere: every hook is a pure read. Paths under a
 // mount are answered by the mounted FS; every other path falls through to the

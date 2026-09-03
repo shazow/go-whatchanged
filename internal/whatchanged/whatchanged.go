@@ -1,5 +1,5 @@
-// Package whatchanged computes a colorized diff of a Go module's exported API
-// between a git commit and the working tree (or another commit), without
+// Package whatchanged computes a semantic diff of a Go module's exported API
+// between two git revisions, or a revision and the working tree, without
 // writing to disk or invoking the go command.
 package whatchanged
 
@@ -288,21 +288,22 @@ type sideSpec struct {
 	mounts []vfs.Mount // extra mounts, such as a test's in-memory module cache
 }
 
-// side is a fully loaded side.
+// side is one side of the diff: sideSpec.mount serves its tree and loadSide
+// type-checks its packages.
 type side struct {
-	rev      string // git revision, empty for a directory side
-	label    string
-	mount    string // synthetic path the side's tree is mounted at, "" on disk
-	overlay  *vfs.Overlay
-	root     string // the module root within the overlay
-	prefix   string // root as a path prefix, rewritten to label+":" in messages
-	res      *modres.Resolver
-	ld       *loader.Loader
-	pkgs     map[string]*types.Package
-	internal map[string]bool // import paths of internal packages
-	all      []string        // every import path Options.Filter selects, before Options.Packages and Exclude
-	problem  map[string]string
-	notes    []string // module-level warnings, reported under the module path
+	rev       string // git revision, empty for a directory side
+	label     string
+	mountPath string // synthetic path the side's tree is mounted at, "" on disk
+	overlay   *vfs.Overlay
+	root      string // the module root within the overlay
+	prefix    string // root as a path prefix, rewritten to label+":" in messages
+	res       *modres.Resolver
+	ld        *loader.Loader
+	pkgs      map[string]*types.Package
+	internal  map[string]bool // import paths of internal packages
+	all       []string        // every import path Options.Filter selects, before Options.Packages and Exclude
+	problem   map[string]string
+	notes     []string // module-level warnings, reported under the module path
 }
 
 // rewrite turns the synthetic mount paths in a message into "<rev>:"
@@ -316,8 +317,8 @@ func (s *side) rewrite(msg string) string {
 		label = s.label + ":"
 	}
 	msg = strings.ReplaceAll(msg, s.prefix, label)
-	if s.mount != "" {
-		msg = strings.ReplaceAll(msg, s.mount+"/", label)
+	if s.mountPath != "" {
+		msg = strings.ReplaceAll(msg, s.mountPath+"/", label)
 	}
 	return msg
 }
@@ -406,7 +407,7 @@ func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 
 // mount serves the tree the spec names, from the git revision, the
 // filesystem or the directory on disk, and returns the side with its label,
-// its overlay and the module root within it.
+// its overlay and the module root within it; loadSide does the rest.
 func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 	s := &side{rev: spec.rev}
 	switch {
@@ -420,15 +421,15 @@ func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 			return nil, err
 		}
 		s.label = spec.rev
-		s.mount = vfs.GitMountPath(tree)
-		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
-		s.root = path.Join(s.mount, rel)
+		s.mountPath = vfs.GitMountPath(tree)
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
+		s.root = path.Join(s.mountPath, rel)
 		s.prefix = s.root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
-		s.mount = vfs.SyntheticPrefix + "worktree"
-		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: spec.fs}}, spec.mounts...)...)
-		s.root = path.Join(s.mount, rel)
+		s.mountPath = vfs.SyntheticPrefix + "worktree"
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: spec.fs}}, spec.mounts...)...)
+		s.root = path.Join(s.mountPath, rel)
 		s.prefix = s.root + "/"
 	default:
 		s.label = "working tree"
