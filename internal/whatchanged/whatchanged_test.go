@@ -1681,6 +1681,43 @@ func TestPositions(t *testing.T) {
 	mustContain(t, r.stdout, "  - func Drop()            v0.1.0:a/a.go:5:6\n", "  + func Added()           HEAD:a/a.go:12:6\n")
 }
 
+// A dependency upgrade can change a package's API through promoted fields
+// and methods. Those are declared outside the module, so they carry no
+// position, and their messages name the dependency's symbol, which cannot
+// be looked up, so the renderer falls back to the types quoted in the
+// message even when those contain " to " themselves.
+func TestPromotedMembersFromDependency(t *testing.T) {
+	f := newFixture(t)
+	f.useFakeModcache()
+	f.writeModule("example.com/dep", "v1.0.0", map[string]string{"dep.go": "package dep\n\ntype Base struct{ X int }\n\nfunc (b *Base) M(fn func(from, to string)) {}\n"})
+	f.writeModule("example.com/dep", "v1.1.0", map[string]string{"dep.go": "package dep\n\ntype Base struct{ X, Y int }\n\nfunc (b *Base) M(fn func(from, to string)) error { return nil }\n"})
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n")
+	f.write("a/a.go", "package a\n\nimport \"example.com/dep\"\n\ntype T struct{ dep.Base }\n")
+	f.commit("base")
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.1.0\n")
+
+	r := f.run("HEAD", "", Options{Positions: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want := "example.com/m/a\n" +
+		"  ~ example.com/dep.(*Base).M: changed\n" +
+		"      - func(func(from string, to string))\n" +
+		"      + func(func(from string, to string)) error\n" +
+		"  + field T.Y int\n" +
+		"\n1 package changed · 1 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	r = f.run("HEAD", "", Options{Positions: true, Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"before": "func(func(from string, to string))"`, `"after": "func(func(from string, to string)) error"`)
+	mustNotContain(t, r.stdout, `"pos"`)
+}
+
 func TestPackageFilter(t *testing.T) {
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")

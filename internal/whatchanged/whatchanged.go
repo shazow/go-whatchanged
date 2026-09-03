@@ -321,11 +321,13 @@ func (s *side) rewrite(msg string) string {
 }
 
 // position converts a token position on this side into a render.Position.
+// Positions are relative to the module root, so a declaration outside it
+// (a field or method promoted from a dependency) has none.
 func (s *side) position(p token.Position) render.Position {
-	if !p.IsValid() {
+	file, ok := strings.CutPrefix(p.Filename, s.prefix)
+	if !p.IsValid() || !ok {
 		return render.Position{}
 	}
-	file := strings.TrimPrefix(p.Filename, s.prefix)
 	return render.Position{Rev: s.rev, File: filepath.ToSlash(file), Line: p.Line, Col: p.Column}
 }
 

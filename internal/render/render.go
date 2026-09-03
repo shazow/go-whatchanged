@@ -570,18 +570,49 @@ func formatLine(st Style, l line, width int) []string {
 }
 
 // splitChangedFromTo decomposes "<obj>: [value ]changed from X to Y" into
-// "<obj>: [value ]changed", X and Y. Type strings never contain " to "
-// themselves, so the first occurrence after "changed from " is the split.
+// "<obj>: [value ]changed", X and Y. A type string can itself contain " to "
+// (a nested func's parameter names, a struct's field names or tags), but
+// only inside brackets or a string literal, so the split is the first
+// " to " after "changed from " that leaves X complete.
 func splitChangedFromTo(msg string) (head, from, to string, ok bool) {
-	before, rest, ok := strings.Cut(msg, "changed from ")
+	head, rest, ok := strings.Cut(msg, "changed from ")
 	if !ok {
 		return "", "", "", false
 	}
-	from, to, ok = strings.Cut(rest, " to ")
-	if !ok || from == "" || to == "" {
-		return "", "", "", false
+	const sep = " to "
+	for i := 0; ; i += len(sep) {
+		j := strings.Index(rest[i:], sep)
+		if j < 0 {
+			return "", "", "", false
+		}
+		i += j
+		if from, to := rest[:i], rest[i+len(sep):]; from != "" && to != "" && complete(from) {
+			return head + "changed", from, to, true
+		}
 	}
-	return before + "changed", from, to, true
+}
+
+// complete reports whether every bracket and string literal in s is closed.
+func complete(s string) bool {
+	depth := 0
+	for i := 0; i < len(s); i++ {
+		switch q := s[i]; q {
+		case '(', '[', '{':
+			depth++
+		case ')', ']', '}':
+			depth--
+		case '"', '`':
+			for i++; i < len(s) && s[i] != q; i++ {
+				if q == '"' && s[i] == '\\' {
+					i++ // an escaped character, possibly a quote
+				}
+			}
+			if i == len(s) {
+				return false
+			}
+		}
+	}
+	return depth == 0
 }
 
 // noChanges is the message for an empty diff, naming the base release when
