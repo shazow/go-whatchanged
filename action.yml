@@ -40,10 +40,10 @@ inputs:
   filter:
     description: >-
       Which packages take part: all (the public API first, then the internal
-      packages), public (the importable API alone) or internal, plus main to
-      include main packages, comma-separated (all,main). Internal and main
-      packages are listed but never count towards the summary, the outputs
-      or fail-on.
+      packages, then the main packages), or any of public (the importable
+      API alone), internal and main, comma-separated (public,main). Internal
+      and main packages are listed but never count towards the summary, the
+      outputs or fail-on.
     required: false
     default: all
   breaking:

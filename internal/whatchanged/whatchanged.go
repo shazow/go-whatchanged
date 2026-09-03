@@ -49,15 +49,13 @@ type Options struct {
 	// Packages restricts the diff to packages matching one of these
 	// patterns (see discover.Filter); Exclude removes matching packages.
 	Packages, Exclude []string
-	// Filter selects which packages take part: the public ones (the zero
-	// value), internal ones only, or all. Internal packages are listed and
-	// marked, but never count towards the public API's summary, the
-	// required release or the exit code.
+	// Filter selects which packages take part: any combination of the
+	// public ones, the internal ones and the main packages (commands); the
+	// zero value selects all of them. Internal and main packages are listed
+	// and marked, in sections of their own below the public API, but never
+	// count towards the public API's summary, the required release or the
+	// exit code.
 	Filter render.Visibility
-	// Main adds main packages (commands) to the selection. Nothing can
-	// import them, so they are listed with the internal packages and
-	// never count towards the public API's summary either.
-	Main bool
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Width is the number of columns the text layout may use, 0 for no
@@ -140,7 +138,8 @@ func ParseSignatures(s string) (render.Signatures, error) {
 	return render.ParseSignatures(s)
 }
 
-// ParseFilter parses a --filter value: "public", "internal" or "all".
+// ParseFilter parses one --filter term: "public", "internal", "main" or
+// "all".
 func ParseFilter(s string) (render.Visibility, error) {
 	return render.ParseVisibility(s)
 }
@@ -468,7 +467,10 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			res.GoVersion(), limit, limit))
 	}
 
-	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), opts.Filter != render.Public, opts.Main)
+	// Main packages can live below internal directories, so those are
+	// walked whenever either takes part; Includes sorts out the rest.
+	internal := opts.Filter.Has(render.Internal) || opts.Filter.Has(render.Main)
+	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), internal, opts.Filter.Has(render.Main))
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
@@ -479,7 +481,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
-		if !found[p].Main && !opts.Filter.Includes(found[p].Internal) {
+		if !opts.Filter.Includes(found[p].Internal, found[p].Main) {
 			continue
 		}
 		s.all = append(s.all, p)

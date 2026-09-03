@@ -31,12 +31,13 @@ changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
 matching anything: "store/..." is the store package and everything below
 it. Both may be repeated or given comma-separated lists.
 
---filter=all, the default, lists the public API first and the internal
-packages after it; internal packages never count towards the summary, the
-required release or the exit code. --filter=main adds main packages
-(commands), which nothing can import and which are listed with the internal
-packages. --filter=breaking narrows the diff to incompatible changes. Both
-combine with the others: --filter=public,breaking or --filter=all,main.
+--filter=all, the default, lists the public API first, then the internal
+packages and then the main packages (commands), which nothing can import;
+neither of the latter counts towards the summary, the required release or
+the exit code. --filter=public, --filter=internal and --filter=main pick
+the parts to show, and add up: --filter=public,main. --filter=breaking
+narrows the diff to incompatible changes and combines with any of them:
+--filter=public,breaking.
 
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
@@ -55,7 +56,7 @@ type options struct {
 	Repo       string   `long:"repo" value-name:"DIR" description:"path inside a git repository (default: current directory)"`
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
-	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, public or internal, plus main to include main packages and breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, or any of public, internal and main; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Signatures string   `long:"signatures" choice:"full" choice:"minimal" default:"full" description:"show each change as its declarations (full) or as one message line (minimal)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
@@ -133,7 +134,6 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Exclude:   o.Exclude,
 		Filter:    o.Filter.visibility(),
 		Breaking:  o.Filter.breaking(),
-		Main:      o.Filter.main(),
 		Positions: o.Pos,
 		Width:     terminalWidth(),
 		Strict:    o.Strict,
@@ -166,10 +166,10 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 }
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
-// "all", "public" or "internal" say which packages take part (the last
-// two add up to all), "main" adds main packages and "breaking" narrows the
-// diff to incompatible changes. It is a slice so that go-flags drops the default when the flag
-// is given.
+// "public", "internal" and "main" say which packages take part (all three
+// add up to "all", the default when none is named) and "breaking" narrows
+// the diff to incompatible changes. It is a slice so that go-flags drops
+// the default when the flag is given.
 type filter []string
 
 // UnmarshalFlag adds the terms of one flag occurrence, implementing
@@ -192,25 +192,30 @@ func (f *filter) UnmarshalFlag(s string) error {
 // MarshalFlag implements flags.Marshaler.
 func (f filter) MarshalFlag() (string, error) { return strings.Join(f, ","), nil }
 
-// visibility returns the packages the terms select: all unless only public
-// or only internal was named.
+// visibility returns the packages the terms select: the parts named, or
+// all of them when "all" or no part at all was named.
 func (f filter) visibility() render.Visibility {
-	public, internal := slices.Contains(f, "public"), slices.Contains(f, "internal")
-	switch {
-	case slices.Contains(f, "all"), public == internal:
-		return render.All
-	case public:
-		return render.Public
-	default:
-		return render.Internal
+	var v render.Visibility
+	for _, term := range f {
+		switch term {
+		case "all":
+			return render.All
+		case "public":
+			v |= render.Public
+		case "internal":
+			v |= render.Internal
+		case "main":
+			v |= render.Main
+		}
 	}
+	if v == 0 {
+		return render.All
+	}
+	return v
 }
 
 // breaking reports whether only incompatible changes are wanted.
 func (f filter) breaking() bool { return slices.Contains(f, "breaking") }
-
-// main reports whether main packages take part.
-func (f filter) main() bool { return slices.Contains(f, "main") }
 
 // patterns collects a repeatable, comma-separated pattern flag.
 type patterns []string

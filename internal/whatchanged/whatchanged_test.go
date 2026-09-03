@@ -1991,7 +1991,7 @@ func TestMinimalSignatures(t *testing.T) {
 
 func TestParseFilter(t *testing.T) {
 	t.Parallel()
-	for in, want := range map[string]render.Visibility{"public": render.Public, "internal": render.Internal, "ALL": render.All} {
+	for in, want := range map[string]render.Visibility{"public": render.Public, "internal": render.Internal, "main": render.Main, "ALL": render.All} {
 		got, err := ParseFilter(in)
 		if err != nil || got != want {
 			t.Errorf("ParseFilter(%q) = %v, %v; want %v", in, got, err, want)
@@ -2019,50 +2019,85 @@ func TestFilterMainPackages(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("internal/x/x.go", "package x\n\nfunc X() {}\n")
 	f.write("cmd/m/main.go", "package main\n\nfunc Version() string { return \"1\" }\n\nfunc main() {}\n")
 	f.write("internal/cmd/tool/main.go", "package main\n\nfunc Run() {}\n\nfunc main() {}\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Added() {}\n")
+	f.write("internal/x/x.go", "package x\n\nfunc X() {}\n\nfunc Y() {}\n")
 	f.write("cmd/m/main.go", "package main\n\nfunc main() {}\n")
 	f.write("internal/cmd/tool/main.go", "package main\n\nfunc Run() {}\n\nfunc Also() {}\n\nfunc main() {}\n")
 
-	// Main packages do not exist unless asked for.
-	r := f.mustRun("HEAD", "", Options{})
-	if want := "example.com/m/a\n  + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
+	// By default (--filter=all) main packages follow the internal section,
+	// marked, in a section of their own; a command below an internal
+	// directory is a main package first. They never count towards the
+	// public summary, the release or the exit code.
+	public := "example.com/m/a\n  + func Added()\n\n" +
+		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"
+	internal := "example.com/m/internal/x (internal)\n  + func Y()\n\n" +
+		"internal: 1 package changed · 0 incompatible · 1 compatible\n"
+	main := "example.com/m/cmd/m (main)\n  - func Version() string\n\n" +
+		"example.com/m/internal/cmd/tool (internal, main)\n  + func Also()\n\n" +
+		"main: 2 packages changed · 1 incompatible · 1 compatible\n"
+	r := f.mustRun("HEAD", "", Options{ExitFail: FailMajor})
+	if want := public + "\n" + internal + "\n" + main; r.stdout != want {
 		t.Errorf("default: stdout = %q\nwant     %q", r.stdout, want)
 	}
+	if r.code != ExitClean {
+		t.Errorf("default: exit = %d, want %d", r.code, ExitClean)
+	}
 
-	// --filter=main adds them to the internal section, marked; they never
-	// count towards the public summary, the release or the exit code.
-	r = f.mustRun("HEAD", "", Options{Main: true, ExitFail: FailMajor})
-	want := "example.com/m/a\n  + func Added()\n\n" +
-		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n\n" +
-		"example.com/m/cmd/m (main)\n  - func Version() string\n\n" +
-		"example.com/m/internal/cmd/tool (internal, main)\n  + func Also()\n\n" +
-		"internal: 2 packages changed · 1 incompatible · 1 compatible\n"
-	if r.stdout != want {
+	// --filter=public leaves both out; --filter=internal shows the internal
+	// packages that are not commands.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public})
+	if want := public; r.stdout != want {
+		t.Errorf("public: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Internal})
+	if want := internal; r.stdout != want {
+		t.Errorf("internal: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// --filter=main shows the commands alone, with only their summary line.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Main, ExitFail: FailMajor})
+	if want := main; r.stdout != want {
 		t.Errorf("main: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	if r.code != ExitClean {
 		t.Errorf("main: exit = %d, want %d", r.code, ExitClean)
 	}
 
-	// --filter=public,main: the importable API, then the commands alone;
-	// public still leaves internal directories out, commands included.
-	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Main: true})
-	want = "example.com/m/a\n  + func Added()\n\n" +
-		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n\n" +
-		"example.com/m/cmd/m (main)\n  - func Version() string\n\n" +
-		"internal: 1 package changed · 1 incompatible · 0 compatible\n"
-	if r.stdout != want {
+	// --filter=public,main: the importable API, then the commands; the
+	// internal packages stay out.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main})
+	if want := public + "\n" + main; r.stdout != want {
 		t.Errorf("public,main: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
-	// JSON marks them and counts them under summary.internal.
-	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Main: true, Format: render.JSON})
-	mustContain(t, r.stdout, `"main": true`, `"path": "example.com/m/cmd/m"`)
-	mustNotContain(t, r.stdout, `"internal": true`)
-	if !strings.Contains(r.stdout, "\"internal\": {\n") {
-		t.Errorf("public,main json: no summary.internal in %s", r.stdout)
+	// Without changes to the commands the section disappears below the
+	// public API, but stays when asked for on its own.
+	f.write("cmd/m/main.go", "package main\n\nfunc Version() string { return \"1\" }\n\nfunc main() {}\n")
+	f.write("internal/cmd/tool/main.go", "package main\n\nfunc Run() {}\n\nfunc main() {}\n")
+	r = f.mustRun("HEAD", "", Options{})
+	if want := public + "\n" + internal; r.stdout != want {
+		t.Errorf("unchanged main: stdout = %q\nwant     %q", r.stdout, want)
 	}
+	r = f.mustRun("HEAD", "", Options{Filter: render.Main})
+	if want := "main: no changes\n"; r.stdout != want {
+		t.Errorf("unchanged --filter=main: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	f.write("cmd/m/main.go", "package main\n\nfunc main() {}\n")
+
+	// Markdown italicizes the section below the public API like the
+	// internal one; JSON marks the packages and counts them under
+	// summary.main, which appears when main packages took part.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.Markdown})
+	mustContain(t, r.stdout, "**example.com/m/cmd/m (main)**\n\n```diff\n- func Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
+	mustNotContain(t, r.stdout, "internal:")
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.JSON})
+	mustContain(t, r.stdout, `"main": true`, `"path": "example.com/m/cmd/m"`,
+		"\"main\": {\n      \"packages_changed\": 1,\n      \"incompatible\": 1,\n      \"compatible\": 0\n    }")
+	mustNotContain(t, r.stdout, `"internal": true`, "\"internal\": {\n")
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Format: render.JSON})
+	mustNotContain(t, r.stdout, `"main"`)
 }

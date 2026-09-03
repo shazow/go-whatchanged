@@ -72,9 +72,9 @@ Options:
   --repo=DIR         path inside a git repository (default: current directory)
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
-  --filter=WHICH     all | public | internal: which packages take part;
-                     main: include main packages; breaking: only
-                     incompatible changes (default all)
+  --filter=WHICH     all, or any of public | internal | main: which
+                     packages take part; breaking: only incompatible
+                     changes (default all)
   --signatures=HOW   full | minimal: declarations, or one line per change
                      (default full)
   --pos              annotate changes with source positions
@@ -122,11 +122,12 @@ always suggests its final release.
 `store/...` for the store package and everything below it.
 
 Internal packages are listed after the public API with a summary line of
-their own, as above, and never count towards the public API's totals or
-the exit code. `main` packages are left out unless `--filter=main` asks
-for them; nothing can import a command, so they join the internal
-section. With `--filter=breaking`, the counts in the summary still
-describe the full diff.
+their own, as above, and `main` packages, which nothing can import, after
+them in a section of theirs; neither counts towards the public API's
+totals or the exit code. `--filter` picks the sections: `--filter=public`
+for the importable API alone, `--filter=main` for the commands alone,
+`--filter=public,main` for both. With `--filter=breaking`, the counts in
+the summary still describe the full diff.
 
 ## Reading the output
 
@@ -204,6 +205,11 @@ present when the base is a release tag, `pos` with `--pos`.
       "packages_changed": 0,
       "incompatible": 0,
       "compatible": 0
+    },
+    "main": {
+      "packages_changed": 0,
+      "incompatible": 0,
+      "compatible": 0
     }
   }
 }
@@ -252,7 +258,7 @@ jobs:
 | `head` | `HEAD` | Commit-ish for the new side. Empty means the working tree. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
-| `filter` | `all` | `all`, `public` or `internal`, plus `main` for the commands: `all,main`. |
+| `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
 | `breaking` | `false` | Show only incompatible changes. |
 | `signatures` | `full` | `full` or `minimal`. |
 | `pos` | `false` | Annotate changes with source positions. |

@@ -72,9 +72,10 @@ func TestParseArgs(t *testing.T) {
 		{[]string{"--filter=breaking"}, render.All, true},
 		{[]string{"--filter=public,breaking"}, render.Public, true},
 		{[]string{"--filter", "internal", "--filter", "breaking"}, render.Internal, true},
-		{[]string{"--filter=public,internal"}, render.All, false},
-		{[]string{"--filter=main"}, render.All, false},
-		{[]string{"--filter=public,main,breaking"}, render.Public, true},
+		{[]string{"--filter=public,internal"}, render.Public | render.Internal, false},
+		{[]string{"--filter=public,internal,main"}, render.All, false},
+		{[]string{"--filter=main"}, render.Main, false},
+		{[]string{"--filter=public,main,breaking"}, render.Public | render.Main, true},
 		{[]string{"--filter=public", "--filter=all"}, render.All, false},
 	} {
 		o, err := parseArgs(tc.args)
