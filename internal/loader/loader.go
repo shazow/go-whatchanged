@@ -1,6 +1,7 @@
 // Package loader type-checks packages in-process from a vfs-backed
-// go/build context, memoizing results so that a directory is only ever
-// checked once.
+// go/build context, memoizing results so that a directory is checked at
+// most once per side, and only once for both sides when its imports
+// resolve identically on each (see SharedCache).
 package loader
 
 import (
@@ -182,8 +183,17 @@ func (l *Loader) pop() {
 }
 
 // Load type-checks the main-module package at dir with the given import
-// path. It is the entry point discover uses for each candidate package.
-func (l *Loader) Load(importPath, dir string) (*types.Package, error) {
+// path; whatchanged calls it for each package discover found. bp is the
+// directory as discover imported it, reused so that it is not listed and
+// its files not scanned a second time.
+func (l *Loader) Load(importPath, dir string, bp *build.Package) (*types.Package, error) {
+	if bp != nil {
+		l.mu.Lock()
+		if _, ok := l.dirs[dir]; !ok {
+			l.dirs[dir] = importDirResult{bp: bp}
+		}
+		l.mu.Unlock()
+	}
 	return l.loadLocation(importPath, modres.Location{Dir: dir, Kind: modres.Main, GoVersion: l.resolver.GoVersion()})
 }
 
@@ -346,7 +356,12 @@ func (l *Loader) importDir(dir string) (*build.Package, error) {
 
 // check parses and type-checks the package at loc. Type errors never abort
 // the check: apidiff copes with partial packages, so they are returned as
-// warnings alongside the (possibly incomplete) package.
+// warnings alongside the (possibly incomplete) package. Only the main
+// module's function bodies are checked: the diff reads package-level
+// declarations alone, whose types resolve without bodies, so bodies
+// elsewhere would only cost time and raise warnings about code that is
+// not the module's own. Cgo is disabled in the build context, so files
+// that import "C" are not among bp.GoFiles.
 func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, []string, error) {
 	l.push(importPath)
 	defer l.pop()
@@ -376,9 +391,9 @@ func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, 
 	}
 
 	conf := types.Config{
-		Importer:    l,
-		FakeImportC: true,
-		GoVersion:   l.langVersion(loc.GoVersion),
+		Importer:         l,
+		IgnoreFuncBodies: loc.Kind != modres.Main,
+		GoVersion:        l.langVersion(loc.GoVersion),
 		Error: func(err error) {
 			warnings = append(warnings, err.Error())
 		},

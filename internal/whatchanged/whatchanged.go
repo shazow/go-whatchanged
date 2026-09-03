@@ -473,7 +473,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 	slices.Sort(s.all)
 	slices.Sort(paths)
 	for _, p := range paths {
-		pkg, err := s.ld.Load(p, found[p].Dir)
+		pkg, err := s.ld.Load(p, found[p].Dir, found[p].Build)
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", s.label, err)
 		}

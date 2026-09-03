@@ -451,8 +451,8 @@ including a linked worktree created with `git worktree add`:
   no `go.sum` edits. It only reads the repository, `.git`, `$GOROOT/src`,
   `$GOMODCACHE` and the directories that `replace` directives point at.
 - **No `go` command.** Both sides are parsed and type-checked in-process with
-  `go/build`, `go/parser` and `go/types`. Cgo is disabled; `import "C"` is
-  faked.
+  `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
+  `import "C"` are skipped, so an API declared only in them is not diffed.
 - **No network.** A dependency missing from the module cache is a clear
   error: run `go mod download` and try again.
 - **No repository mutation.** Only go-git's object store is used. The
