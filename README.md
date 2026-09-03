@@ -7,6 +7,8 @@ Pretty semantic diff of a Go module's exported API, powered by
 
 Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 
+**Status**: Beta. It's fairly vibecoded out of desperate need to better review large PRs, but the read-only constraints add a lot of safety (and efficiency) to how it works. It's quite useful!
+
 ## Example
 
 ```
