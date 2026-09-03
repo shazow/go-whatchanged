@@ -5,33 +5,20 @@ import (
 	"strings"
 )
 
-// namedForms returns the declaration-style strings of the symbol a
-// "changed from X to Y" message refers to, on both sides, for example
-// "func Open(path string) (*Client, error)". It returns empty strings when
-// the message is not about a whole object (a struct field, say), so the
-// renderer falls back to the anonymous type in the message.
-func namedForms(old, nw *types.Package, msg string) (before, after string) {
-	if !strings.Contains(msg, "changed from ") {
-		return "", ""
-	}
-	sym, _, ok := strings.Cut(msg, ": ")
-	if !ok {
-		return "", ""
-	}
-	oldObj := lookupSymbol(old, sym)
-	newObj := lookupSymbol(nw, sym)
-	if oldObj == nil || newObj == nil {
-		return "", ""
-	}
-	return declString(oldObj, old), declString(newObj, nw)
-}
-
-// declString renders obj as it would appear in source. go/types prints
+// declString renders obj as it would appear in source, for example "func
+// Open(path string) (*Client, error)" or "field Z int". go/types prints
 // methods as "func (*T).M(...)"; this prints the conventional
 // "func (r *T) M(...)" instead, and adds the value of a constant, which is
 // what a "value changed" message is about.
 func declString(obj types.Object, pkg *types.Package) string {
-	qual := types.RelativeTo(pkg)
+	// Qualify foreign types by package name, as source does ("apidiff.Report"
+	// rather than "golang.org/x/exp/apidiff.Report").
+	qual := func(p *types.Package) string {
+		if p == pkg {
+			return ""
+		}
+		return p.Name()
+	}
 	if c, ok := obj.(*types.Const); ok {
 		return types.ObjectString(obj, qual) + " = " + c.Val().String()
 	}
@@ -57,9 +44,10 @@ func declString(obj types.Object, pkg *types.Package) string {
 	return b.String()
 }
 
-// lookupSymbol resolves the symbol forms apidiff emits: "Name", "T.M" and
-// "(*T).M". Only whole objects are returned: package-level declarations and
-// methods. Struct fields resolve to nil.
+// lookupSymbol resolves the symbol forms apidiff emits: "Name", "T.M",
+// "(*T).M" and "T.F" for a struct field. Package-level declarations,
+// methods and fields are returned; anything else (a symbol qualified with
+// another package, a "method set of" note) resolves to nil.
 func lookupSymbol(pkg *types.Package, sym string) types.Object {
 	var recv, name string
 	ptr := false
@@ -94,8 +82,9 @@ func lookupSymbol(pkg *types.Package, sym string) types.Object {
 		t = types.NewPointer(t)
 	}
 	obj, _, _ := types.LookupFieldOrMethod(t, true, pkg, name)
-	if f, ok := obj.(*types.Func); ok {
-		return f
+	switch obj.(type) {
+	case *types.Func, *types.Var:
+		return obj
 	}
 	return nil
 }

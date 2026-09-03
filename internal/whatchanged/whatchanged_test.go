@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/shazow/go-whatchanged/internal/modres"
+	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/vfs"
 )
 
@@ -142,6 +144,33 @@ func (f *fixture) tag(name string, h plumbing.Hash) {
 	}
 }
 
+// annotatedTag creates a tag object pointing at h.
+func (f *fixture) annotatedTag(name string, h plumbing.Hash) {
+	f.t.Helper()
+	sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
+	if _, err := f.repo.CreateTag(name, h, &git.CreateTagOptions{Tagger: sig, Message: name}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// checkout switches the in-memory worktree to branch, creating it at h when
+// create is set. The fixture's files are replaced by the branch's tree.
+func (f *fixture) checkout(branch string, create bool, h plumbing.Hash) {
+	f.t.Helper()
+	wt, err := f.repo.Worktree()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	opts := &git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(branch), Force: true}
+	if create {
+		opts.Create = true
+		opts.Hash = h
+	}
+	if err := wt.Checkout(opts); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // open hands out the in-memory repository. Memory storage is only read
 // during a run, so sharing one handle between the sides is safe here.
 func (f *fixture) open() (*git.Repository, error) { return f.repo, nil }
@@ -224,8 +253,8 @@ func TestAddedAndRemovedPackage(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"example.com/m/fresh (new)\n  + Hello: added\n",
-		"example.com/m/old (removed)\n  - Gone: removed\n  - T: removed\n",
+		"example.com/m/fresh (new)\n  + Hello: added\n      + func Hello()\n",
+		"example.com/m/old (removed)\n  - Gone: removed\n      - func Gone()\n  - T: removed\n      - type T struct{}\n",
 		"2 packages changed · 2 incompatible · 1 compatible · would require: MAJOR\n")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
@@ -426,7 +455,7 @@ func TestBreakingHidesCompatible(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	want := "example.com/m/a\n  - Drop: removed\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
+	want := "example.com/m/a\n  - Drop: removed\n      - func Drop()\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -787,7 +816,7 @@ func Describe(s fmt.Stringer) string { return s.String() }
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
-	want := "example.com/m/a\n  + Changes: added\n  + Describe: added\n\n1 package changed · 0 incompatible · 2 compatible · would require: MINOR\n"
+	want := "example.com/m/a\n  + Changes: added\n      + func Changes(r apidiff.Report) []apidiff.Change\n  + Describe: added\n      + func Describe(s fmt.Stringer) string\n\n1 package changed · 0 incompatible · 2 compatible · would require: MINOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -830,12 +859,15 @@ func Describe(c *Client) string { return fmt.Sprint(c.name) }
 
 type Point struct{ X, Y int }
 
+type Config struct{ Timeout int }
+
 const Version = "1"
 
 var Default = Open
 `)
 	f.write("util/util.go", "package util\n\ntype Sizer interface{ Len() int }\n\ntype Stringer interface{ String() string }\n")
 	f.write("gone/gone.go", "package gone\n\nfunc Gone() {}\n")
+	f.write("internal/hidden/hidden.go", "package hidden\n\nfunc Hidden() {}\n\nfunc Keep() {}\n")
 	h := f.commit("base")
 	f.tag("v1.0.0", h)
 
@@ -855,6 +887,8 @@ func Describe(c *Client) string { return fmt.Sprint(c.name) }
 
 type Point struct{ X, Y, Z int }
 
+type Config struct{ Timeout int64 }
+
 const Version = 1
 
 var Default func(string) (*Client, error)
@@ -862,6 +896,7 @@ var Default func(string) (*Client, error)
 	f.write("util/util.go", "package util\n\nimport \"fmt\"\n\ntype Sizer interface {\n\tLen() int\n\tSize() int\n}\n\ntype Stringer = fmt.Stringer\n")
 	f.remove("gone/gone.go")
 	f.write("fresh/fresh.go", "package fresh\n\nfunc Hello() {}\n")
+	f.write("internal/hidden/hidden.go", "package hidden\n\nfunc Keep() {}\n\nfunc Added() {}\n")
 	return f
 }
 
@@ -870,18 +905,26 @@ func TestGolden(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		opts Options
+		code int
 	}{
-		{"nocolor", Options{}},
-		{"color", Options{Color: true}},
-		{"breaking", Options{Breaking: true}},
+		{"nocolor", Options{}, ExitIncompatible},
+		{"color", Options{Color: true}, ExitIncompatible},
+		{"breaking", Options{Breaking: true}, ExitIncompatible},
+		{"markdown", Options{Format: render.Markdown}, ExitIncompatible},
+		{"json", Options{Format: render.JSON}, ExitIncompatible},
+		{"all", Options{Filter: render.All}, ExitIncompatible},
+		// Internal packages alone: no public API in the selection.
+		{"internal", Options{Filter: render.Internal}, ExitClean},
+		{"pos", Options{Positions: true}, ExitIncompatible},
+		{"minimal", Options{Signatures: render.MinimalSignatures}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := f.run("v1.0.0", "", tc.opts)
 			if r.err != nil {
 				t.Fatal(r.err)
 			}
-			if r.code != ExitIncompatible {
-				t.Errorf("exit = %d", r.code)
+			if r.code != tc.code {
+				t.Errorf("exit = %d, want %d", r.code, tc.code)
 			}
 			got := "# stdout\n" + r.stdout + "# stderr\n" + r.stderr
 			golden := filepath.Join("testdata", "golden_"+tc.name+".txt")
@@ -1187,5 +1230,638 @@ func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
 		if r.stdout != "no exported API changes\n" {
 			t.Errorf("run %d: stdout = %q", i, r.stdout)
 		}
+	}
+}
+
+func TestLatestRelease(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.tag("v0.1.0", one)
+	f.tag("release-1", one) // not a semantic version: ignored
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	f.annotatedTag("v0.2.0", two)
+	f.tag("v0.2", two)   // not canonical: ignored
+	f.tag("1.0.0", two)  // no "v": ignored
+	f.tag("v2.0.0", two) // wrong major for a module path without /v2: ignored
+
+	// A higher release on a branch that is not an ancestor of HEAD does
+	// not count.
+	f.checkout("side", true, one)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Side() {}\n")
+	side := f.commit("side")
+	f.tag("v0.9.0", side)
+	f.checkout("master", false, plumbing.ZeroHash)
+
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	three := f.commit("three")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n\nfunc D() {}\n")
+
+	r := f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + C: added\n", "  + D: added\n",
+		"1 package changed · 0 incompatible · 2 compatible · would require: MINOR (v0.2.0 → v0.3.0)\n")
+	mustNotContain(t, r.stdout, "B: added", "Side")
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+
+	// A tag on the head commit itself is skipped: on a freshly tagged
+	// commit, @latest names the previous release, so the diff describes
+	// the new one.
+	f.tag("v0.3.0", three)
+	r = f.run(LatestRelease, "HEAD", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + C: added\n", "would require: MINOR (v0.2.0 → v0.3.0)\n")
+	mustNotContain(t, r.stdout, "D: added")
+
+	// Explicit release tags get the same suggestion, however they are spelled.
+	for _, base := range []string{"v0.1.0", "tags/v0.1.0", "refs/tags/v0.1.0"} {
+		r = f.run(base, "HEAD", Options{})
+		if r.err != nil {
+			t.Fatalf("%s: %v", base, r.err)
+		}
+		mustContain(t, r.stdout, "would require: MINOR (v0.1.0 → v0.2.0)\n")
+	}
+
+	// A commit with no differences names the release in the empty message.
+	r = f.run("v0.3.0", "HEAD", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "no exported API changes since v0.3.0\n"; r.stdout != want {
+		t.Errorf("stdout = %q, want %q", r.stdout, want)
+	}
+
+	// Breaking changes since a v0 release bump the minor version.
+	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
+	r = f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - A: removed\n", "would require: MAJOR (v0.2.0 → v0.3.0)\n")
+
+	// @latest is only meaningful as the base.
+	r = f.run("HEAD", LatestRelease, Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "@latest can only be the base revision")
+}
+
+func TestLatestReleasePrerelease(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.tag("v0.9.0", f.commit("one"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	f.tag("v1.0.0-rc.1", f.commit("two"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+
+	r := f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + C: added\n", "would require: MINOR (v1.0.0-rc.1 → v1.0.0)\n")
+	mustNotContain(t, r.stdout, "B: added")
+
+	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
+	r = f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - A: removed\n", "would require: MAJOR (v1.0.0-rc.1 → v1.0.0)\n")
+}
+
+func TestLatestReleaseMajorSuffix(t *testing.T) {
+	f := newFixture(t)
+	f.write("go.mod", "module example.com/m/v2\n\ngo 1.24\n")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.tag("v1.9.0", one) // belongs to the v1 module path
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	f.tag("v2.0.0", two)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
+
+	r := f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - A: removed\n", "  + C: added\n", "would require: MAJOR (v2.0.0 → v3.0.0)\n")
+	mustNotContain(t, r.stdout, "B: added")
+}
+
+func TestLatestReleaseSubdirectoryModule(t *testing.T) {
+	f := newFixture(t)
+	f.remove("go.mod")
+	f.write("sub/go.mod", "module example.com/m/sub\n\ngo 1.24\n")
+	f.write("sub/a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.tag("sub/v1.0.0", one)
+	f.tag("v5.0.0", one) // the root module's release, not sub's
+	f.write("sub/a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	f.tag("sub/v1.1.0", two)
+	f.write("sub/a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+
+	var out, errb bytes.Buffer
+	opts := Options{Stdout: &out, Stderr: &errb}
+	res, err := runRepo(f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: vfs.NewBillyFS(f.fs)}, "sub", f.env, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := finish(res, opts); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, out.String(), "example.com/m/sub/a\n  + C: added\n", "would require: MINOR (v1.1.0 → v1.2.0)\n")
+	mustNotContain(t, out.String(), "B: added")
+	if res.Base != "sub/v1.1.0" || res.Head != "working tree" {
+		t.Errorf("labels = %q, %q", res.Base, res.Head)
+	}
+}
+
+func TestLatestReleaseErrors(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	r := f.run(LatestRelease, "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `@latest: no release tags for example.com/m (looking for tags like "v1.2.3")`)
+
+	// Tags exist, but none among the ancestors of HEAD: the release on a
+	// side branch, and the tag on HEAD itself.
+	f.checkout("side", true, one)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Side() {}\n")
+	f.tag("v0.1.0", f.commit("side"))
+	f.checkout("master", false, plumbing.ZeroHash)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	f.tag("v0.2.0", f.commit("two"))
+	r = f.run(LatestRelease, "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "@latest: none of the 2 release tag(s) for example.com/m is an ancestor of HEAD")
+}
+
+func TestJSON(t *testing.T) {
+	f := goldenFixture(t)
+	r := f.run("v1.0.0", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.code != ExitIncompatible {
+		t.Errorf("exit = %d", r.code)
+	}
+	var rep struct {
+		Base, Head  string
+		BaseVersion string `json:"base_version"`
+		NextVersion string `json:"next_version"`
+		Packages    []struct {
+			Path, Status string
+			Changes      []struct {
+				Symbol, Kind, Message, Before, After string
+				Compatible                           bool
+			}
+		}
+		Warnings []struct{ Package, Message string }
+		Summary  struct {
+			PackagesChanged int `json:"packages_changed"`
+			Incompatible    int
+			Compatible      int
+			Release         string
+		}
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, r.stdout)
+	}
+	if rep.Base != "v1.0.0" || rep.Head != "working tree" || rep.BaseVersion != "v1.0.0" || rep.NextVersion != "v2.0.0" {
+		t.Errorf("sides = %+v", rep)
+	}
+	if rep.Summary.PackagesChanged != 4 || rep.Summary.Incompatible != 7 || rep.Summary.Compatible != 4 || rep.Summary.Release != "major" {
+		t.Errorf("summary = %+v", rep.Summary)
+	}
+	if rep.Warnings == nil || len(rep.Warnings) != 0 {
+		t.Errorf("warnings = %v, want an empty array", rep.Warnings)
+	}
+	if len(rep.Packages) != 4 || rep.Packages[0].Path != "example.com/m/fresh" || rep.Packages[0].Status != "new" || rep.Packages[1].Status != "removed" || rep.Packages[2].Status != "changed" {
+		t.Errorf("packages = %+v", rep.Packages)
+	}
+	store := rep.Packages[2]
+	if len(store.Changes) != 7 {
+		t.Fatalf("store changes = %+v", store.Changes)
+	}
+	open := store.Changes[2]
+	if open.Symbol != "Open" || open.Kind != "changed" || open.Compatible ||
+		open.Before != "func Open(path string) (*Client, error)" || open.After != "func Open(path string, o Options) (*Client, error)" ||
+		!strings.HasPrefix(open.Message, "Open: changed from ") {
+		t.Errorf("Open = %+v", open)
+	}
+	if ping := store.Changes[4]; ping.Symbol != "(*Client).Ping" || ping.Kind != "added" || !ping.Compatible || ping.Before != "" || ping.After != "func (c *Client) Ping() error" {
+		t.Errorf("Ping = %+v", ping)
+	}
+	if timeout := store.Changes[1]; timeout.Symbol != "Config.Timeout" || timeout.Before != "field Timeout int" || timeout.After != "field Timeout int64" {
+		t.Errorf("Config.Timeout = %+v", timeout)
+	}
+	mustNotContain(t, r.stdout, `"pos"`, `"internal"`)
+	if closed := store.Changes[0]; closed.Symbol != "(*Client).Close" || closed.Kind != "removed" || closed.Before != "func (c *Client) Close() error" || closed.After != "" {
+		t.Errorf("Close = %+v", closed)
+	}
+
+	// --breaking drops compatible changes from the lists but not the counts.
+	r = f.run("v1.0.0", "", Options{Format: render.JSON, Breaking: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Packages) != 3 || rep.Summary.Compatible != 4 {
+		t.Errorf("breaking: packages = %d, compatible = %d", len(rep.Packages), rep.Summary.Compatible)
+	}
+	for _, p := range rep.Packages {
+		for _, c := range p.Changes {
+			if c.Compatible {
+				t.Errorf("breaking: compatible change %q listed", c.Message)
+			}
+		}
+	}
+}
+
+func TestJSONPackageWithoutSymbols(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
+	f.commit("base")
+	f.remove("plugin/plugin.go")
+	r := f.run("HEAD", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"symbol": "",`, `"kind": "removed",`, `"message": "package removed"`)
+}
+
+func TestFormatsWithoutChanges(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("base")
+	r := f.run("HEAD", "", Options{Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "_no exported API changes_\n"; r.stdout != want {
+		t.Errorf("markdown = %q, want %q", r.stdout, want)
+	}
+	r = f.run("HEAD", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"base": "HEAD"`, `"packages": [],`, `"release": "patch"`)
+	mustNotContain(t, r.stdout, "base_version", "next_version")
+}
+
+func TestParseFormat(t *testing.T) {
+	for in, want := range map[string]render.Format{"text": render.Text, "markdown": render.Markdown, "md": render.Markdown, "JSON": render.JSON} {
+		got, err := ParseFormat(in)
+		if err != nil || got != want {
+			t.Errorf("ParseFormat(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseFormat("yaml"); err == nil {
+		t.Error("ParseFormat accepted yaml")
+	}
+}
+
+func TestPositions(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\ntype T struct {\n\tX int\n}\n\nfunc (t T) M(n int) {}\n")
+	h := f.commit("base")
+	f.tag("v0.1.0", h)
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\ntype T struct {\n\tX int64\n\tY int\n}\n\nfunc (t T) M(n int64) {}\n\nfunc Added() {}\n")
+	f.write("b/b.go", "package b\n\nfunc init() {}\n")
+
+	r := f.run("v0.1.0", "", Options{Positions: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	// Positions line up two spaces past the widest change line of the
+	// package; a removed symbol is located on the base side.
+	want := "example.com/m/a\n" +
+		"  - Drop: removed  v0.1.0:a/a.go:5:6\n" +
+		"      - func Drop()\n" +
+		"  ~ T.M: changed   a/a.go:10:12\n" +
+		"      - func (t T) M(n int)\n" +
+		"      + func (t T) M(n int64)\n" +
+		"  ~ T.X: changed   a/a.go:6:2\n" +
+		"      - field X int\n" +
+		"      + field X int64\n" +
+		"  + Added: added   a/a.go:12:6\n" +
+		"      + func Added()\n" +
+		"  + T.Y: added     a/a.go:7:2\n" +
+		"      + field Y int\n" +
+		"\n" +
+		"example.com/m/b (new)\n" +
+		"  + package added\n" +
+		"\n" +
+		"2 packages changed · 3 incompatible · 3 compatible · would require: MAJOR (v0.1.0 → v0.2.0)\n"
+	if r.stdout != want {
+		t.Errorf("stdout = \n%s\nwant\n%s", r.stdout, want)
+	}
+
+	// Positions are off by default; the layout is then the plain one.
+	r = f.run("v0.1.0", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - Drop: removed\n      - func Drop()\n  ~ T.M: changed\n")
+	mustNotContain(t, r.stdout, "a.go")
+
+	// Two committed revisions: both sides carry a revision prefix.
+	f.commit("head")
+	r = f.run("v0.1.0", "HEAD", Options{Positions: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - Drop: removed  v0.1.0:a/a.go:5:6\n", "  + Added: added   HEAD:a/a.go:12:6\n")
+}
+
+func TestPackageFilter(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("store/store.go", "package store\n\nfunc S() {}\n")
+	f.write("store/sub/sub.go", "package sub\n\nfunc Sub() {}\n")
+	f.write("util/util.go", "package util\n\nfunc U() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc A2() {}\n")
+	f.write("store/store.go", "package store\n\nfunc S() {}\n\nfunc S2() {}\n")
+	f.write("store/sub/sub.go", "package sub\n\nfunc Sub() {}\n\nfunc Sub2() {}\n")
+	f.remove("util/util.go")
+
+	tests := []struct {
+		name          string
+		pkgs, exclude []string
+		want          string
+		stderr        string
+	}{
+		{"all", nil, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\nexample.com/m/store\n  + S2: added\n      + func S2()\n\nexample.com/m/store/sub\n  + Sub2: added\n      + func Sub2()\n\nexample.com/m/util (removed)\n  - U: removed\n      - func U()\n\n4 packages changed · 1 incompatible · 3 compatible · would require: MAJOR\n", ""},
+		{"store", []string{"store/..."}, nil, "example.com/m/store\n  + S2: added\n      + func S2()\n\nexample.com/m/store/sub\n  + Sub2: added\n      + func Sub2()\n\n2 packages changed · 0 incompatible · 2 compatible · would require: MINOR\n", ""},
+		{"exact", []string{"example.com/m/store"}, nil, "example.com/m/store\n  + S2: added\n      + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"two", []string{"./a", "util"}, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\nexample.com/m/util (removed)\n  - U: removed\n      - func U()\n\n2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n", ""},
+		{"exclude", nil, []string{"store/...", "util"}, "example.com/m/a\n  + A2: added\n      + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"both", []string{"store/..."}, []string{".../sub"}, "example.com/m/store\n  + S2: added\n      + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"removed only on base", []string{"util"}, nil, "example.com/m/util (removed)\n  - U: removed\n      - func U()\n\n1 package changed · 1 incompatible · 0 compatible · would require: MAJOR\n", ""},
+		{"typo", []string{"stor/...", "a"}, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", "warn: example.com/m: --pkg \"stor/...\" matched no packages\n"},
+		{"nothing", []string{"nothing"}, nil, "no exported API changes\n", "warn: example.com/m: --pkg \"nothing\" matched no packages\n"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := f.run("HEAD", "", Options{Packages: tc.pkgs, Exclude: tc.exclude})
+			if r.err != nil {
+				t.Fatal(r.err)
+			}
+			if r.stdout != tc.want {
+				t.Errorf("stdout = %q\nwant     %q", r.stdout, tc.want)
+			}
+			if r.stderr != tc.stderr {
+				t.Errorf("stderr = %q\nwant     %q", r.stderr, tc.stderr)
+			}
+		})
+	}
+
+	// The exit code follows the filtered diff.
+	r := f.run("HEAD", "", Options{Packages: []string{"store/..."}})
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+	r = f.run("HEAD", "", Options{Packages: []string{"nothing"}, Strict: true})
+	if r.code != ExitError {
+		t.Errorf("strict: exit = %d, want %d", r.code, ExitError)
+	}
+}
+
+func TestFilterInternalPackages(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("internal/hidden/h.go", "package hidden\n\nfunc Hidden() {}\n")
+	f.write("a/internal/deep/d.go", "package deep\n\nfunc Deep() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Added() {}\n")
+	f.write("internal/hidden/h.go", "package hidden\n\nfunc Renamed() {}\n")
+	f.write("a/internal/deep/d.go", "package deep\n\nfunc Deep() {}\n\nfunc Deeper() {}\n")
+	f.write("internal/fresh/f.go", "package fresh\n\nfunc F() {}\n")
+
+	// Without the option internal packages do not exist.
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "example.com/m/a\n  + Added: added\n      + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// With --filter=all they are shown and marked, but the summary, the
+	// release and the exit code still describe the public API only.
+	r = f.run("HEAD", "", Options{Filter: render.All})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want := "example.com/m/a\n  + Added: added\n      + func Added()\n\n" +
+		"example.com/m/a/internal/deep (internal)\n  + Deeper: added\n      + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + F: added\n      + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\n" +
+		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n" +
+		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+	r = f.run("HEAD", "", Options{Filter: render.All, ExitFail: FailMajor})
+	if r.code != ExitClean {
+		t.Errorf("--exit-fail=major: exit = %d, want %d", r.code, ExitClean)
+	}
+
+	// Only internal changes: the public API is untouched.
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	r = f.run("HEAD", "", Options{Filter: render.All})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n")
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+
+	// --breaking and --pkg apply to internal packages too.
+	r = f.run("HEAD", "", Options{Filter: render.All, Breaking: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
+		t.Errorf("breaking: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	r = f.run("HEAD", "", Options{Filter: render.All, Packages: []string{"internal/hidden"}})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
+		t.Errorf("pkg: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// --filter=internal shows internal packages alone, with only their
+	// summary line; there is no public API in the selection, so the exit
+	// code is the clean one.
+	r = f.run("HEAD", "", Options{Filter: render.Internal, ExitFail: FailMajor})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want = "example.com/m/a/internal/deep (internal)\n  + Deeper: added\n      + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + F: added\n      + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\n" +
+		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
+	if r.stdout != want {
+		t.Errorf("internal: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("internal: exit = %d, want %d", r.code, ExitClean)
+	}
+	r = f.run("HEAD", "", Options{Filter: render.Internal, Packages: []string{"a"}})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "warn: example.com/m: --pkg \"a\" matched no packages\n"; r.stderr != want {
+		t.Errorf("internal --pkg a: stderr = %q, want %q", r.stderr, want)
+	}
+	if want := "internal: no changes\n"; r.stdout != want {
+		t.Errorf("internal --pkg a: stdout = %q, want %q", r.stdout, want)
+	}
+
+	// Nothing changed anywhere.
+	f.commit("all")
+	r = f.run("HEAD", "", Options{Filter: render.All})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "no exported API changes\ninternal: no changes\n"; r.stdout != want {
+		t.Errorf("clean: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	r = f.run("HEAD", "", Options{Filter: render.Internal})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "internal: no changes\n"; r.stdout != want {
+		t.Errorf("clean internal: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// Machine-readable layouts carry the same split.
+	f.write("internal/hidden/h.go", "package hidden\n\nfunc Renamed() {}\n\nfunc More() {}\n")
+	r = f.run("HEAD", "", Options{Filter: render.All, Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"internal": true,`, `"release": "patch",`,
+		"\"internal\": {\n      \"packages_changed\": 1,\n      \"incompatible\": 0,\n      \"compatible\": 1\n    }")
+	r = f.run("HEAD", "", Options{Filter: render.All, Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "**example.com/m/internal/hidden (internal)**\n", "_no exported API changes_\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n")
+	r = f.run("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "```\n\ninternal: 1 package changed · 0 incompatible · 1 compatible\n")
+	mustNotContain(t, r.stdout, "exported API")
+	r = f.run("HEAD", "", Options{Filter: render.Internal, Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"packages_changed": 0,`, `"release": "patch",`, "\"internal\": {\n      \"packages_changed\": 1,")
+}
+
+func TestMinimalSignatures(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Open(name string) error { return nil }\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n")
+
+	// One line per change, with apidiff's message as is.
+	r := f.run("HEAD", "", Options{Signatures: render.MinimalSignatures})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want := "example.com/m/a\n" +
+		"  - Drop: removed\n" +
+		"  ~ Open: changed from func(string) error to func(string, int) error\n" +
+		"  + Added: added\n" +
+		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// The default shows every declaration.
+	r = f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want = "example.com/m/a\n" +
+		"  - Drop: removed\n      - func Drop()\n" +
+		"  ~ Open: changed\n      - func Open(name string) error\n      + func Open(name string, n int) error\n" +
+		"  + Added: added\n      + func Added()\n" +
+		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("full: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// Markdown and JSON follow the same knob.
+	r = f.run("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "```diff\n- Drop: removed\n! Open: changed from func(string) error to func(string, int) error\n+ Added: added\n```\n")
+	r = f.run("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustNotContain(t, r.stdout, `"before"`, `"after"`)
+	r = f.run("HEAD", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"before": "func Drop()"`, `"after": "func Added()"`, `"before": "func Open(name string) error"`)
+}
+
+func TestParseFilter(t *testing.T) {
+	for in, want := range map[string]render.Visibility{"public": render.Public, "internal": render.Internal, "ALL": render.All} {
+		got, err := ParseFilter(in)
+		if err != nil || got != want {
+			t.Errorf("ParseFilter(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseFilter("private"); err == nil {
+		t.Error("ParseFilter accepted private")
+	}
+}
+
+func TestParseSignatures(t *testing.T) {
+	for in, want := range map[string]render.Signatures{"full": render.FullSignatures, "Minimal": render.MinimalSignatures} {
+		got, err := ParseSignatures(in)
+		if err != nil || got != want {
+			t.Errorf("ParseSignatures(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseSignatures("short"); err == nil {
+		t.Error("ParseSignatures accepted short")
 	}
 }

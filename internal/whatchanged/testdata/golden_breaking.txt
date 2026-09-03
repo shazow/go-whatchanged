@@ -1,9 +1,14 @@
 # stdout
 example.com/m/gone (removed)
   - Gone: removed
+      - func Gone()
 
 example.com/m/store
   - (*Client).Close: removed
+      - func (c *Client) Close() error
+  ~ Config.Timeout: changed
+      - field Timeout int
+      + field Timeout int64
   ~ Open: changed
       - func Open(path string) (*Client, error)
       + func Open(path string, o Options) (*Client, error)
@@ -13,9 +18,10 @@ example.com/m/store
 
 example.com/m/util
   ! Sizer.Size: added
+      + func (Sizer) Size() int
   ~ Stringer: changed
       - type Stringer interface{String() string}
       + type Stringer = fmt.Stringer
 
-4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR
+4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
 # stderr
