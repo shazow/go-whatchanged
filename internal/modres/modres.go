@@ -79,6 +79,16 @@ const (
 	Dep
 )
 
+// MissingModuleError reports a module that resolution needs but the module
+// cache does not have. The tool never downloads, so the caller says how to.
+type MissingModuleError struct {
+	Path, Version string
+}
+
+func (e *MissingModuleError) Error() string {
+	return fmt.Sprintf("module %s@%s not in module cache", e.Path, e.Version)
+}
+
 // Location is a resolved import path.
 type Location struct {
 	Dir       string // directory holding the package's source files
@@ -257,7 +267,7 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 		}
 		modRoot = filepath.Join(r.env.GOMODCACHE, filepath.FromSlash(escPath)+"@"+escVer)
 		if !r.fs.IsDir(modRoot) {
-			return Location{}, fmt.Errorf("module %s@%s not in module cache (run go mod download)", mod.Path, mod.Version)
+			return Location{}, &MissingModuleError{Path: mod.Path, Version: mod.Version}
 		}
 	}
 	dir := modRoot

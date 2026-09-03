@@ -715,12 +715,39 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	}
 	mustContain(t, r.err.Error(), `unresolvable import "example.org/nothere" (required by example.com/m/a)`)
 
+	// A module go.mod requires but the module cache lacks is fatal too, and
+	// the error says how to download it, since the tool never does.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/nothere v1.2.3\n")
 	r = f.run("HEAD", "", Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), "module example.org/nothere@v1.2.3 not in module cache (run go mod download)")
+	mustContain(t, r.err.Error(),
+		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; to download the modules go.mod pins:\n\tgo mod download")
+
+	// For a revision, the fix downloads from a copy of that revision's
+	// go.mod, so that the checkout is not touched.
+	f.commit("dep")
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	f.write("a/a.go", "package a\n")
+	r = f.run("HEAD", "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
+	mustContain(t, r.err.Error(),
+		"HEAD: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; to download the modules HEAD pins:\n\tmkdir -p "+
+			dir+" && git show HEAD:go.mod > "+filepath.Join(dir, "go.mod")+" && (cd "+dir+" && go mod download)")
+}
+
+func TestDownloadHint(t *testing.T) {
+	t.Parallel()
+	missing := fmt.Errorf("wrapped: %w", &modres.MissingModuleError{Path: "example.org/x", Version: "v1.0.0"})
+	// A module below the repository root names its go.mod by its path.
+	mustContain(t, (&side{rev: "v1.4.0"}).downloadHint(missing, "sub"), "git show v1.4.0:sub/go.mod > ")
+	if hint := (&side{rev: "v1.4.0"}).downloadHint(fmt.Errorf("something else"), ""); hint != "" {
+		t.Errorf("hint for an unrelated error = %q", hint)
+	}
 }
 
 // ownDeps reads this project's go.mod (two directories up from this

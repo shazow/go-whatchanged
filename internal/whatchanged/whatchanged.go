@@ -4,6 +4,7 @@
 package whatchanged
 
 import (
+	"errors"
 	"fmt"
 	"go/token"
 	"go/types"
@@ -494,9 +495,27 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 		s.main[p] = found[p].Main
 	}
 	if err := s.ld.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w", s.label, err)
+		return nil, fmt.Errorf("%s: %w%s", s.label, err, s.downloadHint(err, rel))
 	}
 	return s, nil
+}
+
+// downloadHint is the fix to append when err reports a module missing from
+// the module cache, which the tool never fills itself: go mod download in
+// the module for the working tree and, for a revision, the same from a
+// copy of its go.mod in a temporary directory, so that the checkout is not
+// touched. rel is the module root relative to the repository root.
+func (s *side) downloadHint(err error, rel string) string {
+	var missing *modres.MissingModuleError
+	if !errors.As(err, &missing) {
+		return ""
+	}
+	if s.rev == "" {
+		return "; to download the modules go.mod pins:\n\tgo mod download"
+	}
+	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
+	return fmt.Sprintf("; to download the modules %s pins:\n\tmkdir -p %s && git show %s:%s > %s && (cd %s && go mod download)",
+		s.rev, dir, s.rev, path.Join(rel, "go.mod"), filepath.Join(dir, "go.mod"), dir)
 }
 
 func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {

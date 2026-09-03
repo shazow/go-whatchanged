@@ -29,6 +29,15 @@ annotate() {
   echo "::$level title=$title::$msg" >&2
 }
 
+# error_text is what to show for a failed run: the tool's error and the
+# lines that follow it, such as a suggested command, or the last line of
+# stderr $1 when there is no such error.
+error_text() {
+  local text
+  text=$(sed -n '/^go-whatchanged: /,$p' "$1")
+  if [ -n "$text" ]; then echo "$text"; else tail -n 1 "$1"; fi
+}
+
 is_shallow() { [ "$(git rev-parse --is-shallow-repository)" = true ]; }
 
 # fetch_commit fetches a commit the checkout lacks, keeping a shallow clone
@@ -153,7 +162,7 @@ rc=0
 run_json
 if [ "$rc" -ne 0 ] && [ "$rc" -ne 1 ]; then
   cat "$stderr" >&2
-  annotate error "$(tail -n 1 "$stderr")"
+  annotate error "$(error_text "$stderr")"
   exit "$rc"
 fi
 
@@ -170,7 +179,7 @@ while IFS= read -r line; do
   esac
 done <"$stderr"
 if [ "$rc" -eq 2 ]; then
-  annotate error "$(tail -n 1 "$stderr")"
+  annotate error "$(error_text "$stderr")"
   exit "$rc"
 fi
 
