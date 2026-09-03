@@ -193,7 +193,7 @@ fi
 
 # The summary lines are everything outside the fenced blocks that is not a
 # package heading, minus the markdown emphasis: the public API's line and,
-# when internal packages changed, theirs.
+# when internal or main packages changed, theirs.
 summary=$(awk '/^```/ {fence = !fence; next} fence || /^\*\*/ || /^$/ {next} {print}' "$md" |
   sed -e 's/\*\*//g' -e 's/^_\(.*\)_$/\1/')
 

@@ -18,5 +18,6 @@ jobs:
         with:
           go-version-file: go.mod
       # Dogfood: the action from this very checkout, on this module. All of
-      # its packages are internal, which the default filter, all, includes.
+      # its packages are internal or main, which the default filter, all,
+      # includes.
       - uses: ./
