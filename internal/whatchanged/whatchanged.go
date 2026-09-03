@@ -45,6 +45,15 @@ type Options struct {
 	GOOS, GOARCH string
 	// Breaking hides compatible changes.
 	Breaking bool
+	// Packages restricts the diff to packages matching one of these
+	// patterns (see discover.Filter); Exclude removes matching packages.
+	Packages, Exclude []string
+	// Internal includes internal packages. They are listed and marked, but
+	// never count towards the summary, the required release or the exit
+	// code, since they are not part of the public API.
+	Internal bool
+	// Positions annotates each change with the position of its declaration.
+	Positions bool
 	// Color enables ANSI escapes.
 	Color bool
 	// Strict turns type-check warnings into a fatal error.
@@ -218,7 +227,14 @@ func finish(res *render.Result, opts Options) (int, error) {
 			return ExitError, fmt.Errorf("%d type-check warning(s) (--strict)", len(res.Warnings))
 		}
 	}
-	if err := render.Write(opts.Stdout, *res, render.Options{Color: opts.Color, BreakingOnly: opts.Breaking, Format: opts.Format}); err != nil {
+	ro := render.Options{
+		Color:        opts.Color,
+		BreakingOnly: opts.Breaking,
+		Format:       opts.Format,
+		Positions:    opts.Positions,
+		Internal:     opts.Internal,
+	}
+	if err := render.Write(opts.Stdout, *res, ro); err != nil {
 		return ExitError, err
 	}
 	return exitCode(render.Summarize(*res), opts.ExitFail), nil
@@ -259,16 +275,37 @@ type sideSpec struct {
 
 // side is a fully loaded side.
 type side struct {
-	rev     string // git revision, empty for a directory side
-	label   string
-	prefix  string // path prefix rewritten to label+":" in messages
-	overlay *vfs.Overlay
-	ctxt    build.Context
-	res     *modres.Resolver
-	ld      *loader.Loader
-	pkgs    map[string]*types.Package
-	problem map[string]string
-	notes   []string // module-level warnings, reported under the module path
+	rev      string // git revision, empty for a directory side
+	label    string
+	prefix   string // path prefix rewritten to label+":" in messages
+	overlay  *vfs.Overlay
+	ctxt     build.Context
+	res      *modres.Resolver
+	ld       *loader.Loader
+	pkgs     map[string]*types.Package
+	internal map[string]bool // import paths of internal packages
+	all      []string        // every discovered import path, before Options.Packages and Exclude
+	problem  map[string]string
+	notes    []string // module-level warnings, reported under the module path
+}
+
+// rewrite turns the synthetic mount paths in a message into "<rev>:"
+// prefixes, so that positions read like git paths; on the working tree side
+// positions become module-relative, like git diff.
+func (s *side) rewrite(msg string) string {
+	if s.rev == "" {
+		return strings.ReplaceAll(msg, s.prefix, "")
+	}
+	return strings.ReplaceAll(msg, s.prefix, s.label+":")
+}
+
+// position converts a token position on this side into a render.Position.
+func (s *side) position(p token.Position) render.Position {
+	if !p.IsValid() {
+		return render.Position{}
+	}
+	file := strings.TrimPrefix(p.Filename, s.prefix)
+	return render.Position{Rev: s.rev, File: filepath.ToSlash(file), Line: p.Line, Col: p.Column}
 }
 
 // openFunc returns a fresh handle on the repository.
@@ -293,12 +330,11 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 
 	fset := token.NewFileSet()
 	shared := loader.NewSharedCache()
-	goos, goarch := opts.GOOS, opts.GOARCH
-	if goos == "" {
-		goos = runtime.GOOS
+	if opts.GOOS == "" {
+		opts.GOOS = runtime.GOOS
 	}
-	if goarch == "" {
-		goarch = runtime.GOARCH
+	if opts.GOARCH == "" {
+		opts.GOARCH = runtime.GOARCH
 	}
 
 	var (
@@ -311,7 +347,7 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			sides[i], errs[i] = loadSide(open, specs[i], rel, env, goos, goarch, fset, shared)
+			sides[i], errs[i] = loadSide(open, specs[i], rel, env, opts, fset, shared)
 		}(i)
 	}
 	wg.Wait()
@@ -320,7 +356,7 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 			return nil, err
 		}
 	}
-	res, err := diffSides(sides[0], sides[1])
+	res, err := diffSides(sides[0], sides[1], fset)
 	if err != nil {
 		return nil, err
 	}
@@ -329,10 +365,32 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 		res.BaseVersion = baseVersion
 		res.NextVersion = release.Next(baseVersion, render.Summarize(*res).Level())
 	}
+	res.Warnings = append(res.Warnings, unmatchedPatterns(opts.Packages, sides[0], sides[1])...)
 	return res, nil
 }
 
-func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, goos, goarch string, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+// unmatchedPatterns warns about --pkg patterns that select nothing on
+// either side, which is almost always a typo.
+func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
+	var out []render.Warning
+	for _, pat := range patterns {
+		matched := false
+		for _, s := range []*side{base, head} {
+			for _, p := range s.all {
+				if discover.MatchPattern(pat, s.res.ModPath(), p) {
+					matched = true
+				}
+			}
+		}
+		if !matched {
+			out = append(out, render.Warning{Package: head.res.ModPath(), Message: fmt.Sprintf("--pkg %q matched no packages", pat)})
+		}
+	}
+	return out
+}
+
+func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+	goos, goarch := opts.GOOS, opts.GOARCH
 	s := &side{rev: spec.rev}
 	var root string
 	switch {
@@ -375,16 +433,22 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, goos, go
 			res.GoVersion(), limit, limit))
 	}
 
-	found, problems, err := discover.Packages(&s.ctxt, s.overlay, root, res.ModPath())
+	found, problems, err := discover.Packages(&s.ctxt, s.overlay, root, res.ModPath(), opts.Internal)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
 	s.problem = problems
 	s.pkgs = make(map[string]*types.Package, len(found))
+	s.internal = make(map[string]bool)
+	filter := discover.Filter{Include: opts.Packages, Exclude: opts.Exclude}
 	paths := make([]string, 0, len(found))
 	for p := range found {
-		paths = append(paths, p)
+		s.all = append(s.all, p)
+		if filter.Match(res.ModPath(), p) {
+			paths = append(paths, p)
+		}
 	}
+	sort.Strings(s.all)
 	sort.Strings(paths)
 	for _, p := range paths {
 		pkg, err := s.ld.Load(p, found[p].Dir)
@@ -392,6 +456,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, goos, go
 			return nil, fmt.Errorf("%s: %w", s.label, err)
 		}
 		s.pkgs[p] = pkg
+		s.internal[p] = found[p].Internal
 	}
 	if err := s.ld.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
@@ -415,7 +480,7 @@ func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {
 	return commit.Tree()
 }
 
-func diffSides(base, head *side) (*render.Result, error) {
+func diffSides(base, head *side, fset *token.FileSet) (*render.Result, error) {
 	union := map[string]bool{}
 	for p := range base.pkgs {
 		union[p] = true
@@ -433,7 +498,7 @@ func diffSides(base, head *side) (*render.Result, error) {
 	for _, p := range paths {
 		old, inBase := base.pkgs[p]
 		nw, inHead := head.pkgs[p]
-		pkg := render.Package{Path: p}
+		pkg := render.Package{Path: p, Internal: base.internal[p] || head.internal[p]}
 		switch {
 		case inBase && inHead:
 			pkg.Status = render.Both
@@ -447,6 +512,7 @@ func diffSides(base, head *side) (*render.Result, error) {
 		for _, c := range apidiff.Changes(old, nw).Changes {
 			rc := render.FromAPIDiff(c)
 			rc.Before, rc.After = namedForms(old, nw, c.Message)
+			rc.Pos = changePosition(fset, base, head, old, nw, rc)
 			pkg.Changes = append(pkg.Changes, rc)
 		}
 		// apidiff only sees symbols, so a package with no exported API
@@ -467,6 +533,25 @@ func diffSides(base, head *side) (*render.Result, error) {
 	return res, nil
 }
 
+// changePosition locates the declaration a change is about: on the base
+// side for a removal, on the head side otherwise. Whole-package changes and
+// symbols that cannot be looked up have no position.
+func changePosition(fset *token.FileSet, base, head *side, old, nw *types.Package, c render.Change) render.Position {
+	sym := c.Symbol()
+	if sym == "" {
+		return render.Position{}
+	}
+	s, pkg := head, nw
+	if c.Kind() == "removed" {
+		s, pkg = base, old
+	}
+	obj := lookupSymbol(pkg, sym)
+	if obj == nil {
+		return render.Position{}
+	}
+	return s.position(fset.Position(obj.Pos()))
+}
+
 // collectWarnings merges both sides' warnings, rewriting synthetic mount
 // paths into "<rev>:" prefixes so positions read like git paths.
 func collectWarnings(sides ...*side) []render.Warning {
@@ -482,13 +567,7 @@ func collectWarnings(sides ...*side) []render.Warning {
 		out = append(out, render.Warning{Package: pkg, Message: msg})
 	}
 	for _, s := range sides {
-		rewrite := func(msg string) string {
-			if s.rev == "" {
-				// Working tree: positions become module-relative, like git diff.
-				return strings.ReplaceAll(msg, s.prefix, "")
-			}
-			return strings.ReplaceAll(msg, s.prefix, s.label+":")
-		}
+		rewrite := s.rewrite
 		for _, n := range s.notes {
 			add(s.res.ModPath(), n)
 		}

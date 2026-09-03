@@ -13,7 +13,12 @@
           "symbol": "Hello",
           "kind": "added",
           "compatible": true,
-          "message": "Hello: added"
+          "message": "Hello: added",
+          "pos": {
+            "file": "fresh/fresh.go",
+            "line": 3,
+            "col": 6
+          }
         }
       ]
     },
@@ -25,7 +30,13 @@
           "symbol": "Gone",
           "kind": "removed",
           "compatible": false,
-          "message": "Gone: removed"
+          "message": "Gone: removed",
+          "pos": {
+            "rev": "v1.0.0",
+            "file": "gone/gone.go",
+            "line": 3,
+            "col": 6
+          }
         }
       ]
     },
@@ -37,7 +48,26 @@
           "symbol": "(*Client).Close",
           "kind": "removed",
           "compatible": false,
-          "message": "(*Client).Close: removed"
+          "message": "(*Client).Close: removed",
+          "pos": {
+            "rev": "v1.0.0",
+            "file": "store/store.go",
+            "line": 7,
+            "col": 18
+          }
+        },
+        {
+          "symbol": "Config.Timeout",
+          "kind": "changed",
+          "compatible": false,
+          "message": "Config.Timeout: changed from int to int64",
+          "before": "field Timeout int",
+          "after": "field Timeout int64",
+          "pos": {
+            "file": "store/store.go",
+            "line": 17,
+            "col": 21
+          }
         },
         {
           "symbol": "Open",
@@ -45,7 +75,12 @@
           "compatible": false,
           "message": "Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)",
           "before": "func Open(path string) (*Client, error)",
-          "after": "func Open(path string, o Options) (*Client, error)"
+          "after": "func Open(path string, o Options) (*Client, error)",
+          "pos": {
+            "file": "store/store.go",
+            "line": 11,
+            "col": 6
+          }
         },
         {
           "symbol": "Version",
@@ -53,25 +88,45 @@
           "compatible": false,
           "message": "Version: changed from untyped string to untyped int",
           "before": "const Version untyped string = \"1\"",
-          "after": "const Version untyped int = 1"
+          "after": "const Version untyped int = 1",
+          "pos": {
+            "file": "store/store.go",
+            "line": 19,
+            "col": 7
+          }
         },
         {
           "symbol": "(*Client).Ping",
           "kind": "added",
           "compatible": true,
-          "message": "(*Client).Ping: added"
+          "message": "(*Client).Ping: added",
+          "pos": {
+            "file": "store/store.go",
+            "line": 7,
+            "col": 18
+          }
         },
         {
           "symbol": "Options",
           "kind": "added",
           "compatible": true,
-          "message": "Options: added"
+          "message": "Options: added",
+          "pos": {
+            "file": "store/store.go",
+            "line": 9,
+            "col": 6
+          }
         },
         {
           "symbol": "Point.Z",
           "kind": "added",
           "compatible": true,
-          "message": "Point.Z: added"
+          "message": "Point.Z: added",
+          "pos": {
+            "file": "store/store.go",
+            "line": 15,
+            "col": 26
+          }
         }
       ]
     },
@@ -83,7 +138,12 @@
           "symbol": "Sizer.Size",
           "kind": "added",
           "compatible": false,
-          "message": "Sizer.Size: added"
+          "message": "Sizer.Size: added",
+          "pos": {
+            "file": "util/util.go",
+            "line": 7,
+            "col": 2
+          }
         },
         {
           "symbol": "Stringer",
@@ -91,7 +151,12 @@
           "compatible": false,
           "message": "Stringer: changed from Stringer to fmt.Stringer",
           "before": "type Stringer interface{String() string}",
-          "after": "type Stringer = fmt.Stringer"
+          "after": "type Stringer = fmt.Stringer",
+          "pos": {
+            "file": "util/util.go",
+            "line": 10,
+            "col": 6
+          }
         }
       ]
     }
@@ -99,7 +164,7 @@
   "warnings": [],
   "summary": {
     "packages_changed": 4,
-    "incompatible": 6,
+    "incompatible": 7,
     "compatible": 4,
     "release": "major"
   }

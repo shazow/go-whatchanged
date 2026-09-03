@@ -1,21 +1,24 @@
 # stdout
 example.com/m/gone (removed)
-  - Gone: removed
+  - Gone: removed  v1.0.0:gone/gone.go:3:6
 
 example.com/m/store
-  - (*Client).Close: removed
-  ~ Open: changed
+  - (*Client).Close: removed  v1.0.0:store/store.go:7:18
+  ~ Config.Timeout: changed   store/store.go:17:21
+      - field Timeout int
+      + field Timeout int64
+  ~ Open: changed             store/store.go:11:6
       - func Open(path string) (*Client, error)
       + func Open(path string, o Options) (*Client, error)
-  ~ Version: changed
+  ~ Version: changed          store/store.go:19:7
       - const Version untyped string = "1"
       + const Version untyped int = 1
 
 example.com/m/util
-  ! Sizer.Size: added
-  ~ Stringer: changed
+  ! Sizer.Size: added  util/util.go:7:2
+  ~ Stringer: changed  util/util.go:10:6
       - type Stringer interface{String() string}
       + type Stringer = fmt.Stringer
 
-4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
+4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
 # stderr

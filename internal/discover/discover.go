@@ -19,22 +19,27 @@ type FS interface {
 type Package struct {
 	ImportPath string
 	Dir        string
+	// Internal is set when an element of the package's path within the
+	// module is "internal": the package is importable only from within the
+	// module and is not part of its public API.
+	Internal bool
 }
 
 // Packages walks root and returns every package that contributes to the
-// module's exported API, keyed by import path. Directories named testdata,
-// vendor or internal, directories starting with "." or "_", and nested
-// modules are skipped, as are main packages and directories without
-// buildable Go files.
+// module's exported API, keyed by import path. Directories named testdata
+// or vendor, directories starting with "." or "_", and nested modules are
+// skipped, as are main packages and directories without buildable Go files.
+// Directories named internal are skipped too unless internal is set, in
+// which case their packages are returned with Internal marked.
 //
 // Directories that cannot be imported for reasons other than having no Go
 // files (for instance, several package clauses in one directory) are
 // reported in problems and otherwise skipped.
-func Packages(ctxt *build.Context, fsys FS, root, modPath string) (pkgs map[string]Package, problems map[string]string, err error) {
+func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal bool) (pkgs map[string]Package, problems map[string]string, err error) {
 	pkgs = map[string]Package{}
 	problems = map[string]string{}
-	var walk func(dir, rel string) error
-	walk = func(dir, rel string) error {
+	var walk func(dir, rel string, isInternal bool) error
+	walk = func(dir, rel string, isInternal bool) error {
 		importPath := modPath
 		if rel != "" {
 			importPath = modPath + "/" + rel
@@ -43,7 +48,7 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string) (pkgs map[stri
 		switch e := ierr.(type) {
 		case nil:
 			if bp.Name != "main" && len(bp.GoFiles) > 0 {
-				pkgs[importPath] = Package{ImportPath: importPath, Dir: dir}
+				pkgs[importPath] = Package{ImportPath: importPath, Dir: dir, Internal: isInternal}
 			}
 		case *build.NoGoError:
 			// Nothing to diff here; still descend.
@@ -68,7 +73,7 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string) (pkgs map[stri
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			if skipDir(name) {
+			if skipDir(name) || (name == "internal" && !internal) {
 				continue
 			}
 			sub := ctxt.JoinPath(dir, name)
@@ -79,13 +84,13 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string) (pkgs map[stri
 			if rel != "" {
 				subRel = path.Join(rel, name)
 			}
-			if werr := walk(sub, subRel); werr != nil {
+			if werr := walk(sub, subRel, isInternal || name == "internal"); werr != nil {
 				return werr
 			}
 		}
 		return nil
 	}
-	if err := walk(root, ""); err != nil {
+	if err := walk(root, "", false); err != nil {
 		return nil, nil, err
 	}
 	return pkgs, problems, nil
@@ -93,7 +98,7 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string) (pkgs map[stri
 
 func skipDir(name string) bool {
 	switch name {
-	case "testdata", "vendor", "internal":
+	case "testdata", "vendor":
 		return true
 	}
 	return strings.HasPrefix(name, ".") || strings.HasPrefix(name, "_")

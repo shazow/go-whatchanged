@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/exp/apidiff"
 )
@@ -35,17 +36,45 @@ func (s Status) String() string {
 	}
 }
 
+// Position locates a symbol's declaration on one side of the diff.
+type Position struct {
+	// Rev is the revision the file was read from, "" for the working tree.
+	Rev string `json:"rev,omitempty"`
+	// File is the path relative to the module root, slash-separated.
+	File string `json:"file"`
+	Line int    `json:"line"`
+	Col  int    `json:"col"`
+}
+
+// IsZero reports whether the position is unknown.
+func (p Position) IsZero() bool { return p.File == "" }
+
+// String formats the position as "file:line:col", prefixed with "rev:" for
+// a file read from a revision, like the positions in warnings.
+func (p Position) String() string {
+	if p.IsZero() {
+		return ""
+	}
+	s := fmt.Sprintf("%s:%d:%d", p.File, p.Line, p.Col)
+	if p.Rev != "" {
+		s = p.Rev + ":" + s
+	}
+	return s
+}
+
 // Change is one API change. Message is an apidiff message, "<symbol>: <what>",
 // or "package added" / "package removed" for a package without exported
 // symbols. Before and After optionally carry the declaration-style form of
 // the symbol on each side for "changed from X to Y" messages, such as "func
 // Open(path string) (*Client, error)"; when they are empty the renderer
-// falls back to the types quoted in the message.
+// falls back to the types quoted in the message. Pos locates the symbol's
+// declaration: on the base side for a removal, on the head side otherwise.
 type Change struct {
 	Message    string
 	Compatible bool
 	Before     string
 	After      string
+	Pos        Position
 }
 
 // FromAPIDiff converts an apidiff change without named forms.
@@ -81,11 +110,14 @@ func (c Change) Kind() string {
 	return "changed"
 }
 
-// Package is the diff of one package.
+// Package is the diff of one package. An Internal package (one below an
+// internal directory) is shown but kept out of the public API's counts and
+// required release level.
 type Package struct {
-	Path    string
-	Status  Status
-	Changes []Change
+	Path     string
+	Status   Status
+	Internal bool
+	Changes  []Change
 }
 
 // Warning is a non-fatal problem encountered while loading one side.
@@ -139,6 +171,11 @@ type Options struct {
 	Color        bool
 	BreakingOnly bool
 	Format       Format
+	// Positions annotates each change with the position of its declaration.
+	Positions bool
+	// Internal adds a line summarizing the changes of internal packages,
+	// which never count towards the public API's summary.
+	Internal bool
 }
 
 // Summary describes the totals of a Result.
@@ -148,11 +185,21 @@ type Summary struct {
 	Compatible      int
 }
 
-// Summarize counts changes across all packages.
+// Summarize counts the changes of the public API: every package that is
+// not internal.
 func Summarize(res Result) Summary {
+	return summarize(res, false)
+}
+
+// SummarizeInternal counts the changes of internal packages.
+func SummarizeInternal(res Result) Summary {
+	return summarize(res, true)
+}
+
+func summarize(res Result, internal bool) Summary {
 	var s Summary
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 {
+		if len(p.Changes) == 0 || p.Internal != internal {
 			continue
 		}
 		s.PackagesChanged++
@@ -241,13 +288,14 @@ type line struct {
 	glyph      string // "-", "!", "~" or "+"
 	head       string
 	from, to   string // both empty unless the change splits
+	pos        string // "" when unknown or not wanted
 	compatible bool
 }
 
 // describe reduces c to a line. "changed from X to Y" messages are split so
 // that the before and after values sit on their own lines, like a small
 // patch, which makes long signatures easy to compare.
-func describe(c Change) line {
+func describe(c Change, opts Options) line {
 	l := line{glyph: "~", head: c.Message, compatible: c.Compatible}
 	switch c.Kind() {
 	case "removed":
@@ -265,43 +313,64 @@ func describe(c Change) line {
 		}
 		l.head, l.from, l.to = head, from, to
 	}
+	if opts.Positions {
+		l.pos = c.Pos.String()
+	}
 	return l
 }
 
-// packageLines returns the changes of p to show, honoring BreakingOnly.
-func packageLines(p Package, opts Options) []line {
-	lines := make([]line, 0, len(p.Changes))
+// packageLines returns the changes of p to show, honoring BreakingOnly, and
+// the width of the widest "glyph head" text among lines that carry a
+// position, so that positions line up in a column.
+func packageLines(p Package, opts Options) (lines []line, width int) {
+	lines = make([]line, 0, len(p.Changes))
 	for _, c := range p.Changes {
 		if opts.BreakingOnly && c.Compatible {
 			continue
 		}
-		lines = append(lines, describe(c))
+		l := describe(c, opts)
+		if l.pos != "" {
+			width = max(width, utf8.RuneCountInString(l.glyph+" "+l.head))
+		}
+		lines = append(lines, l)
 	}
-	return lines
+	return lines, width
+}
+
+// padding returns the spaces that align l's position at width.
+func padding(l line, width int) string {
+	n := width - utf8.RuneCountInString(l.glyph+" "+l.head)
+	if n < 0 {
+		n = 0
+	}
+	return strings.Repeat(" ", n)
 }
 
 func header(p Package) string {
+	var notes []string
+	if p.Internal {
+		notes = append(notes, "internal")
+	}
 	switch p.Status {
 	case New:
-		return p.Path + " (new)"
+		notes = append(notes, "new")
 	case Removed:
-		return p.Path + " (removed)"
+		notes = append(notes, "removed")
 	}
-	return p.Path
+	if len(notes) == 0 {
+		return p.Path
+	}
+	return p.Path + " (" + strings.Join(notes, ", ") + ")"
 }
 
 func writeText(w io.Writer, res Result, opts Options) error {
 	st := Style{Enabled: opts.Color}
-	sum := Summarize(res)
-	if sum.PackagesChanged == 0 {
-		_, err := fmt.Fprintln(w, st.Dim(noChanges(res)))
-		return err
-	}
+	sum, isum := Summarize(res), SummarizeInternal(res)
 
 	var b strings.Builder
 	first := true
 	for _, p := range res.Packages {
-		lines := packageLines(p, opts)
+		lines, width := packageLines(p, opts)
 		if len(lines) == 0 {
 			continue
 		}
@@ -312,7 +381,7 @@ func writeText(w io.Writer, res Result, opts Options) error {
 		b.WriteString(st.Bold(header(p)))
 		b.WriteString("\n")
 		for _, l := range lines {
-			for _, s := range formatLine(st, l) {
+			for _, s := range formatLine(st, l, width) {
 				b.WriteString(s)
 				b.WriteString("\n")
 			}
@@ -322,14 +391,22 @@ func writeText(w io.Writer, res Result, opts Options) error {
 	if !first {
 		b.WriteString("\n")
 	}
-	b.WriteString(formatSummary(st, sum, res))
+	if sum.PackagesChanged == 0 {
+		b.WriteString(st.Dim(noChanges(res)))
+	} else {
+		b.WriteString(formatSummary(st, sum, res))
+	}
 	b.WriteString("\n")
+	if opts.Internal {
+		b.WriteString(st.Dim(internalSummary(isum)))
+		b.WriteString("\n")
+	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
 
 // formatLine maps a line to one or more indented, colored terminal lines.
-func formatLine(st Style, l line) []string {
+func formatLine(st Style, l line, width int) []string {
 	bold := !l.compatible
 	var paint func(string) string
 	switch {
@@ -342,7 +419,11 @@ func formatLine(st Style, l line) []string {
 	default:
 		paint = func(s string) string { return st.Yellow(s, true) }
 	}
-	out := []string{"  " + paint(l.glyph+" "+l.head)}
+	head := "  " + paint(l.glyph+" "+l.head)
+	if l.pos != "" {
+		head += padding(l, width) + "  " + st.Dim(l.pos)
+	}
+	out := []string{head}
 	if l.from != "" {
 		out = append(out,
 			"      "+st.Red("- "+l.from, bold),
@@ -392,6 +473,15 @@ func formatSummary(st Style, sum Summary, res Result) string {
 		plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, colored, versions(res))
 }
 
+// internalSummary is the extra summary line for internal packages.
+func internalSummary(isum Summary) string {
+	if isum.PackagesChanged == 0 {
+		return "internal: no changes"
+	}
+	return fmt.Sprintf("internal: %s · %d incompatible · %d compatible",
+		plural(isum.PackagesChanged, "package"), isum.Incompatible, isum.Compatible)
+}
+
 // versions is the " (v1.4.0 → v1.5.0)" suffix of the summary line, or "".
 func versions(res Result) string {
 	if res.BaseVersion == "" || res.NextVersion == "" {
@@ -411,15 +501,11 @@ func plural(n int, noun string) string {
 // diff block, which GitHub colors: "-" lines red, "+" lines green. An
 // incompatible change is marked "!" and a compatible one "~".
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
-	sum := Summarize(res)
-	if sum.PackagesChanged == 0 {
-		_, err := fmt.Fprintf(w, "_%s_\n", noChanges(res))
-		return err
-	}
+	sum, isum := Summarize(res), SummarizeInternal(res)
 
 	var b strings.Builder
 	for _, p := range res.Packages {
-		lines := packageLines(p, opts)
+		lines, width := packageLines(p, opts)
 		if len(lines) == 0 {
 			continue
 		}
@@ -429,7 +515,11 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			if glyph == "~" && !l.compatible {
 				glyph = "!"
 			}
-			b.WriteString(glyph + " " + l.head + "\n")
+			b.WriteString(glyph + " " + l.head)
+			if l.pos != "" {
+				b.WriteString(padding(l, width) + "  " + l.pos)
+			}
+			b.WriteString("\n")
 			if l.from != "" {
 				b.WriteString("-   " + l.from + "\n")
 				b.WriteString("+   " + l.to + "\n")
@@ -437,8 +527,15 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 		}
 		b.WriteString("```\n\n")
 	}
-	fmt.Fprintf(&b, "%s · %d incompatible · %d compatible · would require: **%s**%s\n",
-		plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, sum.Release(), versions(res))
+	if sum.PackagesChanged == 0 {
+		fmt.Fprintf(&b, "_%s_\n", noChanges(res))
+	} else {
+		fmt.Fprintf(&b, "%s · %d incompatible · %d compatible · would require: **%s**%s\n",
+			plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, sum.Release(), versions(res))
+	}
+	if opts.Internal {
+		fmt.Fprintf(&b, "\n_%s_\n", internalSummary(isum))
+	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -455,25 +552,34 @@ type jsonReport struct {
 }
 
 type jsonPackage struct {
-	Path    string       `json:"path"`
-	Status  string       `json:"status"`
-	Changes []jsonChange `json:"changes"`
+	Path     string       `json:"path"`
+	Status   string       `json:"status"`
+	Internal bool         `json:"internal,omitempty"`
+	Changes  []jsonChange `json:"changes"`
 }
 
 type jsonChange struct {
-	Symbol     string `json:"symbol"`
-	Kind       string `json:"kind"`
-	Compatible bool   `json:"compatible"`
-	Message    string `json:"message"`
-	Before     string `json:"before,omitempty"`
-	After      string `json:"after,omitempty"`
+	Symbol     string    `json:"symbol"`
+	Kind       string    `json:"kind"`
+	Compatible bool      `json:"compatible"`
+	Message    string    `json:"message"`
+	Before     string    `json:"before,omitempty"`
+	After      string    `json:"after,omitempty"`
+	Pos        *Position `json:"pos,omitempty"`
 }
 
 type jsonSummary struct {
-	PackagesChanged int    `json:"packages_changed"`
-	Incompatible    int    `json:"incompatible"`
-	Compatible      int    `json:"compatible"`
-	Release         string `json:"release"`
+	PackagesChanged int         `json:"packages_changed"`
+	Incompatible    int         `json:"incompatible"`
+	Compatible      int         `json:"compatible"`
+	Release         string      `json:"release"`
+	Internal        *jsonCounts `json:"internal,omitempty"`
+}
+
+type jsonCounts struct {
+	PackagesChanged int `json:"packages_changed"`
+	Incompatible    int `json:"incompatible"`
+	Compatible      int `json:"compatible"`
 }
 
 // writeJSON renders the result as one indented JSON document. Only packages
@@ -496,24 +602,33 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			Release:         strings.ToLower(sum.Release()),
 		},
 	}
+	if opts.Internal {
+		isum := SummarizeInternal(res)
+		rep.Summary.Internal = &jsonCounts{PackagesChanged: isum.PackagesChanged, Incompatible: isum.Incompatible, Compatible: isum.Compatible}
+	}
 	for _, p := range res.Packages {
 		if len(p.Changes) == 0 {
 			continue
 		}
-		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Changes: []jsonChange{}}
+		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Changes: []jsonChange{}}
 		for _, c := range p.Changes {
 			if opts.BreakingOnly && c.Compatible {
 				continue
 			}
-			l := describe(c)
-			jp.Changes = append(jp.Changes, jsonChange{
+			l := describe(c, opts)
+			jc := jsonChange{
 				Symbol:     c.Symbol(),
 				Kind:       c.Kind(),
 				Compatible: c.Compatible,
 				Message:    c.Message,
 				Before:     l.from,
 				After:      l.to,
-			})
+			}
+			if opts.Positions && !c.Pos.IsZero() {
+				pos := c.Pos
+				jc.Pos = &pos
+			}
+			jp.Changes = append(jp.Changes, jc)
 		}
 		if len(jp.Changes) == 0 {
 			continue

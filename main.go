@@ -9,6 +9,7 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"strings"
 
 	"golang.org/x/term"
 
@@ -29,6 +30,10 @@ uncommitted changes do to the API.
 
 When the base is a release tag, the summary also names the version the
 changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
+
+--pkg and --exclude take import paths or module-relative paths, with "..."
+matching anything: "store/..." is the store package and everything below
+it. Both may be repeated or given comma-separated lists.
 
 The tool never writes to disk and never runs the go command.
 
@@ -60,6 +65,10 @@ func run(args []string) int {
 	fs.StringVar(&opts.GOOS, "goos", runtime.GOOS, "build target OS")
 	fs.StringVar(&opts.GOARCH, "goarch", runtime.GOARCH, "build target architecture")
 	fs.BoolVar(&opts.Breaking, "breaking", false, "show only incompatible changes")
+	fs.Var((*patterns)(&opts.Packages), "pkg", "diff only packages matching `pattern` (repeatable)")
+	fs.Var((*patterns)(&opts.Exclude), "exclude", "skip packages matching `pattern` (repeatable)")
+	fs.BoolVar(&opts.Internal, "internal", false, "also show internal packages (never counted in the summary or exit code)")
+	fs.BoolVar(&opts.Positions, "pos", true, "annotate each change with its source position (--pos=false to hide)")
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
 	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
 	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")
@@ -124,6 +133,20 @@ func run(args []string) int {
 		fmt.Fprintf(os.Stderr, "go-whatchanged: %v\n", err)
 	}
 	return code
+}
+
+// patterns collects a repeatable, comma-separated pattern flag.
+type patterns []string
+
+func (p *patterns) String() string { return strings.Join(*p, ",") }
+
+func (p *patterns) Set(s string) error {
+	for _, v := range strings.Split(s, ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			*p = append(*p, v)
+		}
+	}
+	return nil
 }
 
 // version describes this build: the module version go install recorded (or

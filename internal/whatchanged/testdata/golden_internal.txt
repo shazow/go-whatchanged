@@ -5,6 +5,10 @@ example.com/m/fresh (new)
 example.com/m/gone (removed)
   - Gone: removed  v1.0.0:gone/gone.go:3:6
 
+example.com/m/internal/hidden (internal)
+  - Hidden: removed  v1.0.0:internal/hidden/hidden.go:3:6
+  + Added: added     internal/hidden/hidden.go:5:6
+
 example.com/m/store
   - (*Client).Close: removed  v1.0.0:store/store.go:7:18
   ~ Config.Timeout: changed   store/store.go:17:21
@@ -27,4 +31,5 @@ example.com/m/util
       + type Stringer = fmt.Stringer
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
+internal: 1 package changed · 1 incompatible · 1 compatible
 # stderr
