@@ -5,6 +5,7 @@ go 1.26.0
 require (
 	github.com/go-git/go-billy/v5 v5.9.1
 	github.com/go-git/go-git/v5 v5.19.2
+	github.com/jessevdk/go-flags v1.6.1
 	golang.org/x/exp v0.0.0-20260824195058-e88cd73687aa
 	golang.org/x/mod v0.40.0
 	golang.org/x/term v0.45.0

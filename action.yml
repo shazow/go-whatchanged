@@ -39,11 +39,12 @@ inputs:
     default: ""
   filter:
     description: >-
-      Which packages take part: public (the importable API), internal or all.
-      Internal packages are listed but never count towards the summary, the
-      outputs or fail-on.
+      Which packages take part: all (the public API first, then the internal
+      packages), public (the importable API alone) or internal. Internal
+      packages are listed but never count towards the summary, the outputs
+      or fail-on.
     required: false
-    default: public
+    default: all
   breaking:
     description: >-
       Show only incompatible changes. The counts still describe the full diff.

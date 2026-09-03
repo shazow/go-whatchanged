@@ -35,7 +35,7 @@ go install github.com/shazow/go-whatchanged@latest
 ## Usage
 
 ```
-go-whatchanged [flags] [<base> [<head>]]
+go-whatchanged [options] [<base> [<head>]]
 
   base   optional commit-ish for the old side: hash, tag, branch, HEAD~2, ...
          or @latest, the newest release tag among the ancestors of head.
@@ -49,26 +49,31 @@ exactly what the uncommitted changes in your checkout do to the exported API.
 changed since the last release?
 
 ```
-Flags:
-  --repo string      path inside a git repository (default: current directory)
-  --goos, --goarch   build target (default: the running platform)
-  --pkg PATTERN      diff only packages matching PATTERN (repeatable)
-  --exclude PATTERN  skip packages matching PATTERN (repeatable)
-  --filter string    public | internal | all: which packages take part
-                     (default public; see below)
-  --breaking         show only incompatible changes
-  --signatures       full | minimal: show each change as its old and new
+Options:
+  --repo=DIR         path inside a git repository (default: current directory)
+  --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
+  --exclude=PATTERN  skip packages matching PATTERN (repeatable)
+  --filter=WHICH     all | public | internal: which packages take part, and
+                     breaking: only incompatible changes; comma-separated or
+                     repeatable (default all; see below)
+  --signatures=HOW   full | minimal: show each change as its old and new
                      declarations, or as one message line (default full)
   --pos              annotate changes with source positions (see below)
-  --format string    text | markdown (or md) | json (default text; see below)
-  --color string     auto | always | never (default auto; honors NO_COLOR)
+  --format=LAYOUT    text | markdown (or md) | json (default text; see below)
+  --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
-  --exit-fail LEVEL  exit 100/101/102 when the required bump is major, minor
+  --exit-fail=LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher (see below)
   --version          print the version and exit
+  -h, --help         print the full help
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 ```
+
+Options take the GNU form, `--filter=all` or `--filter all`, and `--`
+ends them, so a revision that starts with a dash can follow it. The build
+target comes from `GOOS` and `GOARCH` in the environment, as for the `go`
+command, and defaults to the running platform.
 
 ### Choosing packages
 
@@ -86,29 +91,37 @@ warning (fatal with `--strict`), since it is almost always a typo.
 $ go-whatchanged --pkg store/... --exclude .../experimental v1.4.0
 ```
 
-`--filter` says which packages take part. The default, `public`, is the
-importable API: everything outside `internal` directories. `all` adds the
-internal packages, which makes the tool useful for reviewing an
-application, not only a library; `internal` shows them alone. Internal
-packages are listed with an `(internal)` mark and summarized on a line of
-their own, and they never count towards the public API's totals, the
-required release, the next version or the exit code, so `--filter=all`
-combines with `--exit-fail`, and `--filter=internal` never fails a build:
+`--filter` says which packages take part. The default, `all`, is every
+package: the public API, everything outside `internal` directories, comes
+first with its summary line, and the internal packages follow, marked
+`(internal)` and summarized on a line of their own, which makes the tool
+useful for reviewing an application, not only a library. Internal packages
+never count towards the public API's totals, the required release, the
+next version or the exit code, so the default combines with `--exit-fail`.
+When nothing in the public API changed, the first line says so and the
+internal packages still follow; when no internal package changed, the
+internal section is left out:
 
 ```
-$ go-whatchanged --filter=all
-example.com/m/internal/store (internal)
-  - func Open(path string) (*Client, error)
-
+$ go-whatchanged
 example.com/m/util
   + func Pad(s string, n int) string
 
 1 package changed · 0 incompatible · 1 compatible · would require: MINOR
+
+example.com/m/internal/store (internal)
+  - func Open(path string) (*Client, error)
+
 internal: 1 package changed · 1 incompatible · 0 compatible
 ```
 
-With `--filter=internal` only the last line and the internal packages
-remain.
+`--filter=public` leaves the internal packages out entirely; an empty diff
+then reads `no exported API changes; add --filter=all to include internal
+API changes`. `--filter=internal` shows them alone, with only their summary
+line, so it never fails a build. `breaking` narrows the diff to
+incompatible changes and combines with the others, comma-separated or
+repeated: `--filter=public,breaking`, or `--filter internal --filter
+breaking`. The summary always counts the full diff.
 
 ### Since the last release
 
@@ -145,27 +158,27 @@ which tag `@latest` picked.
 
 ### Output formats
 
-`--format=markdown` renders each package as a fenced `diff` block, which
-GitHub colors, followed by the same summary line, for a pull request
-comment or a job summary:
+`--format=markdown` renders the same lines as the text layout, each package
+as a fenced `diff` block, which GitHub colors, followed by the same summary
+line, for a pull request comment or a job summary. A code block has no
+bold, so where the text layout emphasizes an incompatible change the
+Markdown layout marks the line `!` instead of `+` (or `~`), which GitHub
+colors orange; a removal keeps its `-`:
 
 ````
 **example.com/m/store**
 
 ```diff
-- (*Client).Close: removed
--   func (c *Client) Close() error
-! Open: changed
--   func Open(path string) (*Client, error)
-+   func Open(path string, o Options) (*Client, error)
-+ (*Client).Ping: added
-+   func (c *Client) Ping() error
+- func (c *Client) Close() error
+- func Open(path string) (*Client, error)
+! func Open(path string, o Options) (*Client, error)
++ func (c *Client) Ping() error
 ```
 
 1 package changed · 2 incompatible · 1 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
 ````
 
-`--format=json` prints one document for tools and bots. `--breaking`
+`--format=json` prints one document for tools and bots. `--filter=breaking`
 filters the change lists in every format; the summary always counts the
 full diff.
 
@@ -218,10 +231,10 @@ full diff.
 `head` is the revision given or the literal `working tree`. `base_version`
 and `next_version` appear when the base is a release tag. A package's
 `status` is `changed`, `new` or `removed`, and `"internal": true` marks an
-internal package under `--filter=all` or `internal`, which the summary then
-also counts separately under `summary.internal` (the public counts and
-`release` describe the public packages in the selection, none under
-`internal`). A change's `kind` is `added`,
+internal package, which the summary also counts separately under
+`summary.internal` unless `--filter=public` left them out (the public
+counts and `release` describe the public packages in the selection, none
+under `--filter=internal`). A change's `kind` is `added`,
 `removed` or `changed`, and `symbol` is empty for a whole-package change
 (`package added`). `before` and `after` hold what the text layout prints on
 its `-` and `+` lines: the old declaration of a removed symbol, the new one
@@ -282,7 +295,7 @@ summary. Here they are with their defaults:
           working-directory: . # the module, for repositories with several
           pkg: ""             # patterns, comma- or newline-separated
           exclude: ""
-          filter: public      # public | internal | all
+          filter: all         # all | public | internal
           breaking: false
           signatures: full    # full | minimal
           pos: false
@@ -316,8 +329,8 @@ outputs for later steps:
 | `summary` | the summary line(s) as plain text |
 | `markdown`, `json` | the whole report in either format |
 
-Internal packages (`filter: all` or `internal`) never count in the outputs
-or towards `fail-on`, as on the command line. A pull request comment is one
+Internal packages never count in the outputs or towards `fail-on`, as on
+the command line. A pull request comment is one
 more step:
 
 ```yaml
@@ -390,7 +403,9 @@ old declaration on a `-` line, the new one on a `+` line.
 | `+` | incompatible addition (a method on an interface, for example) | green, bold |
 | `-` then `+` | symbol changed (signature, type, constant value): the old declaration, then the new one | grey, then orange (bold when incompatible) |
 
-Bold marks an incompatible change. A removed symbol shows what went away, an
+Bold marks an incompatible change (in Markdown, where a code block has no
+bold, the `+` line of an incompatible change is marked `!` instead). A
+removed symbol shows what went away, an
 added one what arrived, and a `changed from X to Y` message becomes a small
 patch of both, greyed out and orange rather than red and green so that it
 reads as one edit, and so that two long signatures can be compared column
@@ -434,7 +449,8 @@ that way, with the message as is: `~ Open: changed from func(string)
 | `~`   | compatible change | cyan |
 | `+`   | compatible addition | green |
 
-Such lines are `+ package added` and `- package removed` for a package
+In Markdown the `~` of an incompatible change is `!` as well. Such lines
+are `+ package added` and `- package removed` for a package
 without exported API (see below), `~ T: no longer implements fmt.Stringer`
 and the like for changes apidiff describes in words rather than types, and
 `~ Open: changed` for a changed symbol that cannot be looked up on both
@@ -449,7 +465,7 @@ it appears or disappears, since importers notice either way. A directory
 that becomes a nested module counts as removed. The summary line ends with
 the semantic version bump the changes would require: `MAJOR` if anything is
 incompatible, `MINOR` if only compatible changes were made, `PATCH` otherwise.
-The counts always describe the full diff, even with `--breaking`. When the
+The counts always describe the full diff, even with `--filter=breaking`. When the
 base is a release tag the summary also names the next version, see
 [Since the last release](#since-the-last-release).
 

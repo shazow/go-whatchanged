@@ -23,4 +23,10 @@
   [1;38;5;208m+ type Stringer = fmt.Stringer[0m
 
 4 packages changed · 7 incompatible · 4 compatible · would require: [1;31mMAJOR[0m (v1.0.0 → v2.0.0)
+
+[1mexample.com/m/internal/hidden (internal)[0m
+  [1;31m- func Hidden()[0m
+  [32m+ func Added()[0m
+
+[2minternal: 1 package changed · 1 incompatible · 1 compatible[0m
 # stderr

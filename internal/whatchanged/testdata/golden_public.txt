@@ -5,10 +5,6 @@ example.com/m/fresh (new)
 example.com/m/gone (removed)
   - func Gone()
 
-example.com/m/internal/hidden (internal)
-  - func Hidden()
-  + func Added()
-
 example.com/m/store
   - func (c *Client) Close() error
   - field Config.Timeout int
@@ -27,5 +23,4 @@ example.com/m/util
   + type Stringer = fmt.Stringer
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
-internal: 1 package changed · 1 incompatible · 1 compatible
 # stderr

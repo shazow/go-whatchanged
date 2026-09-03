@@ -357,8 +357,8 @@ func TestIgnoredDirectories(t *testing.T) {
 	f.write("_skip/s.go", "package skip\n\nfunc Skipped() {}\n")
 	f.write(".hidden/h.go", "package hidden\n\nfunc Dot() {}\n")
 	f.write("a/a_test.go", "package a\n\nfunc TestOnly() {}\n")
-	r := f.mustRun("HEAD", "", Options{})
-	if r.stdout != "no exported API changes\n" {
+	r := f.mustRun("HEAD", "", Options{Filter: render.Public})
+	if r.stdout != "no exported API changes; add --filter=all to include internal API changes\n" {
 		t.Errorf("stdout = %q", r.stdout)
 	}
 	if r.stderr != "" {
@@ -1001,7 +1001,7 @@ func TestGolden(t *testing.T) {
 		{"breaking", Options{Breaking: true}, ExitIncompatible},
 		{"markdown", Options{Format: render.Markdown}, ExitIncompatible},
 		{"json", Options{Format: render.JSON}, ExitIncompatible},
-		{"all", Options{Filter: render.All}, ExitIncompatible},
+		{"public", Options{Filter: render.Public}, ExitIncompatible},
 		// Internal packages alone: no public API in the selection.
 		{"internal", Options{Filter: render.Internal}, ExitClean},
 		{"pos", Options{Positions: true}, ExitIncompatible},
@@ -1529,7 +1529,7 @@ func TestLatestReleaseErrors(t *testing.T) {
 func TestJSON(t *testing.T) {
 	t.Parallel()
 	f := goldenFixture(t)
-	r := f.mustRun("v1.0.0", "", Options{Format: render.JSON})
+	r := f.mustRun("v1.0.0", "", Options{Format: render.JSON, Filter: render.Public})
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d", r.code)
 	}
@@ -1589,7 +1589,7 @@ func TestJSON(t *testing.T) {
 	}
 
 	// --breaking drops compatible changes from the lists but not the counts.
-	r = f.mustRun("v1.0.0", "", Options{Format: render.JSON, Breaking: true})
+	r = f.mustRun("v1.0.0", "", Options{Format: render.JSON, Breaking: true, Filter: render.Public})
 	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
 		t.Fatal(err)
 	}
@@ -1783,20 +1783,21 @@ func TestFilterInternalPackages(t *testing.T) {
 	f.write("a/internal/deep/d.go", "package deep\n\nfunc Deep() {}\n\nfunc Deeper() {}\n")
 	f.write("internal/fresh/f.go", "package fresh\n\nfunc F() {}\n")
 
-	// Without the option internal packages do not exist.
-	r := f.mustRun("HEAD", "", Options{})
+	// With --filter=public internal packages do not exist.
+	r := f.mustRun("HEAD", "", Options{Filter: render.Public})
 	if want := "example.com/m/a\n  + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
-		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+		t.Errorf("public: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
-	// With --filter=all they are shown and marked, but the summary, the
-	// release and the exit code still describe the public API only.
-	r = f.mustRun("HEAD", "", Options{Filter: render.All})
+	// By default (--filter=all) they follow the public API, marked and with
+	// a summary line of their own, but the public summary, the release and
+	// the exit code still describe the public API only.
+	r = f.mustRun("HEAD", "", Options{})
 	want := "example.com/m/a\n  + func Added()\n\n" +
+		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n\n" +
 		"example.com/m/a/internal/deep (internal)\n  + func Deeper()\n\n" +
 		"example.com/m/internal/fresh (internal, new)\n  + func F()\n\n" +
 		"example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\n" +
-		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n" +
 		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
@@ -1804,26 +1805,39 @@ func TestFilterInternalPackages(t *testing.T) {
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d", r.code, ExitClean)
 	}
-	r = f.run("HEAD", "", Options{Filter: render.All, ExitFail: FailMajor})
+	r = f.run("HEAD", "", Options{ExitFail: FailMajor})
 	if r.code != ExitClean {
 		t.Errorf("--exit-fail=major: exit = %d, want %d", r.code, ExitClean)
 	}
 
-	// Only internal changes: the public API is untouched.
+	// Only internal changes: the public API is untouched, which the first
+	// line says, and the internal packages follow.
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
-	r = f.mustRun("HEAD", "", Options{Filter: render.All})
-	mustContain(t, r.stdout, "\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n")
+	r = f.mustRun("HEAD", "", Options{})
+	want = "no exported API changes\n\n" +
+		"example.com/m/a/internal/deep (internal)\n  + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\n" +
+		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
+	if r.stdout != want {
+		t.Errorf("internal only: stdout = %q\nwant     %q", r.stdout, want)
+	}
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d", r.code, ExitClean)
 	}
+	// With --filter=public the message points at what was left out.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public})
+	if want := "no exported API changes; add --filter=all to include internal API changes\n"; r.stdout != want {
+		t.Errorf("public: stdout = %q\nwant     %q", r.stdout, want)
+	}
 
 	// --breaking and --pkg apply to internal packages too.
-	r = f.mustRun("HEAD", "", Options{Filter: render.All, Breaking: true})
-	if want := "example.com/m/internal/hidden (internal)\n  - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
+	r = f.mustRun("HEAD", "", Options{Breaking: true})
+	if want := "no exported API changes\n\nexample.com/m/internal/hidden (internal)\n  - func Hidden()\n\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
 		t.Errorf("breaking: stdout = %q\nwant     %q", r.stdout, want)
 	}
-	r = f.mustRun("HEAD", "", Options{Filter: render.All, Packages: []string{"internal/hidden"}})
-	if want := "example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
+	r = f.mustRun("HEAD", "", Options{Packages: []string{"internal/hidden"}})
+	if want := "no exported API changes\n\nexample.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
 		t.Errorf("pkg: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
@@ -1849,10 +1863,11 @@ func TestFilterInternalPackages(t *testing.T) {
 		t.Errorf("internal --pkg a: stdout = %q, want %q", r.stdout, want)
 	}
 
-	// Nothing changed anywhere.
+	// Nothing changed anywhere: no internal section at all, unless asked
+	// for internal packages alone.
 	f.commit("all")
-	r = f.mustRun("HEAD", "", Options{Filter: render.All})
-	if want := "no exported API changes\ninternal: no changes\n"; r.stdout != want {
+	r = f.mustRun("HEAD", "", Options{})
+	if want := "no exported API changes\n"; r.stdout != want {
 		t.Errorf("clean: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Internal})
@@ -1862,11 +1877,15 @@ func TestFilterInternalPackages(t *testing.T) {
 
 	// Machine-readable layouts carry the same split.
 	f.write("internal/hidden/h.go", "package hidden\n\nfunc Renamed() {}\n\nfunc More() {}\n")
-	r = f.mustRun("HEAD", "", Options{Filter: render.All, Format: render.JSON})
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"internal": true,`, `"release": "patch",`,
 		"\"internal\": {\n      \"packages_changed\": 1,\n      \"incompatible\": 0,\n      \"compatible\": 1\n    }")
-	r = f.mustRun("HEAD", "", Options{Filter: render.All, Format: render.Markdown})
-	mustContain(t, r.stdout, "**example.com/m/internal/hidden (internal)**\n", "_no exported API changes_\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n")
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON, Filter: render.Public})
+	mustNotContain(t, r.stdout, `"internal"`)
+	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
+	if want := "_no exported API changes_\n\n**example.com/m/internal/hidden (internal)**\n\n```diff\n+ func More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
+		t.Errorf("markdown: stdout = %q\nwant     %q", r.stdout, want)
+	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
 	mustContain(t, r.stdout, "```\n\ninternal: 1 package changed · 0 incompatible · 1 compatible\n")
 	mustNotContain(t, r.stdout, "exported API")

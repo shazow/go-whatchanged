@@ -138,12 +138,13 @@ revs=("$base")
 flags=(--filter "$INPUT_FILTER" --signatures "$INPUT_SIGNATURES")
 [ -z "$INPUT_PKG" ] || flags+=(--pkg "$(printf '%s' "$INPUT_PKG" | tr '\n' ,)")
 [ -z "$INPUT_EXCLUDE" ] || flags+=(--exclude "$(printf '%s' "$INPUT_EXCLUDE" | tr '\n' ,)")
-[ "$INPUT_BREAKING" != true ] || flags+=(--breaking)
+[ "$INPUT_BREAKING" != true ] || flags+=(--filter breaking)
 # shellcheck disable=SC2153 # INPUT_POS is an input, not a typo of INPUT_GOOS
 [ "$INPUT_POS" != true ] || flags+=(--pos)
 [ "$INPUT_STRICT" != true ] || flags+=(--strict)
-[ -z "$INPUT_GOOS" ] || flags+=(--goos "$INPUT_GOOS")
-[ -z "$INPUT_GOARCH" ] || flags+=(--goarch "$INPUT_GOARCH")
+# The build target is taken from the environment, as by the go command.
+[ -z "$INPUT_GOOS" ] || export GOOS="$INPUT_GOOS"
+[ -z "$INPUT_GOARCH" ] || export GOARCH="$INPUT_GOARCH"
 
 log "comparing $base with ${head:-the working tree}"
 warm_cache
@@ -181,10 +182,11 @@ if [ "$INPUT_SUMMARY" = true ]; then
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
-# The summary lines are whatever follows the last fenced block, minus the
-# markdown emphasis.
-summary=$(awk '/^```/ {buf = ""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$md" |
-  sed -e '/^$/d' -e 's/\*\*//g' -e 's/^_\(.*\)_$/\1/')
+# The summary lines are everything outside the fenced blocks that is not a
+# package heading, minus the markdown emphasis: the public API's line and,
+# when internal packages changed, theirs.
+summary=$(awk '/^```/ {fence = !fence; next} fence || /^\*\*/ || /^$/ {next} {print}' "$md" |
+  sed -e 's/\*\*//g' -e 's/^_\(.*\)_$/\1/')
 
 delim="go-whatchanged-$RANDOM$RANDOM"
 {

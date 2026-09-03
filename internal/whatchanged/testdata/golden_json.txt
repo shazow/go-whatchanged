@@ -32,6 +32,27 @@
       ]
     },
     {
+      "path": "example.com/m/internal/hidden",
+      "status": "changed",
+      "internal": true,
+      "changes": [
+        {
+          "symbol": "Hidden",
+          "kind": "removed",
+          "compatible": false,
+          "message": "Hidden: removed",
+          "before": "func Hidden()"
+        },
+        {
+          "symbol": "Added",
+          "kind": "added",
+          "compatible": true,
+          "message": "Added: added",
+          "after": "func Added()"
+        }
+      ]
+    },
+    {
       "path": "example.com/m/store",
       "status": "changed",
       "changes": [
@@ -116,7 +137,12 @@
     "packages_changed": 4,
     "incompatible": 7,
     "compatible": 4,
-    "release": "major"
+    "release": "major",
+    "internal": {
+      "packages_changed": 1,
+      "incompatible": 1,
+      "compatible": 1
+    }
   }
 }
 # stderr
