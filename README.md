@@ -342,8 +342,8 @@ side is ever linked against the other side's packages.
 - No `go.work`, vendor mode or GOPATH mode. Dependencies come from the
   module cache and `replace` directories.
 - Only the main module's API is compared, not its dependencies'.
-- Not a library: everything lives under `internal/`, and the command line
-  and the JSON layout are the interface.
+- Not a library, for now: everything lives under `internal/`, and the
+  command line and the JSON layout are the interface.
 
 ## License
 
