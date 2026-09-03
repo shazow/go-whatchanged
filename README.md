@@ -57,6 +57,7 @@ go install github.com/shazow/go-whatchanged@latest
 | What did release `v1.4.0` ship? | `go-whatchanged @latest v1.4.0` |
 | What does this branch change, compared to `main`? | `go-whatchanged origin/main` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
+| What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
 
 ```
@@ -71,8 +72,9 @@ Options:
   --repo=DIR         path inside a git repository (default: current directory)
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
-  --filter=WHICH     all | public | internal: which packages take part, and
-                     breaking: only incompatible changes (default all)
+  --filter=WHICH     all | public | internal: which packages take part;
+                     main: include main packages; breaking: only
+                     incompatible changes (default all)
   --signatures=HOW   full | minimal: declarations, or one line per change
                      (default full)
   --pos              annotate changes with source positions
@@ -117,12 +119,13 @@ always suggests its final release.
 ### Large modules and applications
 
 `--pkg` and `--exclude` take package patterns as the `go` command does,
-`store/...` for the store package and everything below it. `main` packages
-are never diffed.
+`store/...` for the store package and everything below it.
 
 Internal packages are listed after the public API with a summary line of
 their own, as above, and never count towards the public API's totals or
-the exit code. With `--filter=breaking`, the counts in the summary still
+the exit code. `main` packages are left out unless `--filter=main` asks
+for them; nothing can import a command, so they join the internal
+section. With `--filter=breaking`, the counts in the summary still
 describe the full diff.
 
 ## Reading the output
@@ -249,7 +252,7 @@ jobs:
 | `head` | `HEAD` | Commit-ish for the new side. Empty means the working tree. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
-| `filter` | `all` | `all`, `public` or `internal`. |
+| `filter` | `all` | `all`, `public` or `internal`, plus `main` for the commands: `all,main`. |
 | `breaking` | `false` | Show only incompatible changes. |
 | `signatures` | `full` | `full` or `minimal`. |
 | `pos` | `false` | Annotate changes with source positions. |
