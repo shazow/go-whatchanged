@@ -391,14 +391,10 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 	var out []render.Warning
 	for _, pat := range patterns {
-		matched := false
-		for _, s := range []*side{base, head} {
-			for _, p := range s.all {
-				if discover.MatchPattern(pat, s.res.ModPath(), p) {
-					matched = true
-				}
-			}
-		}
+		p := discover.Compile(pat)
+		matched := slices.ContainsFunc([]*side{base, head}, func(s *side) bool {
+			return slices.ContainsFunc(s.all, func(path string) bool { return p.Match(s.res.ModPath(), path) })
+		})
 		if !matched {
 			out = append(out, render.Warning{Package: head.res.ModPath(), Message: fmt.Sprintf("--pkg %q matched no packages", pat)})
 		}
@@ -459,7 +455,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 	s.problem = problems
 	s.pkgs = make(map[string]*types.Package, len(found))
 	s.internal = make(map[string]bool)
-	filter := discover.Filter{Include: opts.Packages, Exclude: opts.Exclude}
+	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
 		if !opts.Filter.Includes(found[p].Internal) {
