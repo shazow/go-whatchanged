@@ -2,19 +2,15 @@ package whatchanged
 
 import (
 	"fmt"
-	"io"
-	"os"
-	"path"
-	"path/filepath"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
-	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/semver"
 
+	"github.com/shazow/go-whatchanged/internal/modres"
 	"github.com/shazow/go-whatchanged/internal/release"
 )
 
@@ -32,9 +28,9 @@ const LatestRelease = "@latest"
 // is a release tag of the module (so the summary can suggest the next
 // version). Problems reading the head side's go.mod are left for loadSide to
 // report, unless LatestRelease depends on it.
-func resolveBase(open openFunc, base string, head sideSpec, rel string) (rev, version string, err error) {
+func resolveBase(open openFunc, base string, head sideSpec, rel string, env modres.Env) (rev, version string, err error) {
 	var tags release.Tags
-	modPath, err := headModulePath(open, head, rel)
+	modPath, err := headModulePath(open, head, rel, env)
 	if err == nil {
 		tags, err = release.TagsFor(modPath, rel)
 	}
@@ -44,25 +40,9 @@ func resolveBase(open openFunc, base string, head sideSpec, rel string) (rev, ve
 		}
 		return base, tags.Version(tagName(base)), nil
 	}
-	if err != nil {
-		return "", "", fmt.Errorf("%s: %w", LatestRelease, err)
+	if err == nil {
+		rev, version, err = latestTag(open, tags, head.rev, modPath)
 	}
-	repo, err := open()
-	if err != nil {
-		return "", "", err
-	}
-	headRev := head.rev
-	if headRev == "" {
-		headRev = "HEAD"
-	}
-	hash, err := repo.ResolveRevision(plumbing.Revision(headRev))
-	if err != nil {
-		return "", "", fmt.Errorf("%s: resolve %q: %w", LatestRelease, headRev, err)
-	}
-	if _, err := repo.CommitObject(*hash); err != nil {
-		return "", "", fmt.Errorf("%s: %q is not a commit", LatestRelease, headRev)
-	}
-	rev, version, err = latestTag(repo, tags, *hash, headRev, modPath)
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", LatestRelease, err)
 	}
@@ -76,52 +56,16 @@ func tagName(rev string) string {
 }
 
 // headModulePath reads the module path from the head side's go.mod.
-func headModulePath(open openFunc, head sideSpec, rel string) (string, error) {
-	var data []byte
-	switch {
-	case head.rev != "":
-		repo, err := open()
-		if err != nil {
-			return "", err
-		}
-		tree, err := resolveTree(repo, head.rev)
-		if err != nil {
-			return "", err
-		}
-		f, err := tree.File(path.Join(rel, "go.mod"))
-		if err != nil {
-			return "", fmt.Errorf("%s: no go.mod at %q", head.rev, path.Join(rel, "go.mod"))
-		}
-		s, err := f.Contents()
-		if err != nil {
-			return "", err
-		}
-		data = []byte(s)
-	case head.fs != nil:
-		rc, err := head.fs.Open(path.Join(rel, "go.mod"))
-		if err != nil {
-			return "", err
-		}
-		defer rc.Close()
-		data, err = io.ReadAll(rc)
-		if err != nil {
-			return "", err
-		}
-	default:
-		var err error
-		data, err = os.ReadFile(filepath.Join(head.dir, "go.mod"))
-		if err != nil {
-			return "", err
-		}
-	}
-	mf, err := modfile.ParseLax("go.mod", data, nil)
+func headModulePath(open openFunc, head sideSpec, rel string, env modres.Env) (string, error) {
+	s, err := head.mount(open, rel)
 	if err != nil {
 		return "", err
 	}
-	if mf.Module == nil || mf.Module.Mod.Path == "" {
-		return "", fmt.Errorf("go.mod: missing module directive")
+	res, err := modres.New(s.overlay, s.root, env)
+	if err != nil {
+		return "", fmt.Errorf("%s: %w", s.label, err)
 	}
-	return mf.Module.Mod.Path, nil
+	return res.ModPath(), nil
 }
 
 // candidate is a release tag and the version it denotes.
@@ -130,9 +74,25 @@ type candidate struct {
 }
 
 // latestTag returns the highest release tag among the proper ancestors of
-// head. Annotated tags are followed to the commit they point at; tags on
-// anything but a commit are ignored.
-func latestTag(repo *git.Repository, tags release.Tags, head plumbing.Hash, headRev, modPath string) (tag, version string, err error) {
+// headRev, "" for the working tree, whose commit is HEAD. Annotated tags are
+// followed to the commit they point at; tags on anything but a commit are
+// ignored.
+func latestTag(open openFunc, tags release.Tags, headRev, modPath string) (tag, version string, err error) {
+	repo, err := open()
+	if err != nil {
+		return "", "", err
+	}
+	if headRev == "" {
+		headRev = "HEAD"
+	}
+	hash, err := repo.ResolveRevision(plumbing.Revision(headRev))
+	if err != nil {
+		return "", "", fmt.Errorf("resolve %q: %w", headRev, err)
+	}
+	if _, err := repo.CommitObject(*hash); err != nil {
+		return "", "", fmt.Errorf("%q is not a commit", headRev)
+	}
+	head := *hash
 	byCommit := map[plumbing.Hash][]candidate{}
 	refs, err := repo.Tags()
 	if err != nil {

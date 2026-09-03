@@ -1,6 +1,7 @@
-// Command go-whatchanged prints a colorized diff of a Go module's exported API
-// between a commit and the working tree. With no arguments it compares HEAD
-// against the current, possibly uncommitted, state of the checkout.
+// Command go-whatchanged prints a semantic diff of a Go module's exported API
+// between two git revisions, or a revision and the working tree, as colorized
+// text, Markdown or JSON. With no arguments it compares HEAD against the
+// current, possibly uncommitted, state of the checkout.
 package main
 
 import (

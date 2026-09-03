@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path"
@@ -82,6 +83,27 @@ func writeFile(t *testing.T, fsys billy.Filesystem, name, content string) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// billyFS adapts a billy.Filesystem to vfs.FS, so that a test can point the
+// working-tree side at an in-memory filesystem.
+type billyFS struct{ fs billy.Filesystem }
+
+func (b *billyFS) Stat(name string) (fs.FileInfo, error) { return b.fs.Stat(name) }
+
+func (b *billyFS) ReadDir(name string) ([]fs.FileInfo, error) {
+	fi, err := b.fs.Stat(name)
+	if err != nil {
+		return nil, err
+	}
+	if !fi.IsDir() {
+		return nil, &fs.PathError{Op: "readdir", Path: name, Err: vfs.ErrNotDir}
+	}
+	return b.fs.ReadDir(name)
+}
+
+func (b *billyFS) Open(name string) (io.ReadCloser, error) {
+	return b.fs.OpenFile(name, os.O_RDONLY, 0)
 }
 
 // testSignature is the author and committer of every fixture commit.
@@ -188,9 +210,9 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	opts.Base = base
 	var mounts []vfs.Mount
 	if f.modcache != nil {
-		mounts = []vfs.Mount{{Path: f.env.GOMODCACHE, FS: vfs.NewBillyFS(f.modcache)}}
+		mounts = []vfs.Mount{{Path: f.env.GOMODCACHE, FS: &billyFS{fs: f.modcache}}}
 	}
-	headSpec := sideSpec{fs: vfs.NewBillyFS(f.fs), mounts: mounts}
+	headSpec := sideSpec{fs: &billyFS{fs: f.fs}, mounts: mounts}
 	if head != "" {
 		headSpec = sideSpec{rev: head, mounts: mounts}
 	}
@@ -923,7 +945,7 @@ func TestSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: vfs.NewBillyFS(f.fs)}, "sub", f.env, opts)
+	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1465,7 +1487,7 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: vfs.NewBillyFS(f.fs)}, "sub", f.env, opts)
+	res, err := runRepo(f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

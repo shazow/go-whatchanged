@@ -56,16 +56,16 @@ func (s Style) Bold(text string) string { return s.wrap(text, codeBold) }
 func (s Style) Dim(text string) string { return s.wrap(text, codeDim) }
 
 // Red renders text in red, bold when bold is set.
-func (s Style) Red(text string, bold bool) string { return s.color(text, codeRed, bold) }
+func (s Style) Red(text string, bold bool) string { return s.color(text, bold, codeRed) }
 
 // Green renders text in green, bold when bold is set.
-func (s Style) Green(text string, bold bool) string { return s.color(text, codeGreen, bold) }
+func (s Style) Green(text string, bold bool) string { return s.color(text, bold, codeGreen) }
 
 // Yellow renders text in yellow, bold when bold is set.
-func (s Style) Yellow(text string, bold bool) string { return s.color(text, codeYellow, bold) }
+func (s Style) Yellow(text string, bold bool) string { return s.color(text, bold, codeYellow) }
 
 // Cyan renders text in cyan, bold when bold is set.
-func (s Style) Cyan(text string, bold bool) string { return s.color(text, codeCyan, bold) }
+func (s Style) Cyan(text string, bold bool) string { return s.color(text, bold, codeCyan) }
 
 // DimYellow renders text in dim yellow.
 func (s Style) DimYellow(text string) string { return s.wrap(text, codeDim, codeYellow) }
@@ -76,15 +76,13 @@ func (s Style) Grey(text string) string { return s.wrap(text, codeFG256, 5, pale
 // Orange renders text in orange, bold when bold is set, for the new
 // declaration of a changed symbol.
 func (s Style) Orange(text string, bold bool) string {
-	if bold {
-		return s.wrap(text, codeBold, codeFG256, 5, paletteOrange)
-	}
-	return s.wrap(text, codeFG256, 5, paletteOrange)
+	return s.color(text, bold, codeFG256, 5, paletteOrange)
 }
 
-func (s Style) color(text string, code int, bold bool) string {
+// color renders text in the color codes select, bold when bold is set.
+func (s Style) color(text string, bold bool, codes ...int) string {
 	if bold {
-		return s.wrap(text, codeBold, code)
+		codes = append([]int{codeBold}, codes...)
 	}
-	return s.wrap(text, code)
+	return s.wrap(text, codes...)
 }

@@ -16,6 +16,8 @@ import (
 
 	"golang.org/x/mod/modfile"
 	"golang.org/x/mod/module"
+
+	"github.com/shazow/go-whatchanged/internal/vfs"
 )
 
 // FS is the read-only filesystem surface the resolver needs.
@@ -285,7 +287,7 @@ func (r *Resolver) moduleGoVersion(modRoot string) string {
 // joinPath joins a root with a slash-separated relative path, preserving the
 // root's flavour (synthetic slash paths vs. host paths).
 func joinPath(root, rel string) string {
-	if strings.HasPrefix(root, "/@") {
+	if strings.HasPrefix(root, vfs.SyntheticPrefix) {
 		return path.Join(root, rel)
 	}
 	return filepath.Join(root, filepath.FromSlash(rel))

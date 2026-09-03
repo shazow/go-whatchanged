@@ -293,7 +293,9 @@ type side struct {
 	rev      string // git revision, empty for a directory side
 	label    string
 	mount    string // synthetic path the side's tree is mounted at, "" on disk
-	prefix   string // the module root's path prefix, rewritten to label+":" in messages
+	overlay  *vfs.Overlay
+	root     string // the module root within the overlay
+	prefix   string // root as a path prefix, rewritten to label+":" in messages
 	res      *modres.Resolver
 	ld       *loader.Loader
 	pkgs     map[string]*types.Package
@@ -345,7 +347,7 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 	if head.rev == LatestRelease {
 		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
 	}
-	rev, baseVersion, err := resolveBase(open, base.rev, head, rel)
+	rev, baseVersion, err := resolveBase(open, base.rev, head, rel, env)
 	if err != nil {
 		return nil, err
 	}
@@ -402,12 +404,11 @@ func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 	return out
 }
 
-func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+// mount serves the tree the spec names, from the git revision, the
+// filesystem or the directory on disk, and returns the side with its label,
+// its overlay and the module root within it.
+func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 	s := &side{rev: spec.rev}
-	var (
-		overlay *vfs.Overlay
-		root    string
-	)
 	switch {
 	case spec.rev != "":
 		repo, err := open()
@@ -420,24 +421,32 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 		}
 		s.label = spec.rev
 		s.mount = vfs.GitMountPath(tree)
-		overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
-		root = path.Join(s.mount, rel)
-		s.prefix = root + "/"
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
+		s.root = path.Join(s.mount, rel)
+		s.prefix = s.root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
 		s.mount = vfs.SyntheticPrefix + "worktree"
-		overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: spec.fs}}, spec.mounts...)...)
-		root = path.Join(s.mount, rel)
-		s.prefix = root + "/"
+		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: spec.fs}}, spec.mounts...)...)
+		s.root = path.Join(s.mount, rel)
+		s.prefix = s.root + "/"
 	default:
 		s.label = "working tree"
-		overlay = vfs.NewOverlay(spec.mounts...)
-		root = spec.dir
-		s.prefix = root + string(filepath.Separator)
+		s.overlay = vfs.NewOverlay(spec.mounts...)
+		s.root = spec.dir
+		s.prefix = s.root + string(filepath.Separator)
 	}
-	ctxt := vfs.Context(overlay, opts.GOOS, opts.GOARCH)
+	return s, nil
+}
 
-	res, err := modres.New(overlay, root, env)
+func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+	s, err := spec.mount(open, rel)
+	if err != nil {
+		return nil, err
+	}
+	ctxt := vfs.Context(s.overlay, opts.GOOS, opts.GOARCH)
+
+	res, err := modres.New(s.overlay, s.root, env)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
@@ -448,7 +457,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			res.GoVersion(), limit, limit))
 	}
 
-	found, problems, err := discover.Packages(&ctxt, overlay, root, res.ModPath(), opts.Filter != render.Public)
+	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), opts.Filter != render.Public)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
@@ -523,7 +532,7 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 			nw = types.NewPackage(p, old.Name())
 		}
 		for _, c := range apidiff.Changes(old, nw).Changes {
-			rc := render.FromAPIDiff(c)
+			rc := render.Change{Message: c.Message, Compatible: c.Compatible}
 			annotate(&rc, fset, base, head, old, nw)
 			pkg.Changes = append(pkg.Changes, rc)
 		}

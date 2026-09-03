@@ -204,7 +204,7 @@ func (l *Loader) Warnings() map[string][]string {
 	defer l.mu.Unlock()
 	out := make(map[string][]string, len(l.warnings))
 	for k, v := range l.warnings {
-		out[k] = append([]string(nil), v...)
+		out[k] = slices.Clone(v)
 	}
 	return out
 }
@@ -279,7 +279,7 @@ func (l *Loader) loadShared(importPath string, loc modres.Location) (*types.Pack
 	if len(e.warnings) > 0 {
 		l.mu.Lock()
 		if _, seen := l.warnings[importPath]; !seen {
-			l.warnings[importPath] = append([]string(nil), e.warnings...)
+			l.warnings[importPath] = slices.Clone(e.warnings)
 		}
 		l.mu.Unlock()
 	}

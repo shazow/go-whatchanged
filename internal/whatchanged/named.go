@@ -28,28 +28,18 @@ func declString(obj types.Object, pkg *types.Package, sym string) string {
 		if o.IsField() {
 			return "field " + sym + " " + types.TypeString(o.Type(), qual)
 		}
-		return types.ObjectString(obj, qual)
+	case *types.Func:
+		if sig := o.Signature(); sig.Recv() != nil {
+			recv := sig.Recv()
+			name := ""
+			if recv.Name() != "" && recv.Name() != "_" {
+				name = recv.Name() + " "
+			}
+			return "func (" + name + types.TypeString(recv.Type(), qual) + ") " + o.Name() +
+				strings.TrimPrefix(types.TypeString(sig, qual), "func")
+		}
 	}
-	f, ok := obj.(*types.Func)
-	if !ok {
-		return types.ObjectString(obj, qual)
-	}
-	sig, ok := f.Type().(*types.Signature)
-	if !ok || sig.Recv() == nil {
-		return types.ObjectString(obj, qual)
-	}
-	recv := sig.Recv()
-	var b strings.Builder
-	b.WriteString("func (")
-	if recv.Name() != "" && recv.Name() != "_" {
-		b.WriteString(recv.Name())
-		b.WriteString(" ")
-	}
-	b.WriteString(types.TypeString(recv.Type(), qual))
-	b.WriteString(") ")
-	b.WriteString(f.Name())
-	b.WriteString(strings.TrimPrefix(types.TypeString(sig, qual), "func"))
-	return b.String()
+	return types.ObjectString(obj, qual)
 }
 
 // lookupSymbol resolves the symbol forms apidiff emits: "Name", "T.M",
@@ -59,28 +49,22 @@ func declString(obj types.Object, pkg *types.Package, sym string) string {
 func lookupSymbol(pkg *types.Package, sym string) types.Object {
 	var recv, name string
 	ptr := false
-	switch {
-	case strings.HasPrefix(sym, "(*"):
-		i := strings.Index(sym, ").")
-		if i < 0 {
+	if rest, ok := strings.CutPrefix(sym, "(*"); ok {
+		if recv, name, ok = strings.Cut(rest, ")."); !ok {
 			return nil
 		}
-		recv, name, ptr = sym[2:i], sym[i+2:], true
-	default:
-		if i := strings.LastIndex(sym, "."); i >= 0 {
-			recv, name = sym[:i], sym[i+1:]
-		} else {
-			name = sym
-		}
+		ptr = true
+	} else if i := strings.LastIndex(sym, "."); i >= 0 {
+		recv, name = sym[:i], sym[i+1:]
+	} else {
+		name = sym
 	}
 	if recv == "" {
 		return pkg.Scope().Lookup(name)
 	}
 	// Generic receivers render as "List[T]"; the type name is the part
 	// before the type argument list.
-	if i := strings.Index(recv, "["); i >= 0 {
-		recv = recv[:i]
-	}
+	recv, _, _ = strings.Cut(recv, "[")
 	tn, ok := pkg.Scope().Lookup(recv).(*types.TypeName)
 	if !ok {
 		return nil

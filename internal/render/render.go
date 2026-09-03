@@ -8,8 +8,6 @@ import (
 	"io"
 	"strings"
 	"unicode/utf8"
-
-	"golang.org/x/exp/apidiff"
 )
 
 // Status says on which sides a package exists.
@@ -76,11 +74,6 @@ type Change struct {
 	Before     string
 	After      string
 	Pos        Position
-}
-
-// FromAPIDiff converts an apidiff change without named forms.
-func FromAPIDiff(c apidiff.Change) Change {
-	return Change{Message: c.Message, Compatible: c.Compatible}
 }
 
 // Symbol returns the object the message is about: "Open", "(*Client).Ping",
@@ -548,18 +541,19 @@ func formatLine(st Style, l line, width int) []string {
 			return []string{"  " + located(to, st.Green(to, bold))}
 		}
 	}
-	var paint func(string) string
+	// Removals and incompatible additions are red, compatible additions
+	// green, other changes cyan or, when incompatible, yellow.
+	code := codeYellow
 	switch {
 	case l.glyph == "-" || l.glyph == "!":
-		paint = func(s string) string { return st.Red(s, true) }
+		code = codeRed
 	case l.glyph == "+":
-		paint = func(s string) string { return st.Green(s, false) }
+		code = codeGreen
 	case l.compatible:
-		paint = func(s string) string { return st.Cyan(s, false) }
-	default:
-		paint = func(s string) string { return st.Yellow(s, true) }
+		code = codeCyan
 	}
-	out := []string{"  " + located(l.message(), paint(l.message()))}
+	msg := l.message()
+	out := []string{"  " + located(msg, st.color(msg, bold, code))}
 	if l.from != "" {
 		out = append(out, "      "+st.Grey(from))
 	}
