@@ -48,10 +48,11 @@ type Options struct {
 	// Packages restricts the diff to packages matching one of these
 	// patterns (see discover.Filter); Exclude removes matching packages.
 	Packages, Exclude []string
-	// Internal includes internal packages. They are listed and marked, but
-	// never count towards the summary, the required release or the exit
-	// code, since they are not part of the public API.
-	Internal bool
+	// Filter selects which packages take part: the public ones (the zero
+	// value), internal ones only, or all. Internal packages are listed and
+	// marked, but never count towards the public API's summary, the
+	// required release or the exit code.
+	Filter render.Visibility
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Signatures selects whether each change shows the symbol's
@@ -129,6 +130,11 @@ func ParseFormat(s string) (render.Format, error) {
 // ParseSignatures parses a --signatures value: "full" or "minimal".
 func ParseSignatures(s string) (render.Signatures, error) {
 	return render.ParseSignatures(s)
+}
+
+// ParseFilter parses a --filter value: "public", "internal" or "all".
+func ParseFilter(s string) (render.Visibility, error) {
+	return render.ParseVisibility(s)
 }
 
 // threshold is the lowest level that fails, or ok=false for FailNever.
@@ -241,7 +247,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 		Format:       opts.Format,
 		Signatures:   opts.Signatures,
 		Positions:    opts.Positions,
-		Internal:     opts.Internal,
+		Filter:       opts.Filter,
 	}
 	if err := render.Write(opts.Stdout, *res, ro); err != nil {
 		return ExitError, err
@@ -293,7 +299,7 @@ type side struct {
 	ld       *loader.Loader
 	pkgs     map[string]*types.Package
 	internal map[string]bool // import paths of internal packages
-	all      []string        // every discovered import path, before Options.Packages and Exclude
+	all      []string        // every import path Options.Filter selects, before Options.Packages and Exclude
 	problem  map[string]string
 	notes    []string // module-level warnings, reported under the module path
 }
@@ -442,7 +448,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			res.GoVersion(), limit, limit))
 	}
 
-	found, problems, err := discover.Packages(&s.ctxt, s.overlay, root, res.ModPath(), opts.Internal)
+	found, problems, err := discover.Packages(&s.ctxt, s.overlay, root, res.ModPath(), opts.Filter != render.Public)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
@@ -452,6 +458,9 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 	filter := discover.Filter{Include: opts.Packages, Exclude: opts.Exclude}
 	paths := make([]string, 0, len(found))
 	for p := range found {
+		if !opts.Filter.Includes(found[p].Internal) {
+			continue
+		}
 		s.all = append(s.all, p)
 		if filter.Match(res.ModPath(), p) {
 			paths = append(paths, p)

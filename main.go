@@ -59,7 +59,7 @@ func run(args []string) int {
 		fs.PrintDefaults()
 	}
 	var opts whatchanged.Options
-	var color, exitFail, format, signatures string
+	var color, exitFail, format, signatures, filter string
 	var showVersion bool
 	fs.StringVar(&opts.Repo, "repo", "", "path inside a git repository (default: current directory)")
 	fs.StringVar(&opts.GOOS, "goos", runtime.GOOS, "build target OS")
@@ -67,7 +67,7 @@ func run(args []string) int {
 	fs.BoolVar(&opts.Breaking, "breaking", false, "show only incompatible changes")
 	fs.Var((*patterns)(&opts.Packages), "pkg", "diff only packages matching `pattern` (repeatable)")
 	fs.Var((*patterns)(&opts.Exclude), "exclude", "skip packages matching `pattern` (repeatable)")
-	fs.BoolVar(&opts.Internal, "internal", false, "also show internal packages (never counted in the summary or exit code)")
+	fs.StringVar(&filter, "filter", "public", "packages to diff: public, internal or all (internal ones never count in the summary or exit code)")
 	fs.BoolVar(&opts.Positions, "pos", false, "annotate each change with its source position")
 	fs.StringVar(&signatures, "signatures", "full", "show declarations under each change: full or minimal")
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
@@ -120,6 +120,13 @@ func run(args []string) int {
 		return whatchanged.ExitError
 	}
 	opts.Signatures = sig
+
+	vis, err := whatchanged.ParseFilter(filter)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "go-whatchanged: --filter: %v\n", err)
+		return whatchanged.ExitError
+	}
+	opts.Filter = vis
 
 	switch fs.NArg() {
 	case 0:

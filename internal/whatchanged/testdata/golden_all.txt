@@ -1,0 +1,44 @@
+# stdout
+example.com/m/fresh (new)
+  + Hello: added
+      + func Hello()
+
+example.com/m/gone (removed)
+  - Gone: removed
+      - func Gone()
+
+example.com/m/internal/hidden (internal)
+  - Hidden: removed
+      - func Hidden()
+  + Added: added
+      + func Added()
+
+example.com/m/store
+  - (*Client).Close: removed
+      - func (c *Client) Close() error
+  ~ Config.Timeout: changed
+      - field Timeout int
+      + field Timeout int64
+  ~ Open: changed
+      - func Open(path string) (*Client, error)
+      + func Open(path string, o Options) (*Client, error)
+  ~ Version: changed
+      - const Version untyped string = "1"
+      + const Version untyped int = 1
+  + (*Client).Ping: added
+      + func (c *Client) Ping() error
+  + Options: added
+      + type Options struct{Timeout int}
+  + Point.Z: added
+      + field Z int
+
+example.com/m/util
+  ! Sizer.Size: added
+      + func (Sizer) Size() int
+  ~ Stringer: changed
+      - type Stringer interface{String() string}
+      + type Stringer = fmt.Stringer
+
+4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
+internal: 1 package changed · 1 incompatible · 1 compatible
+# stderr

@@ -57,7 +57,8 @@ Flags:
   --goos, --goarch   build target (default: the running platform)
   --pkg PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude PATTERN  skip packages matching PATTERN (repeatable)
-  --internal         also show internal packages (see below)
+  --filter string    public | internal | all: which packages take part
+                     (default public; see below)
   --breaking         show only incompatible changes
   --signatures       full | minimal: show each symbol's declaration under
                      its change, or one line per change (default full)
@@ -88,15 +89,17 @@ warning (fatal with `--strict`), since it is almost always a typo.
 $ go-whatchanged --pkg store/... --exclude .../experimental v1.4.0
 ```
 
-`--internal` includes the packages below `internal` directories, which
-makes the tool useful for reviewing an application, not only a library.
-They are listed with an `(internal)` mark and summarized on a line of
-their own, but they never count towards the public API's totals, the
-required release, the next version or the exit code, so `--internal` can
-be combined with `--exit-fail`:
+`--filter` says which packages take part. The default, `public`, is the
+importable API: everything outside `internal` directories. `all` adds the
+internal packages, which makes the tool useful for reviewing an
+application, not only a library; `internal` shows them alone. Internal
+packages are listed with an `(internal)` mark and summarized on a line of
+their own, and they never count towards the public API's totals, the
+required release, the next version or the exit code, so `--filter=all`
+combines with `--exit-fail`, and `--filter=internal` never fails a build:
 
 ```
-$ go-whatchanged --internal
+$ go-whatchanged --filter=all
 example.com/m/internal/store (internal)
   - Open: removed
       - func Open(path string) (*Client, error)
@@ -108,6 +111,9 @@ example.com/m/util
 1 package changed · 0 incompatible · 1 compatible · would require: MINOR
 internal: 1 package changed · 1 incompatible · 0 compatible
 ```
+
+With `--filter=internal` only the last line and the internal packages
+remain.
 
 ### Since the last release
 
@@ -210,8 +216,10 @@ full diff.
 `head` is the revision given or the literal `working tree`. `base_version`
 and `next_version` appear when the base is a release tag. A package's
 `status` is `changed`, `new` or `removed`, and `"internal": true` marks an
-internal package under `--internal`, which the summary then also counts
-separately under `summary.internal`. A change's `kind` is `added`,
+internal package under `--filter=all` or `internal`, which the summary then
+also counts separately under `summary.internal` (the public counts and
+`release` describe the public packages in the selection, none under
+`internal`). A change's `kind` is `added`,
 `removed` or `changed`, and `symbol` is empty for a whole-package change
 (`package added`). `before` and `after` hold what the text layout prints on
 its `-` and `+` lines: the old declaration of a removed symbol, the new one

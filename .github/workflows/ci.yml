@@ -27,4 +27,4 @@ jobs:
       - name: API changes
         if: github.event_name == 'pull_request'
         run: |
-          go run . --internal --format=markdown "origin/$GITHUB_BASE_REF" HEAD >> "$GITHUB_STEP_SUMMARY" || [ $? -eq 1 ]
+          go run . --filter=all --format=markdown "origin/$GITHUB_BASE_REF" HEAD >> "$GITHUB_STEP_SUMMARY" || [ $? -eq 1 ]

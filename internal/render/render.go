@@ -190,6 +190,44 @@ func ParseSignatures(s string) (Signatures, error) {
 	return 0, fmt.Errorf("invalid signatures %q (want full or minimal)", s)
 }
 
+// Visibility selects which packages take part in a diff.
+type Visibility int
+
+const (
+	// Public selects the packages importable from outside the module:
+	// everything but internal packages.
+	Public Visibility = iota
+	// Internal selects internal packages only.
+	Internal
+	// All selects both.
+	All
+)
+
+// ParseVisibility parses a --filter value: "public", "internal" or "all".
+func ParseVisibility(s string) (Visibility, error) {
+	switch strings.ToLower(s) {
+	case "public":
+		return Public, nil
+	case "internal":
+		return Internal, nil
+	case "all":
+		return All, nil
+	}
+	return 0, fmt.Errorf("invalid filter %q (want public, internal or all)", s)
+}
+
+// Includes reports whether a package with the given internal status is
+// selected.
+func (v Visibility) Includes(internal bool) bool {
+	switch v {
+	case Public:
+		return !internal
+	case Internal:
+		return internal
+	}
+	return true
+}
+
 // Options controls rendering.
 type Options struct {
 	Color        bool
@@ -200,9 +238,11 @@ type Options struct {
 	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
-	// Internal adds a line summarizing the changes of internal packages,
-	// which never count towards the public API's summary.
-	Internal bool
+	// Filter says which packages took part: the public API's summary line
+	// is printed unless it is Internal, and the internal packages' summary
+	// line unless it is Public. Internal packages never count towards the
+	// public API's summary.
+	Filter Visibility
 }
 
 // Summary describes the totals of a Result.
@@ -431,14 +471,20 @@ func writeText(w io.Writer, res Result, opts Options) error {
 	if !first {
 		b.WriteString("\n")
 	}
-	if sum.PackagesChanged == 0 {
-		b.WriteString(st.Dim(noChanges(res)))
-	} else {
-		b.WriteString(formatSummary(st, sum, res))
+	if opts.Filter != Internal {
+		if sum.PackagesChanged == 0 {
+			b.WriteString(st.Dim(noChanges(res)))
+		} else {
+			b.WriteString(formatSummary(st, sum, res))
+		}
+		b.WriteString("\n")
 	}
-	b.WriteString("\n")
-	if opts.Internal {
-		b.WriteString(st.Dim(internalSummary(isum)))
+	if opts.Filter != Public {
+		line := internalSummary(isum)
+		if opts.Filter == All {
+			line = st.Dim(line) // secondary to the public API's line
+		}
+		b.WriteString(line)
 		b.WriteString("\n")
 	}
 	_, err := io.WriteString(w, b.String())
@@ -570,14 +616,19 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 		}
 		b.WriteString("```\n\n")
 	}
-	if sum.PackagesChanged == 0 {
-		fmt.Fprintf(&b, "_%s_\n", noChanges(res))
-	} else {
-		fmt.Fprintf(&b, "%s · %d incompatible · %d compatible · would require: **%s**%s\n",
-			plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, sum.Release(), versions(res))
+	if opts.Filter != Internal {
+		if sum.PackagesChanged == 0 {
+			fmt.Fprintf(&b, "_%s_\n", noChanges(res))
+		} else {
+			fmt.Fprintf(&b, "%s · %d incompatible · %d compatible · would require: **%s**%s\n",
+				plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, sum.Release(), versions(res))
+		}
 	}
-	if opts.Internal {
+	switch opts.Filter {
+	case All:
 		fmt.Fprintf(&b, "\n_%s_\n", internalSummary(isum))
+	case Internal:
+		fmt.Fprintf(&b, "%s\n", internalSummary(isum))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
@@ -645,7 +696,7 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			Release:         strings.ToLower(sum.Release()),
 		},
 	}
-	if opts.Internal {
+	if opts.Filter != Public {
 		isum := SummarizeInternal(res)
 		rep.Summary.Internal = &jsonCounts{PackagesChanged: isum.PackagesChanged, Incompatible: isum.Incompatible, Compatible: isum.Compatible}
 	}

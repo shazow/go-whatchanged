@@ -905,23 +905,26 @@ func TestGolden(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		opts Options
+		code int
 	}{
-		{"nocolor", Options{}},
-		{"color", Options{Color: true}},
-		{"breaking", Options{Breaking: true}},
-		{"markdown", Options{Format: render.Markdown}},
-		{"json", Options{Format: render.JSON}},
-		{"internal", Options{Internal: true}},
-		{"pos", Options{Positions: true}},
-		{"minimal", Options{Signatures: render.MinimalSignatures}},
+		{"nocolor", Options{}, ExitIncompatible},
+		{"color", Options{Color: true}, ExitIncompatible},
+		{"breaking", Options{Breaking: true}, ExitIncompatible},
+		{"markdown", Options{Format: render.Markdown}, ExitIncompatible},
+		{"json", Options{Format: render.JSON}, ExitIncompatible},
+		{"all", Options{Filter: render.All}, ExitIncompatible},
+		// Internal packages alone: no public API in the selection.
+		{"internal", Options{Filter: render.Internal}, ExitClean},
+		{"pos", Options{Positions: true}, ExitIncompatible},
+		{"minimal", Options{Signatures: render.MinimalSignatures}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := f.run("v1.0.0", "", tc.opts)
 			if r.err != nil {
 				t.Fatal(r.err)
 			}
-			if r.code != ExitIncompatible {
-				t.Errorf("exit = %d", r.code)
+			if r.code != tc.code {
+				t.Errorf("exit = %d, want %d", r.code, tc.code)
 			}
 			got := "# stdout\n" + r.stdout + "# stderr\n" + r.stderr
 			golden := filepath.Join("testdata", "golden_"+tc.name+".txt")
@@ -1646,7 +1649,7 @@ func TestPackageFilter(t *testing.T) {
 	}
 }
 
-func TestInternalPackages(t *testing.T) {
+func TestFilterInternalPackages(t *testing.T) {
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	f.write("internal/hidden/h.go", "package hidden\n\nfunc Hidden() {}\n")
@@ -1666,9 +1669,9 @@ func TestInternalPackages(t *testing.T) {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
 
-	// With it they are shown and marked, but the summary, the release and
-	// the exit code still describe the public API only.
-	r = f.run("HEAD", "", Options{Internal: true})
+	// With --filter=all they are shown and marked, but the summary, the
+	// release and the exit code still describe the public API only.
+	r = f.run("HEAD", "", Options{Filter: render.All})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
@@ -1684,14 +1687,14 @@ func TestInternalPackages(t *testing.T) {
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d", r.code, ExitClean)
 	}
-	r = f.run("HEAD", "", Options{Internal: true, ExitFail: FailMajor})
+	r = f.run("HEAD", "", Options{Filter: render.All, ExitFail: FailMajor})
 	if r.code != ExitClean {
 		t.Errorf("--exit-fail=major: exit = %d, want %d", r.code, ExitClean)
 	}
 
 	// Only internal changes: the public API is untouched.
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
-	r = f.run("HEAD", "", Options{Internal: true})
+	r = f.run("HEAD", "", Options{Filter: render.All})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
@@ -1701,14 +1704,14 @@ func TestInternalPackages(t *testing.T) {
 	}
 
 	// --breaking and --pkg apply to internal packages too.
-	r = f.run("HEAD", "", Options{Internal: true, Breaking: true})
+	r = f.run("HEAD", "", Options{Filter: render.All, Breaking: true})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
 	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
 		t.Errorf("breaking: stdout = %q\nwant     %q", r.stdout, want)
 	}
-	r = f.run("HEAD", "", Options{Internal: true, Packages: []string{"internal/hidden"}})
+	r = f.run("HEAD", "", Options{Filter: render.All, Packages: []string{"internal/hidden"}})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
@@ -1716,29 +1719,75 @@ func TestInternalPackages(t *testing.T) {
 		t.Errorf("pkg: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
+	// --filter=internal shows internal packages alone, with only their
+	// summary line; there is no public API in the selection, so the exit
+	// code is the clean one.
+	r = f.run("HEAD", "", Options{Filter: render.Internal, ExitFail: FailMajor})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	want = "example.com/m/a/internal/deep (internal)\n  + Deeper: added\n      + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + F: added\n      + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\n" +
+		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
+	if r.stdout != want {
+		t.Errorf("internal: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("internal: exit = %d, want %d", r.code, ExitClean)
+	}
+	r = f.run("HEAD", "", Options{Filter: render.Internal, Packages: []string{"a"}})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "warn: example.com/m: --pkg \"a\" matched no packages\n"; r.stderr != want {
+		t.Errorf("internal --pkg a: stderr = %q, want %q", r.stderr, want)
+	}
+	if want := "internal: no changes\n"; r.stdout != want {
+		t.Errorf("internal --pkg a: stdout = %q, want %q", r.stdout, want)
+	}
+
 	// Nothing changed anywhere.
 	f.commit("all")
-	r = f.run("HEAD", "", Options{Internal: true})
+	r = f.run("HEAD", "", Options{Filter: render.All})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
 	if want := "no exported API changes\ninternal: no changes\n"; r.stdout != want {
 		t.Errorf("clean: stdout = %q\nwant     %q", r.stdout, want)
 	}
+	r = f.run("HEAD", "", Options{Filter: render.Internal})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "internal: no changes\n"; r.stdout != want {
+		t.Errorf("clean internal: stdout = %q\nwant     %q", r.stdout, want)
+	}
 
 	// Machine-readable layouts carry the same split.
 	f.write("internal/hidden/h.go", "package hidden\n\nfunc Renamed() {}\n\nfunc More() {}\n")
-	r = f.run("HEAD", "", Options{Internal: true, Format: render.JSON})
+	r = f.run("HEAD", "", Options{Filter: render.All, Format: render.JSON})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout, `"internal": true,`, `"release": "patch",`,
 		"\"internal\": {\n      \"packages_changed\": 1,\n      \"incompatible\": 0,\n      \"compatible\": 1\n    }")
-	r = f.run("HEAD", "", Options{Internal: true, Format: render.Markdown})
+	r = f.run("HEAD", "", Options{Filter: render.All, Format: render.Markdown})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout, "**example.com/m/internal/hidden (internal)**\n", "_no exported API changes_\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n")
+	r = f.run("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "```\n\ninternal: 1 package changed · 0 incompatible · 1 compatible\n")
+	mustNotContain(t, r.stdout, "exported API")
+	r = f.run("HEAD", "", Options{Filter: render.Internal, Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"packages_changed": 0,`, `"release": "patch",`, "\"internal\": {\n      \"packages_changed\": 1,")
 }
 
 func TestMinimalSignatures(t *testing.T) {
@@ -1791,6 +1840,18 @@ func TestMinimalSignatures(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout, `"before": "func Drop()"`, `"after": "func Added()"`, `"before": "func Open(name string) error"`)
+}
+
+func TestParseFilter(t *testing.T) {
+	for in, want := range map[string]render.Visibility{"public": render.Public, "internal": render.Internal, "ALL": render.All} {
+		got, err := ParseFilter(in)
+		if err != nil || got != want {
+			t.Errorf("ParseFilter(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseFilter("private"); err == nil {
+		t.Error("ParseFilter accepted private")
+	}
 }
 
 func TestParseSignatures(t *testing.T) {
