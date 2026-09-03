@@ -19,7 +19,7 @@ this tool makes it work on any git history without touching your checkout.
   summary names the version the changes call for.
 - **CI-ready.** Markdown for pull requests, JSON for tools, exit codes for
   gates, and a [GitHub Action](#github-action) that posts the diff to the
-  job summary.
+  job summary and as a pull request comment.
 
 **Status:** beta. It was fairly vibecoded, out of a desperate need to review
 large pull requests better, but the read-only constraints add a lot of
@@ -231,7 +231,9 @@ names the bump:
 
 Add the action to a workflow to get the diff on every pull request. It
 builds the tool from the ref that pins it and appends the diff to the job
-summary; on a tag push, it lists what the tag ships:
+summary, under a heading whose glyph names the release the changes call
+for: 🟢 none, 🟡 minor, 🔴 major. On a tag push, it lists what the tag
+ships:
 
 ```yaml
 on: pull_request
@@ -252,6 +254,26 @@ jobs:
       - uses: shazow/go-whatchanged@main
 ```
 
+With `comment: true` it also posts the diff as a pull request comment,
+folded under its summary line, and updates that same comment on every
+later push instead of adding another. The first comment waits until
+there is something to show, so a pull request that never touches the API
+gets none. The comment needs `pull-requests: write`, which the default
+token lacks on a pull request from a fork; there, the action warns and
+the job summary still has the diff.
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+
+    steps:
+      # ...
+      - uses: shazow/go-whatchanged@main
+        with:
+          comment: true
+```
+
 | Input | Default | Meaning |
 |---|---|---|
 | `base` | the pull request's merge-base, else `@latest` | Commit-ish or `@latest` for the old side. |
@@ -266,7 +288,9 @@ jobs:
 | `goos`, `goarch` | the runner's | Build target. |
 | `fail-on` | | `major`, `minor` or `patch`: fail the step at that level or above. |
 | `summary` | `true` | Append the diff to the job summary. |
-| `title` | `API changes` | Heading above the diff in the summary. Empty for none. |
+| `title` | `API changes` | Heading above the diff in the summary and the comment. Empty for none. |
+| `comment` | `false` | Post the diff as a pull request comment and keep it updated. |
+| `token` | `github.token` | The token for the comment. |
 
 Outputs for later steps:
 
@@ -278,18 +302,6 @@ Outputs for later steps:
 | `base-version`, `next-version` | when the base is a release tag |
 | `summary` | the summary line(s) as plain text |
 | `markdown`, `json` | the whole report in either format |
-
-To post it as a pull request comment, add one step:
-
-```yaml
-      - uses: shazow/go-whatchanged@main
-        id: api
-      - if: steps.api.outputs.packages-changed != '0'
-        env:
-          GH_TOKEN: ${{ github.token }} # with permissions: pull-requests: write
-          BODY: ${{ steps.api.outputs.markdown }}
-        run: gh pr comment "${{ github.event.pull_request.number }}" --body "$BODY"
-```
 
 On another CI system, or without the action, the same job is a few plain
 steps:
