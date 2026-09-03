@@ -1709,6 +1709,37 @@ func TestPositions(t *testing.T) {
 	f.commit("head")
 	r = f.mustRun("v0.1.0", "HEAD", Options{Positions: true})
 	mustContain(t, r.stdout, "  - func Drop()            v0.1.0:a/a.go:5:6\n", "  + func Added()           HEAD:a/a.go:12:6\n")
+
+	// With a width limit, the column narrows to the widest row whose
+	// position still fits, so that one long declaration does not push
+	// every position past the edge of the terminal. The rows too wide
+	// for the column get their position after two spaces, unaligned.
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\ntype T struct {\n\tX int64\n\tY int\n}\n\nfunc (t T) M(n int64) {}\n\nfunc Added() {}\n\nfunc AddedWithAVeryLongSignature(first, second, third string) (fourth, fifth, sixth int) {}\n")
+	r = f.mustRun("v0.1.0", "", Options{Positions: true, Width: 50})
+	// "  - func Drop()" is 15 columns; at width 50 the "v0.1.0:a/a.go:5:6"
+	// position (17) ends at column 34 when aligned at the 23-wide
+	// "+ func (t T) M(n int64)".
+	want = "  - func Drop()            v0.1.0:a/a.go:5:6\n" +
+		"  - func (t T) M(n int)\n" +
+		"  + func (t T) M(n int64)  a/a.go:10:12\n" +
+		"  - field T.X int\n" +
+		"  + field T.X int64        a/a.go:6:2\n" +
+		"  + func Added()           a/a.go:12:6\n" +
+		"  + func AddedWithAVeryLongSignature(first string, second string, third string) (fourth int, fifth int, sixth int)  a/a.go:14:6\n" +
+		"  + field T.Y int          a/a.go:7:2\n"
+	mustContain(t, r.stdout, want)
+	// Narrower still, and the column drops to the 15-wide "+ field T.Y
+	// int", the widest at which "- func Drop()" still fits its position.
+	r = f.mustRun("v0.1.0", "", Options{Positions: true, Width: 36})
+	mustContain(t, r.stdout,
+		"  - func Drop()    v0.1.0:a/a.go:5:6\n",
+		"  + func (t T) M(n int64)  a/a.go:10:12\n",
+		"  + field T.X int64  a/a.go:6:2\n",
+		"  + func Added()   a/a.go:12:6\n",
+		"  + field T.Y int  a/a.go:7:2\n")
+	// Without a limit, the long row sets the column.
+	r = f.mustRun("v0.1.0", "", Options{Positions: true})
+	mustContain(t, r.stdout, "  - func Drop()"+strings.Repeat(" ", 101)+"v0.1.0:a/a.go:5:6\n")
 }
 
 // A dependency upgrade can change a package's API through promoted fields
