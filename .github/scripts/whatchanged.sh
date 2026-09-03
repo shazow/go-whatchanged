@@ -108,8 +108,8 @@ warm_cache() {
 # resolved to, say), or just that module when the revision is not one, and
 # tries again, up to a limit. Leaves the exit code in rc.
 run_json() {
-  local i mod rev commit
-  for i in $(seq 1 25); do
+  local mod rev commit
+  for _ in $(seq 1 25); do
     rc=0
     "$bin" "${flags[@]}" --format=json "${revs[@]}" >"$json" 2>"$stderr" || rc=$?
     [ "$rc" -eq 2 ] || return 0
@@ -139,6 +139,7 @@ flags=(--filter "$INPUT_FILTER" --signatures "$INPUT_SIGNATURES")
 [ -z "$INPUT_PKG" ] || flags+=(--pkg "$(printf '%s' "$INPUT_PKG" | tr '\n' ,)")
 [ -z "$INPUT_EXCLUDE" ] || flags+=(--exclude "$(printf '%s' "$INPUT_EXCLUDE" | tr '\n' ,)")
 [ "$INPUT_BREAKING" != true ] || flags+=(--breaking)
+# shellcheck disable=SC2153 # INPUT_POS is an input, not a typo of INPUT_GOOS
 [ "$INPUT_POS" != true ] || flags+=(--pos)
 [ "$INPUT_STRICT" != true ] || flags+=(--strict)
 [ -z "$INPUT_GOOS" ] || flags+=(--goos "$INPUT_GOOS")
