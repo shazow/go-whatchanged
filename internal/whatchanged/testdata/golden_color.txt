@@ -1,37 +1,26 @@
 # stdout
 [1mexample.com/m/fresh (new)[0m
-  [32m+ Hello: added[0m
-      [32m+ func Hello()[0m
+  [32m+ func Hello()[0m
 
 [1mexample.com/m/gone (removed)[0m
-  [1;31m- Gone: removed[0m
-      [1;31m- func Gone()[0m
+  [1;31m- func Gone()[0m
 
 [1mexample.com/m/store[0m
-  [1;31m- (*Client).Close: removed[0m
-      [1;31m- func (c *Client) Close() error[0m
-  [1;33m~ Config.Timeout: changed[0m
-      [1;31m- field Timeout int[0m
-      [1;32m+ field Timeout int64[0m
-  [1;33m~ Open: changed[0m
-      [1;31m- func Open(path string) (*Client, error)[0m
-      [1;32m+ func Open(path string, o Options) (*Client, error)[0m
-  [1;33m~ Version: changed[0m
-      [1;31m- const Version untyped string = "1"[0m
-      [1;32m+ const Version untyped int = 1[0m
-  [32m+ (*Client).Ping: added[0m
-      [32m+ func (c *Client) Ping() error[0m
-  [32m+ Options: added[0m
-      [32m+ type Options struct{Timeout int}[0m
-  [32m+ Point.Z: added[0m
-      [32m+ field Z int[0m
+  [1;31m- func (c *Client) Close() error[0m
+  [38;5;242m- field Config.Timeout int[0m
+  [1;38;5;208m+ field Config.Timeout int64[0m
+  [38;5;242m- func Open(path string) (*Client, error)[0m
+  [1;38;5;208m+ func Open(path string, o Options) (*Client, error)[0m
+  [38;5;242m- const Version untyped string = "1"[0m
+  [1;38;5;208m+ const Version untyped int = 1[0m
+  [32m+ func (c *Client) Ping() error[0m
+  [32m+ type Options struct{Timeout int}[0m
+  [32m+ field Point.Z int[0m
 
 [1mexample.com/m/util[0m
-  [1;31m! Sizer.Size: added[0m
-      [1;32m+ func (Sizer) Size() int[0m
-  [1;33m~ Stringer: changed[0m
-      [1;31m- type Stringer interface{String() string}[0m
-      [1;32m+ type Stringer = fmt.Stringer[0m
+  [1;32m+ func (Sizer) Size() int[0m
+  [38;5;242m- type Stringer interface{String() string}[0m
+  [1;38;5;208m+ type Stringer = fmt.Stringer[0m
 
 4 packages changed · 7 incompatible · 4 compatible · would require: [1;31mMAJOR[0m (v1.0.0 → v2.0.0)
 # stderr

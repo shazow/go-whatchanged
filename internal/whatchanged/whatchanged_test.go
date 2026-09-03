@@ -253,8 +253,8 @@ func TestAddedAndRemovedPackage(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"example.com/m/fresh (new)\n  + Hello: added\n      + func Hello()\n",
-		"example.com/m/old (removed)\n  - Gone: removed\n      - func Gone()\n  - T: removed\n      - type T struct{}\n",
+		"example.com/m/fresh (new)\n  + func Hello()\n",
+		"example.com/m/old (removed)\n  - func Gone()\n  - type T struct{}\n",
 		"2 packages changed · 2 incompatible · 1 compatible · would require: MAJOR\n")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
@@ -270,7 +270,7 @@ func TestRemovedFunc(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "example.com/m/a\n  - Drop: removed\n", "would require: MAJOR")
+	mustContain(t, r.stdout, "example.com/m/a\n  - func Drop()\n", "would require: MAJOR")
 	mustNotContain(t, r.stdout, "Keep")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d", r.code)
@@ -287,9 +287,9 @@ func TestChangedSignature(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"  ~ (*Client).Do: changed\n      - func (c *Client) Do(n int)\n      + func (c *Client) Do(n int, tags ...string)\n",
-		"  ~ Open: changed\n      - func Open(name string) error\n      + func Open(name string, o Options) error\n",
-		"  + Options: added\n",
+		"  - func (c *Client) Do(n int)\n  + func (c *Client) Do(n int, tags ...string)\n",
+		"  - func Open(name string) error\n  + func Open(name string, o Options) error\n",
+		"  + type Options struct{}\n",
 		"1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n")
 }
 
@@ -302,7 +302,7 @@ func TestAddedStructFieldIsCompatible(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + Point.Z: added\n", "would require: MINOR")
+	mustContain(t, r.stdout, "  + field Point.Z int\n", "would require: MINOR")
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d (compatible change)", r.code, ExitClean)
 	}
@@ -317,7 +317,7 @@ func TestAddedInterfaceMethodIsIncompatibleAddition(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  ! Sizer.Size: added\n", "would require: MAJOR")
+	mustContain(t, r.stdout, "  + func (Sizer) Size() int\n", "would require: MAJOR")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d", r.code)
 	}
@@ -389,14 +389,14 @@ func TestGOOSFiltering(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + WindowsOnly: added\n")
+	mustContain(t, r.stdout, "  + func WindowsOnly()\n")
 	mustNotContain(t, r.stdout, "Plan9Only")
 
 	r = f.run("HEAD", "", Options{GOOS: "plan9", GOARCH: "amd64"})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + Plan9Only: added\n")
+	mustContain(t, r.stdout, "  + func Plan9Only()\n")
 	mustNotContain(t, r.stdout, "WindowsOnly")
 }
 
@@ -410,7 +410,7 @@ func TestTypeErrorWarnsButDiffs(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + B: added\n", "  + Broken: added\n")
+	mustContain(t, r.stdout, "  + func B()\n", "  + var Broken invalid type\n")
 	if want := "warn: example.com/m/a: a/a.go:7:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
@@ -441,7 +441,7 @@ func TestTypeErrorOnBaseSideNamesRevision(t *testing.T) {
 	if want := "warn: example.com/m/a: v0.1.0:a/a.go:3:12: undefined: undefinedType\n"; r.stderr != want {
 		t.Errorf("stderr = %q, want %q", r.stderr, want)
 	}
-	mustContain(t, r.stdout, "  ~ Broken: changed\n      - var Broken invalid type\n      + var Broken int\n")
+	mustContain(t, r.stdout, "  - var Broken invalid type\n  + var Broken int\n")
 }
 
 func TestBreakingHidesCompatible(t *testing.T) {
@@ -455,7 +455,7 @@ func TestBreakingHidesCompatible(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	want := "example.com/m/a\n  - Drop: removed\n      - func Drop()\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
+	want := "example.com/m/a\n  - func Drop()\n\n2 packages changed · 1 incompatible · 2 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -488,14 +488,14 @@ func TestHeadCommit(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + B: added\n")
+	mustContain(t, r.stdout, "  + func B()\n")
 	mustNotContain(t, r.stdout, "Uncommitted")
 
 	r = f.run("HEAD~1", "", Options{})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + B: added\n", "  + Uncommitted: added\n")
+	mustContain(t, r.stdout, "  + func B()\n", "  + func Uncommitted()\n")
 }
 
 // diskFixture creates a repository on disk with two commits and packs its
@@ -582,7 +582,7 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 		if code != ExitClean {
 			t.Errorf("run %d: exit = %d, stderr = %q", i, code, errb.String())
 		}
-		mustContain(t, out.String(), "example.com/m/a\n  + B: added\n")
+		mustContain(t, out.String(), "example.com/m/a\n  + func B()\n")
 	}
 }
 
@@ -621,7 +621,7 @@ func TestLinkedWorktree(t *testing.T) {
 	if code != ExitClean {
 		t.Errorf("exit = %d, stderr = %q", code, errb.String())
 	}
-	mustContain(t, out.String(), "  + B: added\n", "  + Uncommitted: added\n")
+	mustContain(t, out.String(), "  + func B()\n", "  + func Uncommitted()\n")
 
 	out.Reset()
 	code, err = Run(Options{Repo: linked, Base: base.String(), Head: "HEAD", Stdout: &out, Stderr: &errb})
@@ -631,7 +631,7 @@ func TestLinkedWorktree(t *testing.T) {
 	if code != ExitClean {
 		t.Errorf("exit = %d, stderr = %q", code, errb.String())
 	}
-	mustContain(t, out.String(), "  + B: added\n")
+	mustContain(t, out.String(), "  + func B()\n")
 	mustNotContain(t, out.String(), "Uncommitted")
 }
 
@@ -646,7 +646,7 @@ func TestNewerGoDirectiveIsClamped(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + B: added\n")
+	mustContain(t, r.stdout, "  + func B()\n")
 	// One module-level warning, deduplicated across the two sides, instead
 	// of go/types' per-package "package requires newer Go version" error.
 	if n := strings.Count(r.stderr, "\n"); n != 1 {
@@ -678,8 +678,8 @@ func TestDefaultBaseIsHeadVersusWorkingTree(t *testing.T) {
 	}
 	// Only the dirty state relative to HEAD shows up: the earlier commit's
 	// addition is on both sides.
-	mustContain(t, r.stdout, "  - A: removed\n", "  + Uncommitted: added\n")
-	mustNotContain(t, r.stdout, "Committed: added")
+	mustContain(t, r.stdout, "  - func A()\n", "  + func Uncommitted()\n")
+	mustNotContain(t, r.stdout, "func Committed()")
 	if r.code != ExitIncompatible {
 		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
 	}
@@ -816,7 +816,7 @@ func Describe(s fmt.Stringer) string { return s.String() }
 	if r.stderr != "" {
 		t.Errorf("stderr = %q, want none", r.stderr)
 	}
-	want := "example.com/m/a\n  + Changes: added\n      + func Changes(r apidiff.Report) []apidiff.Change\n  + Describe: added\n      + func Describe(s fmt.Stringer) string\n\n1 package changed · 0 incompatible · 2 compatible · would require: MINOR\n"
+	want := "example.com/m/a\n  + func Changes(r apidiff.Report) []apidiff.Change\n  + func Describe(s fmt.Stringer) string\n\n1 package changed · 0 incompatible · 2 compatible · would require: MINOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
@@ -840,7 +840,7 @@ func TestSubdirectoryModule(t *testing.T) {
 	if _, err := finish(res, opts); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, out.String(), "example.com/sub/a\n  + B: added\n")
+	mustContain(t, out.String(), "example.com/sub/a\n  + func B()\n")
 }
 
 func goldenFixture(t *testing.T) *fixture {
@@ -1159,8 +1159,8 @@ func TestConstantValueChange(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	mustContain(t, r.stdout,
-		"  ~ Limit: value changed\n      - const Limit int64 = 10\n      + const Limit int64 = 20\n",
-		"  ~ Version: value changed\n      - const Version untyped string = \"1.2.0\"\n      + const Version untyped string = \"1.3.0-dev\"\n")
+		"  - const Limit int64 = 10\n  + const Limit int64 = 20\n",
+		"  - const Version untyped string = \"1.2.0\"\n  + const Version untyped string = \"1.3.0-dev\"\n")
 }
 
 // A dependency that imports the main module (grpc-go and go-control-plane
@@ -1262,9 +1262,9 @@ func TestLatestRelease(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + C: added\n", "  + D: added\n",
+	mustContain(t, r.stdout, "  + func C()\n", "  + func D()\n",
 		"1 package changed · 0 incompatible · 2 compatible · would require: MINOR (v0.2.0 → v0.3.0)\n")
-	mustNotContain(t, r.stdout, "B: added", "Side")
+	mustNotContain(t, r.stdout, "func B()", "Side")
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d", r.code, ExitClean)
 	}
@@ -1277,8 +1277,8 @@ func TestLatestRelease(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + C: added\n", "would require: MINOR (v0.2.0 → v0.3.0)\n")
-	mustNotContain(t, r.stdout, "D: added")
+	mustContain(t, r.stdout, "  + func C()\n", "would require: MINOR (v0.2.0 → v0.3.0)\n")
+	mustNotContain(t, r.stdout, "func D()")
 
 	// Explicit release tags get the same suggestion, however they are spelled.
 	for _, base := range []string{"v0.1.0", "tags/v0.1.0", "refs/tags/v0.1.0"} {
@@ -1304,7 +1304,7 @@ func TestLatestRelease(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  - A: removed\n", "would require: MAJOR (v0.2.0 → v0.3.0)\n")
+	mustContain(t, r.stdout, "  - func A()\n", "would require: MAJOR (v0.2.0 → v0.3.0)\n")
 
 	// @latest is only meaningful as the base.
 	r = f.run("HEAD", LatestRelease, Options{})
@@ -1327,15 +1327,15 @@ func TestLatestReleasePrerelease(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  + C: added\n", "would require: MINOR (v1.0.0-rc.1 → v1.0.0)\n")
-	mustNotContain(t, r.stdout, "B: added")
+	mustContain(t, r.stdout, "  + func C()\n", "would require: MINOR (v1.0.0-rc.1 → v1.0.0)\n")
+	mustNotContain(t, r.stdout, "func B()")
 
 	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
 	r = f.run(LatestRelease, "", Options{})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  - A: removed\n", "would require: MAJOR (v1.0.0-rc.1 → v1.0.0)\n")
+	mustContain(t, r.stdout, "  - func A()\n", "would require: MAJOR (v1.0.0-rc.1 → v1.0.0)\n")
 }
 
 func TestLatestReleaseMajorSuffix(t *testing.T) {
@@ -1355,8 +1355,8 @@ func TestLatestReleaseMajorSuffix(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  - A: removed\n", "  + C: added\n", "would require: MAJOR (v2.0.0 → v3.0.0)\n")
-	mustNotContain(t, r.stdout, "B: added")
+	mustContain(t, r.stdout, "  - func A()\n", "  + func C()\n", "would require: MAJOR (v2.0.0 → v3.0.0)\n")
+	mustNotContain(t, r.stdout, "func B()")
 }
 
 func TestLatestReleaseSubdirectoryModule(t *testing.T) {
@@ -1382,8 +1382,8 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 	if _, err := finish(res, opts); err != nil {
 		t.Fatal(err)
 	}
-	mustContain(t, out.String(), "example.com/m/sub/a\n  + C: added\n", "would require: MINOR (v1.1.0 → v1.2.0)\n")
-	mustNotContain(t, out.String(), "B: added")
+	mustContain(t, out.String(), "example.com/m/sub/a\n  + func C()\n", "would require: MINOR (v1.1.0 → v1.2.0)\n")
+	mustNotContain(t, out.String(), "func B()")
 	if res.Base != "sub/v1.1.0" || res.Head != "working tree" {
 		t.Errorf("labels = %q, %q", res.Base, res.Head)
 	}
@@ -1470,7 +1470,7 @@ func TestJSON(t *testing.T) {
 	if ping := store.Changes[4]; ping.Symbol != "(*Client).Ping" || ping.Kind != "added" || !ping.Compatible || ping.Before != "" || ping.After != "func (c *Client) Ping() error" {
 		t.Errorf("Ping = %+v", ping)
 	}
-	if timeout := store.Changes[1]; timeout.Symbol != "Config.Timeout" || timeout.Before != "field Timeout int" || timeout.After != "field Timeout int64" {
+	if timeout := store.Changes[1]; timeout.Symbol != "Config.Timeout" || timeout.Before != "field Config.Timeout int" || timeout.After != "field Config.Timeout int64" {
 		t.Errorf("Config.Timeout = %+v", timeout)
 	}
 	mustNotContain(t, r.stdout, `"pos"`, `"internal"`)
@@ -1554,21 +1554,17 @@ func TestPositions(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	// Positions line up two spaces past the widest change line of the
-	// package; a removed symbol is located on the base side.
+	// A position sits on the line of the declaration it locates, the new
+	// one of a change or an addition and the old one of a removal, two
+	// spaces past the widest such line of the package.
 	want := "example.com/m/a\n" +
-		"  - Drop: removed  v0.1.0:a/a.go:5:6\n" +
-		"      - func Drop()\n" +
-		"  ~ T.M: changed   a/a.go:10:12\n" +
-		"      - func (t T) M(n int)\n" +
-		"      + func (t T) M(n int64)\n" +
-		"  ~ T.X: changed   a/a.go:6:2\n" +
-		"      - field X int\n" +
-		"      + field X int64\n" +
-		"  + Added: added   a/a.go:12:6\n" +
-		"      + func Added()\n" +
-		"  + T.Y: added     a/a.go:7:2\n" +
-		"      + field Y int\n" +
+		"  - func Drop()            v0.1.0:a/a.go:5:6\n" +
+		"  - func (t T) M(n int)\n" +
+		"  + func (t T) M(n int64)  a/a.go:10:12\n" +
+		"  - field T.X int\n" +
+		"  + field T.X int64        a/a.go:6:2\n" +
+		"  + func Added()           a/a.go:12:6\n" +
+		"  + field T.Y int          a/a.go:7:2\n" +
 		"\n" +
 		"example.com/m/b (new)\n" +
 		"  + package added\n" +
@@ -1583,7 +1579,7 @@ func TestPositions(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  - Drop: removed\n      - func Drop()\n  ~ T.M: changed\n")
+	mustContain(t, r.stdout, "  - func Drop()\n  - func (t T) M(n int)\n  + func (t T) M(n int64)\n")
 	mustNotContain(t, r.stdout, "a.go")
 
 	// Two committed revisions: both sides carry a revision prefix.
@@ -1592,7 +1588,7 @@ func TestPositions(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	mustContain(t, r.stdout, "  - Drop: removed  v0.1.0:a/a.go:5:6\n", "  + Added: added   HEAD:a/a.go:12:6\n")
+	mustContain(t, r.stdout, "  - func Drop()            v0.1.0:a/a.go:5:6\n", "  + func Added()           HEAD:a/a.go:12:6\n")
 }
 
 func TestPackageFilter(t *testing.T) {
@@ -1613,14 +1609,14 @@ func TestPackageFilter(t *testing.T) {
 		want          string
 		stderr        string
 	}{
-		{"all", nil, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\nexample.com/m/store\n  + S2: added\n      + func S2()\n\nexample.com/m/store/sub\n  + Sub2: added\n      + func Sub2()\n\nexample.com/m/util (removed)\n  - U: removed\n      - func U()\n\n4 packages changed · 1 incompatible · 3 compatible · would require: MAJOR\n", ""},
-		{"store", []string{"store/..."}, nil, "example.com/m/store\n  + S2: added\n      + func S2()\n\nexample.com/m/store/sub\n  + Sub2: added\n      + func Sub2()\n\n2 packages changed · 0 incompatible · 2 compatible · would require: MINOR\n", ""},
-		{"exact", []string{"example.com/m/store"}, nil, "example.com/m/store\n  + S2: added\n      + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
-		{"two", []string{"./a", "util"}, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\nexample.com/m/util (removed)\n  - U: removed\n      - func U()\n\n2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n", ""},
-		{"exclude", nil, []string{"store/...", "util"}, "example.com/m/a\n  + A2: added\n      + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
-		{"both", []string{"store/..."}, []string{".../sub"}, "example.com/m/store\n  + S2: added\n      + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
-		{"removed only on base", []string{"util"}, nil, "example.com/m/util (removed)\n  - U: removed\n      - func U()\n\n1 package changed · 1 incompatible · 0 compatible · would require: MAJOR\n", ""},
-		{"typo", []string{"stor/...", "a"}, nil, "example.com/m/a\n  + A2: added\n      + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", "warn: example.com/m: --pkg \"stor/...\" matched no packages\n"},
+		{"all", nil, nil, "example.com/m/a\n  + func A2()\n\nexample.com/m/store\n  + func S2()\n\nexample.com/m/store/sub\n  + func Sub2()\n\nexample.com/m/util (removed)\n  - func U()\n\n4 packages changed · 1 incompatible · 3 compatible · would require: MAJOR\n", ""},
+		{"store", []string{"store/..."}, nil, "example.com/m/store\n  + func S2()\n\nexample.com/m/store/sub\n  + func Sub2()\n\n2 packages changed · 0 incompatible · 2 compatible · would require: MINOR\n", ""},
+		{"exact", []string{"example.com/m/store"}, nil, "example.com/m/store\n  + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"two", []string{"./a", "util"}, nil, "example.com/m/a\n  + func A2()\n\nexample.com/m/util (removed)\n  - func U()\n\n2 packages changed · 1 incompatible · 1 compatible · would require: MAJOR\n", ""},
+		{"exclude", nil, []string{"store/...", "util"}, "example.com/m/a\n  + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"both", []string{"store/..."}, []string{".../sub"}, "example.com/m/store\n  + func S2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", ""},
+		{"removed only on base", []string{"util"}, nil, "example.com/m/util (removed)\n  - func U()\n\n1 package changed · 1 incompatible · 0 compatible · would require: MAJOR\n", ""},
+		{"typo", []string{"stor/...", "a"}, nil, "example.com/m/a\n  + func A2()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n", "warn: example.com/m: --pkg \"stor/...\" matched no packages\n"},
 		{"nothing", []string{"nothing"}, nil, "no exported API changes\n", "warn: example.com/m: --pkg \"nothing\" matched no packages\n"},
 	}
 	for _, tc := range tests {
@@ -1665,7 +1661,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if want := "example.com/m/a\n  + Added: added\n      + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
+	if want := "example.com/m/a\n  + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
 
@@ -1675,10 +1671,10 @@ func TestFilterInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	want := "example.com/m/a\n  + Added: added\n      + func Added()\n\n" +
-		"example.com/m/a/internal/deep (internal)\n  + Deeper: added\n      + func Deeper()\n\n" +
-		"example.com/m/internal/fresh (internal, new)\n  + F: added\n      + func F()\n\n" +
-		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\n" +
+	want := "example.com/m/a\n  + func Added()\n\n" +
+		"example.com/m/a/internal/deep (internal)\n  + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\n" +
 		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n" +
 		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
 	if r.stdout != want {
@@ -1708,14 +1704,14 @@ func TestFilterInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
+	if want := "example.com/m/internal/hidden (internal)\n  - func Hidden()\n\nno exported API changes\ninternal: 3 packages changed · 1 incompatible · 3 compatible\n"; r.stdout != want {
 		t.Errorf("breaking: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.run("HEAD", "", Options{Filter: render.All, Packages: []string{"internal/hidden"}})
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	if want := "example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
+	if want := "example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\nno exported API changes\ninternal: 1 package changed · 1 incompatible · 1 compatible\n"; r.stdout != want {
 		t.Errorf("pkg: stdout = %q\nwant     %q", r.stdout, want)
 	}
 
@@ -1726,9 +1722,9 @@ func TestFilterInternalPackages(t *testing.T) {
 	if r.err != nil {
 		t.Fatal(r.err)
 	}
-	want = "example.com/m/a/internal/deep (internal)\n  + Deeper: added\n      + func Deeper()\n\n" +
-		"example.com/m/internal/fresh (internal, new)\n  + F: added\n      + func F()\n\n" +
-		"example.com/m/internal/hidden (internal)\n  - Hidden: removed\n      - func Hidden()\n  + Renamed: added\n      + func Renamed()\n\n" +
+	want = "example.com/m/a/internal/deep (internal)\n  + func Deeper()\n\n" +
+		"example.com/m/internal/fresh (internal, new)\n  + func F()\n\n" +
+		"example.com/m/internal/hidden (internal)\n  - func Hidden()\n  + func Renamed()\n\n" +
 		"internal: 3 packages changed · 1 incompatible · 3 compatible\n"
 	if r.stdout != want {
 		t.Errorf("internal: stdout = %q\nwant     %q", r.stdout, want)
@@ -1816,9 +1812,9 @@ func TestMinimalSignatures(t *testing.T) {
 		t.Fatal(r.err)
 	}
 	want = "example.com/m/a\n" +
-		"  - Drop: removed\n      - func Drop()\n" +
-		"  ~ Open: changed\n      - func Open(name string) error\n      + func Open(name string, n int) error\n" +
-		"  + Added: added\n      + func Added()\n" +
+		"  - func Drop()\n" +
+		"  - func Open(name string) error\n  + func Open(name string, n int) error\n" +
+		"  + func Added()\n" +
 		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("full: stdout = %q\nwant     %q", r.stdout, want)

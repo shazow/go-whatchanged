@@ -1,9 +1,7 @@
 # stdout
 example.com/m/internal/hidden (internal)
-  - Hidden: removed
-      - func Hidden()
-  + Added: added
-      + func Added()
+  - func Hidden()
+  + func Added()
 
 internal: 1 package changed · 1 incompatible · 1 compatible
 # stderr
