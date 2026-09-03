@@ -50,15 +50,9 @@ go install github.com/shazow/go-whatchanged@latest
 ```
 
 Needs Go 1.26 or newer to build. Nothing is ever downloaded at run time,
-so the module's dependencies have to be in the module cache already: `go
-mod download` in the checkout covers what its `go.mod` pins. If the base
-revision pins versions your checkout does not have, the error names the
-missing module, and the quickest fix is to download from a copy of that
-revision's `go.mod`:
-
-```
-mkdir -p /tmp/base && git show v1.4.0:go.mod > /tmp/base/go.mod && (cd /tmp/base && go mod download)
-```
+so the module's dependencies have to be in the module cache already. When
+one is missing, the error names it and the command that downloads it
+without touching your checkout.
 
 ## Usage
 
@@ -371,7 +365,7 @@ from `git worktree add`: nothing is changed.
   with `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
   `import "C"` are skipped, so an API declared only in them is not diffed.
 - **No network.** A dependency missing from the module cache is a clear
-  error: run `go mod download` and try again.
+  error that says how to download it.
 - **No repository mutation.** Only go-git's object store is used. The
   worktree, index and refs are never touched.
 
