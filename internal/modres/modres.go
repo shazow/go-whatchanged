@@ -32,10 +32,12 @@ type Env struct {
 
 // DefaultEnv locates GOROOT and GOMODCACHE from the runtime and environment.
 func DefaultEnv() (Env, error) {
+	// runtime.GOROOT is deprecated in favour of asking the go command, which
+	// this tool never runs. It returns $GOROOT when set and the root the
+	// binary was built with otherwise, and the check below catches a stale
+	// one.
+	//lint:ignore SA1019 the go command is off limits; see above.
 	goroot := runtime.GOROOT()
-	if goroot == "" {
-		goroot = os.Getenv("GOROOT")
-	}
 	if goroot == "" {
 		return Env{}, errors.New("cannot locate GOROOT: set the GOROOT environment variable")
 	}
@@ -160,9 +162,6 @@ func New(fs FS, root string, env Env) (*Resolver, error) {
 	return r, nil
 }
 
-// Root returns the main module's root directory.
-func (r *Resolver) Root() string { return r.root }
-
 // ModPath returns the main module path.
 func (r *Resolver) ModPath() string { return r.modPath }
 
@@ -173,9 +172,6 @@ func (r *Resolver) GoVersion() string { return r.goVersion }
 // GOROOT: the go directive of $GOROOT/src/go.mod, or the running toolchain's
 // version when that file cannot be read.
 func (r *Resolver) StdGoVersion() string { return r.stdGo }
-
-// Env returns the toolchain locations in use.
-func (r *Resolver) Env() Env { return r.env }
 
 // Resolve maps importPath to a directory. fromDir is the directory of the
 // importing package (or "" when unknown); it is used to honour GOROOT's

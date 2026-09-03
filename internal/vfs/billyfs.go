@@ -33,15 +33,7 @@ func (b *BillyFS) ReadDir(name string) ([]fs.FileInfo, error) {
 	if !fi.IsDir() {
 		return nil, &fs.PathError{Op: "readdir", Path: name, Err: ErrNotDir}
 	}
-	infos, err := b.fs.ReadDir(name)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]fs.FileInfo, len(infos))
-	for i, fi := range infos {
-		out[i] = fi
-	}
-	return out, nil
+	return b.fs.ReadDir(name)
 }
 
 // Open implements FS.

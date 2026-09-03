@@ -1,6 +1,9 @@
 package render
 
-import "strconv"
+import (
+	"strconv"
+	"strings"
+)
 
 // ANSI SGR codes.
 const (
@@ -32,14 +35,18 @@ func (s Style) wrap(text string, codes ...int) string {
 	if !s.Enabled || len(codes) == 0 || text == "" {
 		return text
 	}
-	seq := "\x1b["
+	var b strings.Builder
+	b.WriteString("\x1b[")
 	for i, c := range codes {
 		if i > 0 {
-			seq += ";"
+			b.WriteByte(';')
 		}
-		seq += strconv.Itoa(c)
+		b.WriteString(strconv.Itoa(c))
 	}
-	return seq + "m" + text + "\x1b[" + strconv.Itoa(codeReset) + "m"
+	b.WriteString("m")
+	b.WriteString(text)
+	b.WriteString("\x1b[" + strconv.Itoa(codeReset) + "m")
+	return b.String()
 }
 
 // Bold renders text in bold.

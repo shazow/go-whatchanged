@@ -156,7 +156,7 @@ type patterns []string
 func (p *patterns) String() string { return strings.Join(*p, ",") }
 
 func (p *patterns) Set(s string) error {
-	for _, v := range strings.Split(s, ",") {
+	for v := range strings.SplitSeq(s, ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			*p = append(*p, v)
 		}

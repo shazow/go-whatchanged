@@ -449,11 +449,7 @@ func posWidth(lines []line, text func(line) string) int {
 
 // padding returns the spaces that align a position after text at width.
 func padding(text string, width int) string {
-	n := width - utf8.RuneCountInString(text)
-	if n < 0 {
-		n = 0
-	}
-	return strings.Repeat(" ", n)
+	return strings.Repeat(" ", max(0, width-utf8.RuneCountInString(text)))
 }
 
 func header(p Package) string {
@@ -577,17 +573,15 @@ func formatLine(st Style, l line, width int) []string {
 // "<obj>: [value ]changed", X and Y. Type strings never contain " to "
 // themselves, so the first occurrence after "changed from " is the split.
 func splitChangedFromTo(msg string) (head, from, to string, ok bool) {
-	const marker = "changed from "
-	i := strings.Index(msg, marker)
-	if i < 0 {
+	before, rest, ok := strings.Cut(msg, "changed from ")
+	if !ok {
 		return "", "", "", false
 	}
-	rest := msg[i+len(marker):]
-	from, to, found := strings.Cut(rest, " to ")
-	if !found || from == "" || to == "" {
+	from, to, ok = strings.Cut(rest, " to ")
+	if !ok || from == "" || to == "" {
 		return "", "", "", false
 	}
-	return msg[:i] + "changed", from, to, true
+	return before + "changed", from, to, true
 }
 
 // noChanges is the message for an empty diff, naming the base release when

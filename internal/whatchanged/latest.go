@@ -33,22 +33,17 @@ const LatestRelease = "@latest"
 // version). Problems reading the head side's go.mod are left for loadSide to
 // report, unless LatestRelease depends on it.
 func resolveBase(open openFunc, base string, head sideSpec, rel string) (rev, version string, err error) {
+	var tags release.Tags
 	modPath, err := headModulePath(open, head, rel)
+	if err == nil {
+		tags, err = release.TagsFor(modPath, rel)
+	}
 	if base != LatestRelease {
-		if err != nil {
-			return base, "", nil
-		}
-		tags, err := release.TagsFor(modPath, rel)
 		if err != nil {
 			return base, "", nil
 		}
 		return base, tags.Version(tagName(base)), nil
 	}
-
-	if err != nil {
-		return "", "", fmt.Errorf("%s: %w", LatestRelease, err)
-	}
-	tags, err := release.TagsFor(modPath, rel)
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", LatestRelease, err)
 	}

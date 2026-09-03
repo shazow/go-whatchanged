@@ -68,7 +68,4 @@ func TestFilter(t *testing.T) {
 			}
 		}
 	}
-	if !(Filter{}).IsZero() || (Filter{Exclude: []string{"x"}}).IsZero() {
-		t.Error("IsZero is wrong")
-	}
 }

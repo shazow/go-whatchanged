@@ -17,11 +17,6 @@ type Filter struct {
 	Exclude []string
 }
 
-// IsZero reports whether the filter selects every package.
-func (f Filter) IsZero() bool {
-	return len(f.Include) == 0 && len(f.Exclude) == 0
-}
-
 // Match reports whether the package with importPath in the module modPath
 // is selected.
 func (f Filter) Match(modPath, importPath string) bool {
@@ -63,8 +58,8 @@ func MatchPattern(pattern, modPath, importPath string) bool {
 // so that "a/..." matches "a" itself.
 func compile(pattern string) *regexp.Regexp {
 	re := strings.ReplaceAll(regexp.QuoteMeta(pattern), `\.\.\.`, `.*`)
-	if strings.HasSuffix(re, `/.*`) {
-		re = strings.TrimSuffix(re, `/.*`) + `(/.*)?`
+	if prefix, ok := strings.CutSuffix(re, `/.*`); ok {
+		re = prefix + `(/.*)?`
 	}
 	return regexp.MustCompile(`^` + re + `$`)
 }

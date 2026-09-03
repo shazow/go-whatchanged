@@ -15,7 +15,7 @@ import (
 	"go/version"
 	"io"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -187,8 +187,8 @@ func (l *Loader) Load(importPath, dir string) (*types.Package, error) {
 	return l.loadLocation(importPath, modres.Location{Dir: dir, Kind: modres.Main, GoVersion: l.resolver.GoVersion()})
 }
 
-// Warnings returns type-check and parse errors recorded so far, keyed by
-// import path, in a deterministic order.
+// Warnings returns a copy of the type-check and parse errors recorded so
+// far, keyed by import path.
 func (l *Loader) Warnings() map[string][]string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -390,8 +390,8 @@ func (l *Loader) check(importPath string, loc modres.Location) (*types.Package, 
 	if pkg == nil {
 		return nil, warnings, fmt.Errorf("%s: type-checking produced no package", importPath)
 	}
-	sort.Strings(warnings)
-	return pkg, dedupe(warnings), nil
+	slices.Sort(warnings)
+	return pkg, slices.Compact(warnings), nil
 }
 
 func readFile(ctxt build.Context, name string) ([]byte, error) {
@@ -453,15 +453,4 @@ func goVersion(v string) string {
 		return v
 	}
 	return "go" + v
-}
-
-func dedupe(s []string) []string {
-	out := s[:0]
-	for i, v := range s {
-		if i > 0 && s[i-1] == v {
-			continue
-		}
-		out = append(out, v)
-	}
-	return out
 }

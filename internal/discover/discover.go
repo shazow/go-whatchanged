@@ -17,8 +17,7 @@ type FS interface {
 
 // Package is a candidate package.
 type Package struct {
-	ImportPath string
-	Dir        string
+	Dir string
 	// Internal is set when an element of the package's path within the
 	// module is "internal": the package is importable only from within the
 	// module and is not part of its public API.
@@ -48,7 +47,7 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal bool)
 		switch e := ierr.(type) {
 		case nil:
 			if bp.Name != "main" && len(bp.GoFiles) > 0 {
-				pkgs[importPath] = Package{ImportPath: importPath, Dir: dir, Internal: isInternal}
+				pkgs[importPath] = Package{Dir: dir, Internal: isInternal}
 			}
 		case *build.NoGoError:
 			// Nothing to diff here; still descend.

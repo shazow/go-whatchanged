@@ -85,7 +85,7 @@ func lookupSymbol(pkg *types.Package, sym string) types.Object {
 	if !ok {
 		return nil
 	}
-	var t types.Type = tn.Type()
+	t := tn.Type()
 	if ptr {
 		t = types.NewPointer(t)
 	}

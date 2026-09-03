@@ -2,12 +2,12 @@
 
 What changed in the public API?
 
-Pretty semantic diff of a Go module's exported API, powered by 
+Pretty semantic diff of a Go module's exported API, powered by
 [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff).
 
 Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 
-## Usage
+## Example
 
 ```
 $ go-whatchanged @latest

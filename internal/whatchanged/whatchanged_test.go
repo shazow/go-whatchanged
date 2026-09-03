@@ -61,21 +61,32 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) write(name, content string) {
 	f.t.Helper()
+	writeFile(f.t, f.fs, name, content)
+}
+
+// writeFile creates name in fsys with content, and its directory if needed.
+func writeFile(t *testing.T, fsys billy.Filesystem, name, content string) {
+	t.Helper()
 	if dir := path.Dir(name); dir != "." {
-		if err := f.fs.MkdirAll(dir, 0o755); err != nil {
-			f.t.Fatal(err)
+		if err := fsys.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
 		}
 	}
-	file, err := f.fs.Create(name)
+	file, err := fsys.Create(name)
 	if err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	if _, err := file.Write([]byte(content)); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
 	if err := file.Close(); err != nil {
-		f.t.Fatal(err)
+		t.Fatal(err)
 	}
+}
+
+// testSignature is the author and committer of every fixture commit.
+func testSignature() *object.Signature {
+	return &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
 }
 
 // useFakeModcache replaces the real module cache with an empty in-memory
@@ -94,20 +105,7 @@ func (f *fixture) writeModule(modPath, version string, files map[string]string) 
 		files["go.mod"] = "module " + modPath + "\n\ngo 1.24\n"
 	}
 	for name, content := range files {
-		full := path.Join(root, name)
-		if err := f.modcache.MkdirAll(path.Dir(full), 0o755); err != nil {
-			f.t.Fatal(err)
-		}
-		file, err := f.modcache.Create(full)
-		if err != nil {
-			f.t.Fatal(err)
-		}
-		if _, err := file.Write([]byte(content)); err != nil {
-			f.t.Fatal(err)
-		}
-		if err := file.Close(); err != nil {
-			f.t.Fatal(err)
-		}
+		writeFile(f.t, f.modcache, path.Join(root, name), content)
 	}
 }
 
@@ -129,7 +127,7 @@ func (f *fixture) commit(msg string) plumbing.Hash {
 	if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
 		f.t.Fatal(err)
 	}
-	sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
+	sig := testSignature()
 	h, err := wt.Commit(msg, &git.CommitOptions{Author: sig, Committer: sig, AllowEmptyCommits: true})
 	if err != nil {
 		f.t.Fatal(err)
@@ -147,8 +145,7 @@ func (f *fixture) tag(name string, h plumbing.Hash) {
 // annotatedTag creates a tag object pointing at h.
 func (f *fixture) annotatedTag(name string, h plumbing.Hash) {
 	f.t.Helper()
-	sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
-	if _, err := f.repo.CreateTag(name, h, &git.CreateTagOptions{Tagger: sig, Message: name}); err != nil {
+	if _, err := f.repo.CreateTag(name, h, &git.CreateTagOptions{Tagger: testSignature(), Message: name}); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -530,7 +527,7 @@ func diskFixture(t *testing.T) (dir string, base, head plumbing.Hash) {
 		if err := wt.AddWithOptions(&git.AddOptions{All: true}); err != nil {
 			t.Fatal(err)
 		}
-		sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
+		sig := testSignature()
 		h, err := wt.Commit(msg, &git.CommitOptions{Author: sig, Committer: sig})
 		if err != nil {
 			t.Fatal(err)
@@ -567,7 +564,7 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 	dir, base, head := diskFixture(t)
 	// The race this guards against is timing dependent; a handful of runs
 	// made it show up reliably before the fix.
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		var out, errb bytes.Buffer
 		code, err := Run(Options{
 			Repo:   dir,
@@ -1179,7 +1176,7 @@ func TestDependencyImportingMainModuleIsNotShared(t *testing.T) {
 	f.write("a/a.go", "package a\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/m/core\"\n)\n\nfunc A(c core.Client) { dep.Use(c) }\n")
 	f.commit("base")
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		r := f.run("HEAD", "", Options{})
 		if r.err != nil {
 			t.Fatal(r.err)
@@ -1219,7 +1216,7 @@ func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
 	f.commit("base")
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire (\n\texample.com/p v1.0.0\n\texample.com/q v1.1.0\n)\n")
 
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		r := f.run("HEAD", "", Options{})
 		if r.err != nil {
 			t.Fatal(r.err)
