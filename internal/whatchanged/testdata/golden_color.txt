@@ -23,5 +23,5 @@
       [1;31m- type Stringer interface{String() string}[0m
       [1;32m+ type Stringer = fmt.Stringer[0m
 
-4 packages changed · 6 incompatible · 4 compatible · would require: [1;31mMAJOR[0m
+4 packages changed · 6 incompatible · 4 compatible · would require: [1;31mMAJOR[0m (v1.0.0 → v2.0.0)
 # stderr

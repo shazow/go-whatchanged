@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"io/fs"
@@ -24,6 +25,7 @@ import (
 	"golang.org/x/mod/modfile"
 
 	"github.com/shazow/go-whatchanged/internal/modres"
+	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/vfs"
 )
 
@@ -138,6 +140,33 @@ func (f *fixture) commit(msg string) plumbing.Hash {
 func (f *fixture) tag(name string, h plumbing.Hash) {
 	f.t.Helper()
 	if _, err := f.repo.CreateTag(name, h, nil); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// annotatedTag creates a tag object pointing at h.
+func (f *fixture) annotatedTag(name string, h plumbing.Hash) {
+	f.t.Helper()
+	sig := &object.Signature{Name: "test", Email: "test@example.com", When: time.Unix(0, 0)}
+	if _, err := f.repo.CreateTag(name, h, &git.CreateTagOptions{Tagger: sig, Message: name}); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
+// checkout switches the in-memory worktree to branch, creating it at h when
+// create is set. The fixture's files are replaced by the branch's tree.
+func (f *fixture) checkout(branch string, create bool, h plumbing.Hash) {
+	f.t.Helper()
+	wt, err := f.repo.Worktree()
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	opts := &git.CheckoutOptions{Branch: plumbing.NewBranchReferenceName(branch), Force: true}
+	if create {
+		opts.Create = true
+		opts.Hash = h
+	}
+	if err := wt.Checkout(opts); err != nil {
 		f.t.Fatal(err)
 	}
 }
@@ -874,6 +903,8 @@ func TestGolden(t *testing.T) {
 		{"nocolor", Options{}},
 		{"color", Options{Color: true}},
 		{"breaking", Options{Breaking: true}},
+		{"markdown", Options{Format: render.Markdown}},
+		{"json", Options{Format: render.JSON}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r := f.run("v1.0.0", "", tc.opts)
@@ -1187,5 +1218,310 @@ func TestDependencyPinnedToDifferentVersionsIsNotShared(t *testing.T) {
 		if r.stdout != "no exported API changes\n" {
 			t.Errorf("run %d: stdout = %q", i, r.stdout)
 		}
+	}
+}
+
+func TestLatestRelease(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.tag("v0.1.0", one)
+	f.tag("release-1", one) // not a semantic version: ignored
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	f.annotatedTag("v0.2.0", two)
+	f.tag("v0.2", two)   // not canonical: ignored
+	f.tag("1.0.0", two)  // no "v": ignored
+	f.tag("v2.0.0", two) // wrong major for a module path without /v2: ignored
+
+	// A higher release on a branch that is not an ancestor of HEAD does
+	// not count.
+	f.checkout("side", true, one)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Side() {}\n")
+	side := f.commit("side")
+	f.tag("v0.9.0", side)
+	f.checkout("master", false, plumbing.ZeroHash)
+
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	three := f.commit("three")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n\nfunc D() {}\n")
+
+	r := f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + C: added\n", "  + D: added\n",
+		"1 package changed · 0 incompatible · 2 compatible · would require: MINOR (v0.2.0 → v0.3.0)\n")
+	mustNotContain(t, r.stdout, "B: added", "Side")
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+
+	// A tag on the head commit itself is skipped: on a freshly tagged
+	// commit, @latest names the previous release, so the diff describes
+	// the new one.
+	f.tag("v0.3.0", three)
+	r = f.run(LatestRelease, "HEAD", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + C: added\n", "would require: MINOR (v0.2.0 → v0.3.0)\n")
+	mustNotContain(t, r.stdout, "D: added")
+
+	// Explicit release tags get the same suggestion, however they are spelled.
+	for _, base := range []string{"v0.1.0", "tags/v0.1.0", "refs/tags/v0.1.0"} {
+		r = f.run(base, "HEAD", Options{})
+		if r.err != nil {
+			t.Fatalf("%s: %v", base, r.err)
+		}
+		mustContain(t, r.stdout, "would require: MINOR (v0.1.0 → v0.2.0)\n")
+	}
+
+	// A commit with no differences names the release in the empty message.
+	r = f.run("v0.3.0", "HEAD", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "no exported API changes since v0.3.0\n"; r.stdout != want {
+		t.Errorf("stdout = %q, want %q", r.stdout, want)
+	}
+
+	// Breaking changes since a v0 release bump the minor version.
+	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
+	r = f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - A: removed\n", "would require: MAJOR (v0.2.0 → v0.3.0)\n")
+
+	// @latest is only meaningful as the base.
+	r = f.run("HEAD", LatestRelease, Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "@latest can only be the base revision")
+}
+
+func TestLatestReleasePrerelease(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.tag("v0.9.0", f.commit("one"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	f.tag("v1.0.0-rc.1", f.commit("two"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+
+	r := f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  + C: added\n", "would require: MINOR (v1.0.0-rc.1 → v1.0.0)\n")
+	mustNotContain(t, r.stdout, "B: added")
+
+	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
+	r = f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - A: removed\n", "would require: MAJOR (v1.0.0-rc.1 → v1.0.0)\n")
+}
+
+func TestLatestReleaseMajorSuffix(t *testing.T) {
+	f := newFixture(t)
+	f.write("go.mod", "module example.com/m/v2\n\ngo 1.24\n")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.tag("v1.9.0", one) // belongs to the v1 module path
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	f.tag("v2.0.0", two)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+	f.write("a/a.go", "package a\n\nfunc B() {}\n\nfunc C() {}\n")
+
+	r := f.run(LatestRelease, "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "  - A: removed\n", "  + C: added\n", "would require: MAJOR (v2.0.0 → v3.0.0)\n")
+	mustNotContain(t, r.stdout, "B: added")
+}
+
+func TestLatestReleaseSubdirectoryModule(t *testing.T) {
+	f := newFixture(t)
+	f.remove("go.mod")
+	f.write("sub/go.mod", "module example.com/m/sub\n\ngo 1.24\n")
+	f.write("sub/a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.tag("sub/v1.0.0", one)
+	f.tag("v5.0.0", one) // the root module's release, not sub's
+	f.write("sub/a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	f.tag("sub/v1.1.0", two)
+	f.write("sub/a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+
+	var out, errb bytes.Buffer
+	opts := Options{Stdout: &out, Stderr: &errb}
+	res, err := runRepo(f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: vfs.NewBillyFS(f.fs)}, "sub", f.env, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := finish(res, opts); err != nil {
+		t.Fatal(err)
+	}
+	mustContain(t, out.String(), "example.com/m/sub/a\n  + C: added\n", "would require: MINOR (v1.1.0 → v1.2.0)\n")
+	mustNotContain(t, out.String(), "B: added")
+	if res.Base != "sub/v1.1.0" || res.Head != "working tree" {
+		t.Errorf("labels = %q, %q", res.Base, res.Head)
+	}
+}
+
+func TestLatestReleaseErrors(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	r := f.run(LatestRelease, "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `@latest: no release tags for example.com/m (looking for tags like "v1.2.3")`)
+
+	// Tags exist, but none among the ancestors of HEAD: the release on a
+	// side branch, and the tag on HEAD itself.
+	f.checkout("side", true, one)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Side() {}\n")
+	f.tag("v0.1.0", f.commit("side"))
+	f.checkout("master", false, plumbing.ZeroHash)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	f.tag("v0.2.0", f.commit("two"))
+	r = f.run(LatestRelease, "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "@latest: none of the 2 release tag(s) for example.com/m is an ancestor of HEAD")
+}
+
+func TestJSON(t *testing.T) {
+	f := goldenFixture(t)
+	r := f.run("v1.0.0", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.code != ExitIncompatible {
+		t.Errorf("exit = %d", r.code)
+	}
+	var rep struct {
+		Base, Head  string
+		BaseVersion string `json:"base_version"`
+		NextVersion string `json:"next_version"`
+		Packages    []struct {
+			Path, Status string
+			Changes      []struct {
+				Symbol, Kind, Message, Before, After string
+				Compatible                           bool
+			}
+		}
+		Warnings []struct{ Package, Message string }
+		Summary  struct {
+			PackagesChanged int `json:"packages_changed"`
+			Incompatible    int
+			Compatible      int
+			Release         string
+		}
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatalf("invalid JSON: %v\n%s", err, r.stdout)
+	}
+	if rep.Base != "v1.0.0" || rep.Head != "working tree" || rep.BaseVersion != "v1.0.0" || rep.NextVersion != "v2.0.0" {
+		t.Errorf("sides = %+v", rep)
+	}
+	if rep.Summary.PackagesChanged != 4 || rep.Summary.Incompatible != 6 || rep.Summary.Compatible != 4 || rep.Summary.Release != "major" {
+		t.Errorf("summary = %+v", rep.Summary)
+	}
+	if rep.Warnings == nil || len(rep.Warnings) != 0 {
+		t.Errorf("warnings = %v, want an empty array", rep.Warnings)
+	}
+	if len(rep.Packages) != 4 || rep.Packages[0].Path != "example.com/m/fresh" || rep.Packages[0].Status != "new" || rep.Packages[1].Status != "removed" || rep.Packages[2].Status != "changed" {
+		t.Errorf("packages = %+v", rep.Packages)
+	}
+	store := rep.Packages[2]
+	if len(store.Changes) != 6 {
+		t.Fatalf("store changes = %+v", store.Changes)
+	}
+	open := store.Changes[1]
+	if open.Symbol != "Open" || open.Kind != "changed" || open.Compatible ||
+		open.Before != "func Open(path string) (*Client, error)" || open.After != "func Open(path string, o Options) (*Client, error)" ||
+		!strings.HasPrefix(open.Message, "Open: changed from ") {
+		t.Errorf("Open = %+v", open)
+	}
+	if ping := store.Changes[3]; ping.Symbol != "(*Client).Ping" || ping.Kind != "added" || !ping.Compatible || ping.Before != "" {
+		t.Errorf("Ping = %+v", ping)
+	}
+	if closed := store.Changes[0]; closed.Symbol != "(*Client).Close" || closed.Kind != "removed" {
+		t.Errorf("Close = %+v", closed)
+	}
+
+	// --breaking drops compatible changes from the lists but not the counts.
+	r = f.run("v1.0.0", "", Options{Format: render.JSON, Breaking: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatal(err)
+	}
+	if len(rep.Packages) != 3 || rep.Summary.Compatible != 4 {
+		t.Errorf("breaking: packages = %d, compatible = %d", len(rep.Packages), rep.Summary.Compatible)
+	}
+	for _, p := range rep.Packages {
+		for _, c := range p.Changes {
+			if c.Compatible {
+				t.Errorf("breaking: compatible change %q listed", c.Message)
+			}
+		}
+	}
+}
+
+func TestJSONPackageWithoutSymbols(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("plugin/plugin.go", "package plugin\n\nfunc init() {}\n")
+	f.commit("base")
+	f.remove("plugin/plugin.go")
+	r := f.run("HEAD", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"symbol": "",`, `"kind": "removed",`, `"message": "package removed"`)
+}
+
+func TestFormatsWithoutChanges(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("base")
+	r := f.run("HEAD", "", Options{Format: render.Markdown})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "_no exported API changes_\n"; r.stdout != want {
+		t.Errorf("markdown = %q, want %q", r.stdout, want)
+	}
+	r = f.run("HEAD", "", Options{Format: render.JSON})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, `"base": "HEAD"`, `"packages": [],`, `"release": "patch"`)
+	mustNotContain(t, r.stdout, "base_version", "next_version")
+}
+
+func TestParseFormat(t *testing.T) {
+	for in, want := range map[string]render.Format{"text": render.Text, "markdown": render.Markdown, "md": render.Markdown, "JSON": render.JSON} {
+		got, err := ParseFormat(in)
+		if err != nil || got != want {
+			t.Errorf("ParseFormat(%q) = %v, %v; want %v", in, got, err, want)
+		}
+	}
+	if _, err := ParseFormat("yaml"); err == nil {
+		t.Error("ParseFormat accepted yaml")
 	}
 }

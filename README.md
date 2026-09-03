@@ -10,7 +10,7 @@ Read-only: No mutations to your filesystem, no git clones, no git worktrees.
 ## Usage
 
 ```
-$ go-whatchanged v1.4.0
+$ go-whatchanged @latest
 example.com/m/store
   - (*Client).Close: removed
   ~ Open: changed
@@ -22,7 +22,7 @@ example.com/m/store
 example.com/m/util
   ! Sizer.Size: added
 
-2 packages changed · 3 incompatible · 2 compatible · would require: MAJOR
+2 packages changed · 3 incompatible · 2 compatible · would require: MAJOR (v1.4.0 → v2.0.0)
 ```
 
 ## Install
@@ -37,25 +37,156 @@ go install github.com/shazow/go-whatchanged@latest
 go-whatchanged [flags] [<base> [<head>]]
 
   base   optional commit-ish for the old side: hash, tag, branch, HEAD~2, ...
+         or @latest, the newest release tag among the ancestors of head.
          Default: HEAD.
   head   optional commit-ish for the new side. Default: the working tree.
 ```
 
 With no arguments the diff is `HEAD` against the working tree, so it shows
 exactly what the uncommitted changes in your checkout do to the exported API.
+`go-whatchanged @latest` answers the other everyday question: what has
+changed since the last release?
 
 ```
 Flags:
   --repo string      path inside a git repository (default: current directory)
   --goos, --goarch   build target (default: the running platform)
   --breaking         show only incompatible changes
+  --format string    text | markdown | json (default text; see below)
   --color string     auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
   --exit-fail LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher (see below)
+  --version          print the version and exit
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 ```
+
+### Since the last release
+
+`@latest` as the base stands for the highest release tag of the module
+among the ancestors of the head commit (`HEAD` when the head is the working
+tree). Release tags are the ones the `go` command would publish: canonical
+semantic versions such as `v1.4.0` or `v1.5.0-rc.1`, prefixed with the
+module's directory for a module below the repository root (`sub/v1.4.0`),
+and of the major version the module path calls for (`v2.x.y` for
+`example.com/m/v2`). Tags like `1.4.0`, `v1.4` or `release-1` are ignored.
+A tag on a branch that was never merged is not an ancestor and does not
+count.
+
+The head commit's own tags are skipped, so on a freshly tagged commit
+`@latest` is the *previous* release and the diff describes the new one.
+That is the release-notes case: in a workflow that runs on a tag push,
+`go-whatchanged @latest` lists what the tag ships.
+
+Whenever the base is a release tag (typed by name or found by `@latest`),
+the summary names the version the changes call for:
+
+```
+$ go-whatchanged @latest
+...
+1 package changed · 0 incompatible · 2 compatible · would require: MINOR (v1.4.0 → v1.5.0)
+```
+
+An incompatible change asks for the next major (`v1.4.0 → v2.0.0`), or the
+next minor while the module is still at `v0`, which promises nothing. A
+pre-release base always suggests its final release (`v1.5.0-rc.1 →
+v1.5.0`), since anything may change before it. When there are no changes
+the message reads `no exported API changes since v1.4.0`, so you can see
+which tag `@latest` picked.
+
+### Output formats
+
+`--format=markdown` renders each package as a fenced `diff` block, which
+GitHub colors, followed by the same summary line, for a pull request
+comment or a job summary:
+
+````
+**example.com/m/store**
+
+```diff
+- (*Client).Close: removed
+! Open: changed
+-   func Open(path string) (*Client, error)
++   func Open(path string, o Options) (*Client, error)
++ (*Client).Ping: added
+```
+
+1 package changed · 2 incompatible · 1 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
+````
+
+`--format=json` prints one document for tools and bots. `--breaking`
+filters the change lists in every format; the summary always counts the
+full diff.
+
+```json
+{
+  "base": "v1.4.0",
+  "head": "working tree",
+  "base_version": "v1.4.0",
+  "next_version": "v2.0.0",
+  "packages": [
+    {
+      "path": "example.com/m/store",
+      "status": "changed",
+      "changes": [
+        {
+          "symbol": "(*Client).Close",
+          "kind": "removed",
+          "compatible": false,
+          "message": "(*Client).Close: removed"
+        },
+        {
+          "symbol": "Open",
+          "kind": "changed",
+          "compatible": false,
+          "message": "Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)",
+          "before": "func Open(path string) (*Client, error)",
+          "after": "func Open(path string, o Options) (*Client, error)"
+        }
+      ]
+    }
+  ],
+  "warnings": [],
+  "summary": {
+    "packages_changed": 1,
+    "incompatible": 2,
+    "compatible": 1,
+    "release": "major"
+  }
+}
+```
+
+`head` is the revision given or the literal `working tree`. `base_version`
+and `next_version` appear when the base is a release tag. A package's
+`status` is `changed`, `new` or `removed`; a change's `kind` is `added`,
+`removed` or `changed`, and `symbol` is empty for a whole-package change
+(`package added`). `before` and `after` are present for `changed from X to
+Y` messages and hold what the text layout prints on its `-` and `+` lines.
+`release` is `major`, `minor` or `patch`.
+
+### In GitHub Actions
+
+A job that posts the API changes of a pull request to its summary, and
+fails when they are incompatible:
+
+```yaml
+- uses: actions/checkout@v4
+  with:
+    fetch-depth: 0 # tags and history for @latest and the base branch
+- uses: actions/setup-go@v5
+  with:
+    go-version-file: go.mod
+- run: go mod download
+- run: go install github.com/shazow/go-whatchanged@latest
+- run: |
+    go-whatchanged --format=markdown origin/${{ github.base_ref }} HEAD \
+      >> "$GITHUB_STEP_SUMMARY"
+- run: go-whatchanged --exit-fail=major origin/${{ github.base_ref }} HEAD
+```
+
+`go mod download` is the one write: the tool itself never fetches, and a
+dependency that is not in the module cache is an error.
 
 ### Failing on a release level
 
@@ -114,7 +245,9 @@ it appears or disappears, since importers notice either way. A directory
 that becomes a nested module counts as removed. The summary line ends with
 the semantic version bump the changes would require: `MAJOR` if anything is
 incompatible, `MINOR` if only compatible changes were made, `PATCH` otherwise.
-The counts always describe the full diff, even with `--breaking`.
+The counts always describe the full diff, even with `--breaking`. When the
+base is a release tag the summary also names the next version, see
+[Since the last release](#since-the-last-release).
 
 Type-check problems are reported on stderr as `warn: <package>: <error>` and
 never abort the diff unless `--strict` is set. Positions on the base side are
@@ -158,9 +291,9 @@ is ever linked against the other side's packages.
 
 ## Non-goals (for now)
 
-JSON output, a stable library API, multi-platform union diffs, `go.work`,
-vendor mode, GOPATH mode, cgo-only APIs, module graph resolution beyond
-`go.mod`, proxy fetching, and comparing the APIs of dependencies.
+A stable library API, multi-platform union diffs, `go.work`, vendor mode,
+GOPATH mode, cgo-only APIs, module graph resolution beyond `go.mod`, proxy
+fetching, and comparing the APIs of dependencies.
 
 ## License
 

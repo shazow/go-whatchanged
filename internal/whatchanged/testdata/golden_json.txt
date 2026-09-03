@@ -1,0 +1,107 @@
+# stdout
+{
+  "base": "v1.0.0",
+  "head": "working tree",
+  "base_version": "v1.0.0",
+  "next_version": "v2.0.0",
+  "packages": [
+    {
+      "path": "example.com/m/fresh",
+      "status": "new",
+      "changes": [
+        {
+          "symbol": "Hello",
+          "kind": "added",
+          "compatible": true,
+          "message": "Hello: added"
+        }
+      ]
+    },
+    {
+      "path": "example.com/m/gone",
+      "status": "removed",
+      "changes": [
+        {
+          "symbol": "Gone",
+          "kind": "removed",
+          "compatible": false,
+          "message": "Gone: removed"
+        }
+      ]
+    },
+    {
+      "path": "example.com/m/store",
+      "status": "changed",
+      "changes": [
+        {
+          "symbol": "(*Client).Close",
+          "kind": "removed",
+          "compatible": false,
+          "message": "(*Client).Close: removed"
+        },
+        {
+          "symbol": "Open",
+          "kind": "changed",
+          "compatible": false,
+          "message": "Open: changed from func(string) (*Client, error) to func(string, Options) (*Client, error)",
+          "before": "func Open(path string) (*Client, error)",
+          "after": "func Open(path string, o Options) (*Client, error)"
+        },
+        {
+          "symbol": "Version",
+          "kind": "changed",
+          "compatible": false,
+          "message": "Version: changed from untyped string to untyped int",
+          "before": "const Version untyped string = \"1\"",
+          "after": "const Version untyped int = 1"
+        },
+        {
+          "symbol": "(*Client).Ping",
+          "kind": "added",
+          "compatible": true,
+          "message": "(*Client).Ping: added"
+        },
+        {
+          "symbol": "Options",
+          "kind": "added",
+          "compatible": true,
+          "message": "Options: added"
+        },
+        {
+          "symbol": "Point.Z",
+          "kind": "added",
+          "compatible": true,
+          "message": "Point.Z: added"
+        }
+      ]
+    },
+    {
+      "path": "example.com/m/util",
+      "status": "changed",
+      "changes": [
+        {
+          "symbol": "Sizer.Size",
+          "kind": "added",
+          "compatible": false,
+          "message": "Sizer.Size: added"
+        },
+        {
+          "symbol": "Stringer",
+          "kind": "changed",
+          "compatible": false,
+          "message": "Stringer: changed from Stringer to fmt.Stringer",
+          "before": "type Stringer interface{String() string}",
+          "after": "type Stringer = fmt.Stringer"
+        }
+      ]
+    }
+  ],
+  "warnings": [],
+  "summary": {
+    "packages_changed": 4,
+    "incompatible": 6,
+    "compatible": 4,
+    "release": "major"
+  }
+}
+# stderr

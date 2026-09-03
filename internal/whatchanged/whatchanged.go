@@ -26,6 +26,7 @@ import (
 	"github.com/shazow/go-whatchanged/internal/discover"
 	"github.com/shazow/go-whatchanged/internal/loader"
 	"github.com/shazow/go-whatchanged/internal/modres"
+	"github.com/shazow/go-whatchanged/internal/release"
 	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/vfs"
 )
@@ -53,6 +54,9 @@ type Options struct {
 	// The zero value, FailNever, keeps the default of ExitIncompatible for
 	// incompatible changes.
 	ExitFail FailOn
+	// Format selects the output layout; the zero value is the colorized
+	// text layout.
+	Format render.Format
 
 	// Stdout receives the diff; Stderr receives warnings.
 	Stdout, Stderr io.Writer
@@ -103,6 +107,11 @@ func ParseFailOn(s string) (FailOn, error) {
 	default:
 		return FailPatch, nil
 	}
+}
+
+// ParseFormat parses a --format value: "text", "markdown" or "json".
+func ParseFormat(s string) (render.Format, error) {
+	return render.ParseFormat(s)
 }
 
 // threshold is the lowest level that fails, or ok=false for FailNever.
@@ -209,7 +218,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 			return ExitError, fmt.Errorf("%d type-check warning(s) (--strict)", len(res.Warnings))
 		}
 	}
-	if err := render.Write(opts.Stdout, *res, render.Options{Color: opts.Color, BreakingOnly: opts.Breaking}); err != nil {
+	if err := render.Write(opts.Stdout, *res, render.Options{Color: opts.Color, BreakingOnly: opts.Breaking, Format: opts.Format}); err != nil {
 		return ExitError, err
 	}
 	return exitCode(render.Summarize(*res), opts.ExitFail), nil
@@ -273,6 +282,15 @@ type openFunc func() (*git.Repository, error)
 // locking, so a handle shared between the two goroutines races and makes
 // revisions spuriously unresolvable ("reference not found").
 func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opts Options) (*render.Result, error) {
+	if head.rev == LatestRelease {
+		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
+	}
+	rev, baseVersion, err := resolveBase(open, base.rev, head, rel)
+	if err != nil {
+		return nil, err
+	}
+	base.rev = rev
+
 	fset := token.NewFileSet()
 	shared := loader.NewSharedCache()
 	goos, goarch := opts.GOOS, opts.GOARCH
@@ -302,7 +320,16 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 			return nil, err
 		}
 	}
-	return diffSides(sides[0], sides[1])
+	res, err := diffSides(sides[0], sides[1])
+	if err != nil {
+		return nil, err
+	}
+	res.Base, res.Head = sides[0].label, sides[1].label
+	if baseVersion != "" {
+		res.BaseVersion = baseVersion
+		res.NextVersion = release.Next(baseVersion, render.Summarize(*res).Level())
+	}
+	return res, nil
 }
 
 func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, goos, goarch string, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {

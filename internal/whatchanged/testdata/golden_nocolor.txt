@@ -23,5 +23,5 @@ example.com/m/util
       - type Stringer interface{String() string}
       + type Stringer = fmt.Stringer
 
-4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR
+4 packages changed · 6 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
 # stderr
