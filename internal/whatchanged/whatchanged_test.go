@@ -819,6 +819,99 @@ func Describe(s fmt.Stringer) string { return s.String() }
 	}
 }
 
+func TestReplaceDirectory(t *testing.T) {
+	f := newFixture(t)
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/lib v0.0.0\n\nreplace example.com/lib => ./lib\n")
+	f.write("lib/go.mod", "module example.com/lib\n\ngo 1.24\n")
+	f.write("lib/lib.go", "package lib\n\ntype Conn struct{}\n")
+	f.write("a/a.go", "package a\n\nimport \"example.com/lib\"\n\nfunc Open() lib.Conn { return lib.Conn{} }\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nimport \"example.com/lib\"\n\nfunc Open() lib.Conn { return lib.Conn{} }\n\nfunc Close(c lib.Conn) {}\n")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.stderr != "" {
+		t.Errorf("stderr = %q, want none", r.stderr)
+	}
+	want := "example.com/m/a\n  + func Close(c lib.Conn)\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// A type error in the replaced module is reported against the tree it
+	// was read from, never as a synthetic mount path.
+	f.write("lib/lib.go", "package lib\n\ntype Conn struct{}\n\nvar Broken undefinedType\n")
+	f.commit("broken")
+	r = f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if want := "warn: example.com/lib: HEAD:lib/lib.go:5:12: undefined: undefinedType\nwarn: example.com/lib: lib/lib.go:5:12: undefined: undefinedType\n"; r.stderr != want {
+		t.Errorf("stderr = %q\nwant     %q", r.stderr, want)
+	}
+}
+
+func TestReplaceVersion(t *testing.T) {
+	f := newFixture(t)
+	f.useFakeModcache()
+	// Only the replacement is in the cache: resolving the required version
+	// would fail.
+	f.writeModule("example.com/q", "v1.1.0", map[string]string{"q.go": "package q\n\ntype T struct{}\n"})
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/q v1.0.0\n\nreplace example.com/q v1.0.0 => example.com/q v1.1.0\n")
+	f.write("a/a.go", "package a\n\nimport \"example.com/q\"\n\nfunc A() q.T { return q.T{} }\n")
+	f.commit("base")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.stderr != "" || r.stdout != "no exported API changes\n" {
+		t.Errorf("stdout = %q, stderr = %q", r.stdout, r.stderr)
+	}
+}
+
+// A nested module that go.mod requires is served from the module cache, as
+// the go command does, not from its directory in the tree.
+func TestRequiredNestedModuleComesFromModuleCache(t *testing.T) {
+	f := newFixture(t)
+	f.useFakeModcache()
+	f.writeModule("example.com/m/sub", "v1.0.0", map[string]string{"sub.go": "package sub\n\nconst FromCache = 1\n"})
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/m/sub v1.0.0\n")
+	f.write("sub/go.mod", "module example.com/m/sub\n\ngo 1.24\n")
+	f.write("sub/sub.go", "package sub\n\nconst FromTree = 1\n")
+	f.write("a/a.go", "package a\n\nimport \"example.com/m/sub\"\n\nconst A = sub.FromCache\n")
+	f.commit("base")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.stderr != "" || r.stdout != "no exported API changes\n" {
+		t.Errorf("stdout = %q, stderr = %q", r.stdout, r.stderr)
+	}
+}
+
+// A replaced module may have a path without a dot, which otherwise marks
+// the standard library.
+func TestReplacedModuleWithoutDot(t *testing.T) {
+	f := newFixture(t)
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire foo v0.0.0\n\nreplace foo => ./foo\n")
+	f.write("foo/go.mod", "module foo\n\ngo 1.24\n")
+	f.write("foo/bar/bar.go", "package bar\n\ntype Baz struct{}\n")
+	f.write("a/a.go", "package a\n\nimport \"foo/bar\"\n\nfunc A() bar.Baz { return bar.Baz{} }\n")
+	f.commit("base")
+
+	r := f.run("HEAD", "", Options{})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if r.stderr != "" || r.stdout != "no exported API changes\n" {
+		t.Errorf("stdout = %q, stderr = %q", r.stdout, r.stderr)
+	}
+}
+
 func TestSubdirectoryModule(t *testing.T) {
 	f := newFixture(t)
 	f.remove("go.mod")

@@ -292,7 +292,8 @@ type sideSpec struct {
 type side struct {
 	rev      string // git revision, empty for a directory side
 	label    string
-	prefix   string // path prefix rewritten to label+":" in messages
+	mount    string // synthetic path the side's tree is mounted at, "" on disk
+	prefix   string // the module root's path prefix, rewritten to label+":" in messages
 	res      *modres.Resolver
 	ld       *loader.Loader
 	pkgs     map[string]*types.Package
@@ -304,12 +305,19 @@ type side struct {
 
 // rewrite turns the synthetic mount paths in a message into "<rev>:"
 // prefixes, so that positions read like git paths; on the working tree side
-// positions become module-relative, like git diff.
+// positions become module-relative, like git diff. A file outside the module
+// root but inside the mounted tree (a directory replacement) is named
+// relative to the tree instead.
 func (s *side) rewrite(msg string) string {
-	if s.rev == "" {
-		return strings.ReplaceAll(msg, s.prefix, "")
+	label := ""
+	if s.rev != "" {
+		label = s.label + ":"
 	}
-	return strings.ReplaceAll(msg, s.prefix, s.label+":")
+	msg = strings.ReplaceAll(msg, s.prefix, label)
+	if s.mount != "" {
+		msg = strings.ReplaceAll(msg, s.mount+"/", label)
+	}
+	return msg
 }
 
 // position converts a token position on this side into a render.Position.
@@ -413,15 +421,15 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			return nil, err
 		}
 		s.label = spec.rev
-		mount := vfs.GitMountPath(tree)
-		overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
-		root = path.Join(mount, rel)
+		s.mount = vfs.GitMountPath(tree)
+		overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
+		root = path.Join(s.mount, rel)
 		s.prefix = root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
-		mount := vfs.SyntheticPrefix + "worktree"
-		overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: mount, FS: spec.fs}}, spec.mounts...)...)
-		root = path.Join(mount, rel)
+		s.mount = vfs.SyntheticPrefix + "worktree"
+		overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mount, FS: spec.fs}}, spec.mounts...)...)
+		root = path.Join(s.mount, rel)
 		s.prefix = root + "/"
 	default:
 		s.label = "working tree"

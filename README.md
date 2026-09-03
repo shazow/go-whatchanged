@@ -448,8 +448,8 @@ The tool is safe to run at any time, in any state of your checkout,
 including a linked worktree created with `git worktree add`:
 
 - **No disk writes.** No temporary directories, no checkouts, no build cache,
-  no `go.sum` edits. It only reads the repository, `.git`, `$GOROOT/src` and
-  `$GOMODCACHE`.
+  no `go.sum` edits. It only reads the repository, `.git`, `$GOROOT/src`,
+  `$GOMODCACHE` and the directories that `replace` directives point at.
 - **No `go` command.** Both sides are parsed and type-checked in-process with
   `go/build`, `go/parser` and `go/types`. Cgo is disabled; `import "C"` is
   faked.
