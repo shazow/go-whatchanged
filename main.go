@@ -10,11 +10,13 @@ import (
 	"os"
 	"runtime"
 	"runtime/debug"
+	"slices"
 	"strings"
 
 	"github.com/jessevdk/go-flags"
 	"golang.org/x/term"
 
+	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
 
@@ -31,7 +33,11 @@ it. Both may be repeated or given comma-separated lists.
 
 --filter=all, the default, lists the public API first and the internal
 packages after it; internal packages never count towards the summary, the
-required release or the exit code.
+required release or the exit code. --filter=breaking narrows the diff to
+incompatible changes and combines with the others: --filter=public,breaking.
+
+GOOS and GOARCH in the environment select the build target, as for the go
+command; the default is the running platform.
 
 The tool never writes to disk and never runs the go command.
 
@@ -45,15 +51,12 @@ unless there is an error).`
 // options is the command line, as go-flags parses it.
 type options struct {
 	Repo       string   `long:"repo" value-name:"DIR" description:"path inside a git repository (default: current directory)"`
-	GOOS       string   `long:"goos" value-name:"OS" description:"build target OS (default: the running platform's)"`
-	GOARCH     string   `long:"goarch" value-name:"ARCH" description:"build target architecture (default: the running platform's)"`
-	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (repeatable, or comma-separated)"`
-	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (repeatable, or comma-separated)"`
-	Filter     string   `long:"filter" choice:"all" choice:"public" choice:"internal" default:"all" description:"packages to diff (internal ones never count in the summary or exit code)"`
-	Breaking   bool     `long:"breaking" description:"show only incompatible changes"`
+	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
+	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, public or internal, and breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Signatures string   `long:"signatures" choice:"full" choice:"minimal" default:"full" description:"show each change as its declarations (full) or as one message line (minimal)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
-	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output layout"`
+	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
 	Strict     bool     `long:"strict" description:"treat type-check errors as fatal"`
 	ExitFail   string   `long:"exit-fail" choice:"major" choice:"minor" choice:"patch" description:"exit 100/101/102 when the required bump is major, minor or patch, or higher"`
@@ -122,11 +125,12 @@ func parseArgs(args []string) (*options, error) {
 func (o *options) whatchanged() (whatchanged.Options, error) {
 	opts := whatchanged.Options{
 		Repo:      o.Repo,
-		GOOS:      o.GOOS,
-		GOARCH:    o.GOARCH,
+		GOOS:      os.Getenv("GOOS"),
+		GOARCH:    os.Getenv("GOARCH"),
 		Packages:  o.Pkg,
 		Exclude:   o.Exclude,
-		Breaking:  o.Breaking,
+		Filter:    o.Filter.visibility(),
+		Breaking:  o.Filter.breaking(),
 		Positions: o.Pos,
 		Strict:    o.Strict,
 		Base:      o.Args.Base,
@@ -154,11 +158,52 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 	if opts.Signatures, err = whatchanged.ParseSignatures(o.Signatures); err != nil {
 		return opts, fmt.Errorf("--signatures: %w", err)
 	}
-	if opts.Filter, err = whatchanged.ParseFilter(o.Filter); err != nil {
-		return opts, fmt.Errorf("--filter: %w", err)
-	}
 	return opts, nil
 }
+
+// filter collects the terms of a repeatable, comma-separated --filter flag:
+// "all", "public" or "internal" say which packages take part (the last
+// two add up to all) and "breaking" narrows the diff to incompatible
+// changes. It is a slice so that go-flags drops the default when the flag
+// is given.
+type filter []string
+
+// UnmarshalFlag adds the terms of one flag occurrence, implementing
+// flags.Unmarshaler.
+func (f *filter) UnmarshalFlag(s string) error {
+	for term := range strings.SplitSeq(s, ",") {
+		term = strings.TrimSpace(term)
+		switch term {
+		case "":
+			continue
+		case "all", "public", "internal", "breaking":
+			*f = append(*f, term)
+		default:
+			return fmt.Errorf("invalid filter %q (want all, public, internal or breaking)", term)
+		}
+	}
+	return nil
+}
+
+// MarshalFlag implements flags.Marshaler.
+func (f filter) MarshalFlag() (string, error) { return strings.Join(f, ","), nil }
+
+// visibility returns the packages the terms select: all unless only public
+// or only internal was named.
+func (f filter) visibility() render.Visibility {
+	public, internal := slices.Contains(f, "public"), slices.Contains(f, "internal")
+	switch {
+	case slices.Contains(f, "all"), public == internal:
+		return render.All
+	case public:
+		return render.Public
+	default:
+		return render.Internal
+	}
+}
+
+// breaking reports whether only incompatible changes are wanted.
+func (f filter) breaking() bool { return slices.Contains(f, "breaking") }
 
 // patterns collects a repeatable, comma-separated pattern flag.
 type patterns []string

@@ -42,7 +42,7 @@ func TestParseArgs(t *testing.T) {
 		t.Errorf("defaults = %+v", opts)
 	}
 
-	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--signatures=minimal", "--exit-fail=minor", "--breaking", "--pos", "--color=never", "v1.4.0", "HEAD"})
+	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--signatures=minimal", "--exit-fail=minor", "--filter", "breaking", "--pos", "--color=never", "v1.4.0", "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,14 +60,39 @@ func TestParseArgs(t *testing.T) {
 		t.Errorf("opts = %+v\nwant   %+v", opts, want)
 	}
 
+	// --filter terms add up across repeats and comma-separated lists, and
+	// giving the flag drops the default.
+	for _, tc := range []struct {
+		args     []string
+		packages render.Visibility
+		breaking bool
+	}{
+		{nil, render.All, false},
+		{[]string{"--filter=public"}, render.Public, false},
+		{[]string{"--filter=breaking"}, render.All, true},
+		{[]string{"--filter=public,breaking"}, render.Public, true},
+		{[]string{"--filter", "internal", "--filter", "breaking"}, render.Internal, true},
+		{[]string{"--filter=public,internal"}, render.All, false},
+		{[]string{"--filter=public", "--filter=all"}, render.All, false},
+	} {
+		o, err := parseArgs(tc.args)
+		if err != nil {
+			t.Errorf("parseArgs(%q): %v", tc.args, err)
+			continue
+		}
+		if o.Filter.visibility() != tc.packages || o.Filter.breaking() != tc.breaking {
+			t.Errorf("parseArgs(%q): filter = %v, breaking = %v; want %v, %v", tc.args, o.Filter.visibility(), o.Filter.breaking(), tc.packages, tc.breaking)
+		}
+	}
+
 	// Bad values and extra arguments are errors; --help is not.
-	for _, args := range [][]string{{"--filter=private"}, {"--format", "yaml"}, {"-filter", "all"}, {"a", "b", "c"}, {"--bogus"}} {
+	for _, args := range [][]string{{"--filter=private"}, {"--format", "yaml"}, {"-filter", "all"}, {"--breaking"}, {"--goos=linux"}, {"a", "b", "c"}, {"--bogus"}} {
 		if _, err := parseArgs(args); err == nil {
 			t.Errorf("parseArgs(%q) succeeded", args)
 		}
 	}
 	_, err = parseArgs([]string{"--help"})
-	if err == nil || !strings.Contains(err.Error(), "--filter=[all|public|internal]") {
+	if err == nil || !strings.Contains(err.Error(), "--filter=WHICH") {
 		t.Errorf("--help: %v", err)
 	}
 }

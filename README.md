@@ -51,12 +51,11 @@ changed since the last release?
 ```
 Options:
   --repo=DIR         path inside a git repository (default: current directory)
-  --goos, --goarch   build target (default: the running platform)
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
-  --filter=WHICH     all | public | internal: which packages take part
-                     (default all; see below)
-  --breaking         show only incompatible changes
+  --filter=WHICH     all | public | internal: which packages take part, and
+                     breaking: only incompatible changes; comma-separated or
+                     repeatable (default all; see below)
   --signatures=HOW   full | minimal: show each change as its old and new
                      declarations, or as one message line (default full)
   --pos              annotate changes with source positions (see below)
@@ -72,7 +71,9 @@ Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 ```
 
 Options take the GNU form, `--filter=all` or `--filter all`, and `--`
-ends them, so a revision that starts with a dash can follow it.
+ends them, so a revision that starts with a dash can follow it. The build
+target comes from `GOOS` and `GOARCH` in the environment, as for the `go`
+command, and defaults to the running platform.
 
 ### Choosing packages
 
@@ -117,7 +118,10 @@ internal: 1 package changed · 1 incompatible · 0 compatible
 `--filter=public` leaves the internal packages out entirely; an empty diff
 then reads `no exported API changes; add --filter=all to include internal
 API changes`. `--filter=internal` shows them alone, with only their summary
-line, so it never fails a build.
+line, so it never fails a build. `breaking` narrows the diff to
+incompatible changes and combines with the others, comma-separated or
+repeated: `--filter=public,breaking`, or `--filter internal --filter
+breaking`. The summary always counts the full diff.
 
 ### Since the last release
 
@@ -174,7 +178,7 @@ colors orange; a removal keeps its `-`:
 1 package changed · 2 incompatible · 1 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
 ````
 
-`--format=json` prints one document for tools and bots. `--breaking`
+`--format=json` prints one document for tools and bots. `--filter=breaking`
 filters the change lists in every format; the summary always counts the
 full diff.
 
@@ -461,7 +465,7 @@ it appears or disappears, since importers notice either way. A directory
 that becomes a nested module counts as removed. The summary line ends with
 the semantic version bump the changes would require: `MAJOR` if anything is
 incompatible, `MINOR` if only compatible changes were made, `PATCH` otherwise.
-The counts always describe the full diff, even with `--breaking`. When the
+The counts always describe the full diff, even with `--filter=breaking`. When the
 base is a release tag the summary also names the next version, see
 [Since the last release](#since-the-last-release).
 

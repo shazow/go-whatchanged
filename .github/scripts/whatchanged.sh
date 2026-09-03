@@ -138,12 +138,13 @@ revs=("$base")
 flags=(--filter "$INPUT_FILTER" --signatures "$INPUT_SIGNATURES")
 [ -z "$INPUT_PKG" ] || flags+=(--pkg "$(printf '%s' "$INPUT_PKG" | tr '\n' ,)")
 [ -z "$INPUT_EXCLUDE" ] || flags+=(--exclude "$(printf '%s' "$INPUT_EXCLUDE" | tr '\n' ,)")
-[ "$INPUT_BREAKING" != true ] || flags+=(--breaking)
+[ "$INPUT_BREAKING" != true ] || flags+=(--filter breaking)
 # shellcheck disable=SC2153 # INPUT_POS is an input, not a typo of INPUT_GOOS
 [ "$INPUT_POS" != true ] || flags+=(--pos)
 [ "$INPUT_STRICT" != true ] || flags+=(--strict)
-[ -z "$INPUT_GOOS" ] || flags+=(--goos "$INPUT_GOOS")
-[ -z "$INPUT_GOARCH" ] || flags+=(--goarch "$INPUT_GOARCH")
+# The build target is taken from the environment, as by the go command.
+[ -z "$INPUT_GOOS" ] || export GOOS="$INPUT_GOOS"
+[ -z "$INPUT_GOARCH" ] || export GOARCH="$INPUT_GOARCH"
 
 log "comparing $base with ${head:-the working tree}"
 warm_cache
