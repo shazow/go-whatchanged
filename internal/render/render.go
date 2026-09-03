@@ -188,26 +188,26 @@ func ParseSignatures(s string) (Signatures, error) {
 type Visibility int
 
 const (
+	// All selects every package: the public API and the internal packages.
+	All Visibility = iota
 	// Public selects the packages importable from outside the module:
 	// everything but internal packages.
-	Public Visibility = iota
+	Public
 	// Internal selects internal packages only.
 	Internal
-	// All selects both.
-	All
 )
 
-// ParseVisibility parses a --filter value: "public", "internal" or "all".
+// ParseVisibility parses a --filter value: "all", "public" or "internal".
 func ParseVisibility(s string) (Visibility, error) {
 	switch strings.ToLower(s) {
+	case "all":
+		return All, nil
 	case "public":
 		return Public, nil
 	case "internal":
 		return Internal, nil
-	case "all":
-		return All, nil
 	}
-	return 0, fmt.Errorf("invalid filter %q (want public, internal or all)", s)
+	return 0, fmt.Errorf("invalid filter %q (want all, public or internal)", s)
 }
 
 // Includes reports whether a package with the given internal status is
@@ -232,10 +232,11 @@ type Options struct {
 	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
-	// Filter says which packages took part: the public API's summary line
-	// is printed unless it is Internal, and the internal packages' summary
-	// line unless it is Public. Internal packages never count towards the
-	// public API's summary.
+	// Filter says which packages took part: the public API, its packages
+	// and summary line, is printed unless it is Internal, and the internal
+	// packages with their own summary line after it unless it is Public
+	// (with All, only when some internal package changed). Internal
+	// packages never count towards the public API's summary.
 	Filter Visibility
 }
 
@@ -345,10 +346,10 @@ func Write(w io.Writer, res Result, opts Options) error {
 
 // line is one change reduced to a glyph, a message ("Open: changed") and
 // the old and new declarations to show on "-" (from) and "+" (to) lines.
-// In the text layout the declarations stand in for the message; decls says
-// that from and to are declarations, as opposed to the bare types quoted in
-// a "changed from X to Y" message whose symbol could not be looked up on
-// both sides, which do not name the symbol.
+// In the text and Markdown layouts the declarations stand in for the
+// message; decls says that from and to are declarations, as opposed to the
+// bare types quoted in a "changed from X to Y" message whose symbol could
+// not be looked up on both sides, which do not name the symbol.
 type line struct {
 	glyph      string // "-", "!", "~" or "+"
 	head       string
@@ -356,23 +357,6 @@ type line struct {
 	decls      bool
 	pos        string // "" when unknown or not wanted
 	compatible bool
-}
-
-// message is the line's message with its glyph: "~ Open: changed".
-func (l line) message() string { return l.glyph + " " + l.head }
-
-// posText is the text the text layout appends l's position to: the
-// declaration the position locates when declarations are shown (the new
-// one, or the old one of a removal), and the message otherwise.
-func (l line) posText() string {
-	switch {
-	case !l.decls:
-		return l.message()
-	case l.to != "":
-		return "+ " + l.to
-	default:
-		return "- " + l.from
-	}
 }
 
 // describe reduces c to a line. With FullSignatures a removed symbol's
@@ -418,29 +402,86 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
-// packageLines returns the changes of p to show, honoring BreakingOnly.
-func packageLines(p Package, opts Options) []line {
-	lines := make([]line, 0, len(p.Changes))
+// role says what a row shows, which decides its color in the text layout.
+type role int
+
+const (
+	roleMessage role = iota // the apidiff message of a change
+	roleRemoved             // the declaration of a removed symbol
+	roleAdded               // the declaration of an added symbol
+	roleOld                 // the old declaration of a changed symbol
+	roleNew                 // the new declaration of a changed symbol
+)
+
+// row is one printed line of a change, as the text and Markdown layouts
+// share it: a glyph, the text after it and, on the one row that locates
+// the change, its position.
+type row struct {
+	glyph string // "-", "+", "~" or "!"
+	text  string // a declaration or a message
+	pos   string
+	role  role
+	// nested marks a bare type quoted under a message row: the X and Y of
+	// a "changed from X to Y" message whose symbol could not be looked up
+	// on both sides.
+	nested bool
+	// bold marks the row of an incompatible change that the text layout
+	// emphasizes and the Markdown layout, which has no bold inside a code
+	// block, marks with "!" instead.
+	bold bool
+}
+
+// label is the row as printed without color: the glyph and the text.
+func (r row) label() string { return r.glyph + " " + r.text }
+
+// rows lays l out as the text and Markdown layouts print it. A change with
+// declarations is the declarations alone, like a patch: a removal is its
+// old declaration on a "-" row, an addition its new one on a "+" row, and
+// a changed symbol is the pair, so that it reads as one edit rather than
+// as a removal and an addition. A change without declarations keeps its
+// message row ("package added", "T: no longer implements fmt.Stringer"),
+// with any bare types quoted in the message nested under it.
+func (l line) rows() []row {
+	bold := !l.compatible
+	if l.decls {
+		switch {
+		case l.from != "" && l.to != "":
+			return []row{
+				{glyph: "-", text: l.from, role: roleOld},
+				{glyph: "+", text: l.to, pos: l.pos, role: roleNew, bold: bold},
+			}
+		case l.from != "":
+			return []row{{glyph: "-", text: l.from, pos: l.pos, role: roleRemoved, bold: bold}}
+		default:
+			return []row{{glyph: "+", text: l.to, pos: l.pos, role: roleAdded, bold: bold}}
+		}
+	}
+	out := []row{{glyph: l.glyph, text: l.head, pos: l.pos, role: roleMessage, bold: bold}}
+	if l.from != "" {
+		out = append(out, row{glyph: "-", text: l.from, role: roleOld, nested: true})
+	}
+	if l.to != "" {
+		out = append(out, row{glyph: "+", text: l.to, role: roleNew, nested: true, bold: bold})
+	}
+	return out
+}
+
+// packageRows returns the rows of the changes of p to show, honoring
+// BreakingOnly, and the width of the widest labeled row among those that
+// carry a position, so that positions line up in a column.
+func packageRows(p Package, opts Options) (rows []row, width int) {
 	for _, c := range p.Changes {
 		if opts.BreakingOnly && c.Compatible {
 			continue
 		}
-		lines = append(lines, describe(c, opts))
-	}
-	return lines
-}
-
-// posWidth returns the width of the widest text among the lines that carry
-// a position, so that positions line up in a column; text says which of a
-// line's texts the layout appends the position to.
-func posWidth(lines []line, text func(line) string) int {
-	width := 0
-	for _, l := range lines {
-		if l.pos != "" {
-			width = max(width, utf8.RuneCountInString(text(l)))
+		for _, r := range describe(c, opts).rows() {
+			if r.pos != "" {
+				width = max(width, utf8.RuneCountInString(r.label()))
+			}
+			rows = append(rows, r)
 		}
 	}
-	return width
+	return rows, width
 }
 
 // padding returns the spaces that align a position after text at width.
@@ -465,105 +506,116 @@ func header(p Package) string {
 	return p.Path + " (" + strings.Join(notes, ", ") + ")"
 }
 
-func writeText(w io.Writer, res Result, opts Options) error {
-	st := Style{Enabled: opts.Color}
-	sum, isum := Summarize(res), SummarizeInternal(res)
+// section is one of the two halves of the text and Markdown layouts: the
+// public API or the internal packages, each its packages followed by its
+// summary line.
+type section struct {
+	internal bool
+	packages []Package // the ones with rows to show
+	summary  string    // the summary line, without markup
+	// secondary marks the internal section of an --filter=all diff, which
+	// the text layout dims and the Markdown layout italicizes.
+	secondary bool
+}
 
-	var b strings.Builder
-	first := true
-	for _, p := range res.Packages {
-		lines := packageLines(p, opts)
-		if len(lines) == 0 {
-			continue
+// sections splits res into the sections opts.Filter selects. The public
+// API comes first, reduced to its summary line when nothing changed, and
+// the internal packages after it; with All the internal section appears
+// only when some internal package changed.
+func sections(res Result, opts Options) []section {
+	var out []section
+	if opts.Filter != Internal {
+		sum := Summarize(res)
+		s := section{summary: noChanges(res, opts.Filter)}
+		if sum.PackagesChanged > 0 {
+			s.summary = ""
 		}
-		width := posWidth(lines, line.posText)
-		if !first {
-			b.WriteString("\n")
-		}
-		first = false
-		b.WriteString(st.Bold(header(p)))
-		b.WriteString("\n")
-		for _, l := range lines {
-			for _, s := range formatLine(st, l, width) {
-				b.WriteString(s)
-				b.WriteString("\n")
+		out = append(out, s)
+	}
+	if isum := SummarizeInternal(res); opts.Filter == Internal || (opts.Filter == All && isum.PackagesChanged > 0) {
+		out = append(out, section{internal: true, summary: internalSummary(isum), secondary: opts.Filter == All})
+	}
+	for i := range out {
+		for _, p := range res.Packages {
+			if p.Internal != out[i].internal {
+				continue
+			}
+			if rows, _ := packageRows(p, opts); len(rows) > 0 {
+				out[i].packages = append(out[i].packages, p)
 			}
 		}
 	}
+	return out
+}
 
-	if !first {
-		b.WriteString("\n")
-	}
-	if opts.Filter != Internal {
-		if sum.PackagesChanged == 0 {
-			b.WriteString(st.Dim(noChanges(res)))
-		} else {
-			b.WriteString(formatSummary(st, sum, res))
+func writeText(w io.Writer, res Result, opts Options) error {
+	st := Style{Enabled: opts.Color}
+	var b strings.Builder
+	for i, s := range sections(res, opts) {
+		if i > 0 {
+			b.WriteString("\n")
 		}
-		b.WriteString("\n")
-	}
-	if opts.Filter != Public {
-		line := internalSummary(isum)
-		if opts.Filter == All {
-			line = st.Dim(line) // secondary to the public API's line
+		for _, p := range s.packages {
+			rows, width := packageRows(p, opts)
+			b.WriteString(st.Bold(header(p)))
+			b.WriteString("\n")
+			for _, r := range rows {
+				indent := "  "
+				if r.nested {
+					indent = "      "
+				}
+				b.WriteString(indent + st.row(r))
+				if r.pos != "" {
+					b.WriteString(padding(r.label(), width) + "  " + st.Dim(r.pos))
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("\n")
 		}
-		b.WriteString(line)
+		switch {
+		case s.internal && s.secondary:
+			b.WriteString(st.Dim(s.summary)) // secondary to the public API's line
+		case s.internal:
+			b.WriteString(s.summary)
+		case s.summary != "":
+			b.WriteString(st.Dim(s.summary))
+		default:
+			b.WriteString(formatSummary(st, Summarize(res), res))
+		}
 		b.WriteString("\n")
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
 
-// formatLine maps a line to one or more indented, colored terminal lines.
-// A change with declarations is the declarations alone, like a patch: a
-// removal is its old declaration on a red "-" line, an addition its new one
-// on a green "+" line, both bold when incompatible, and a changed symbol is
-// the pair, the old declaration greyed out and the new one in orange (bold
-// when incompatible), so that it reads as one edit rather than as a removal
-// and an addition. A change without declarations keeps its message line
-// ("package added", "T: no longer implements fmt.Stringer"), with any bare
-// types quoted in the message under it.
-func formatLine(st Style, l line, width int) []string {
-	bold := !l.compatible
-	// located appends l's position, aligned at width, to painted, the
-	// colored form of text.
-	located := func(text, painted string) string {
-		if l.pos == "" {
-			return painted
-		}
-		return painted + padding(text, width) + "  " + st.Dim(l.pos)
+// row colors r for the terminal. A removal is red, an addition green, both
+// bold when incompatible; the old declaration of a changed symbol is
+// greyed out and the new one orange (bold when incompatible), so that the
+// pair reads as one edit. A message row is red for a removal or an
+// incompatible addition, green for a compatible addition, and otherwise
+// cyan, or yellow when incompatible.
+func (st Style) row(r row) string {
+	s := r.label()
+	switch r.role {
+	case roleRemoved:
+		return st.Red(s, r.bold)
+	case roleAdded:
+		return st.Green(s, r.bold)
+	case roleOld:
+		return st.Grey(s)
+	case roleNew:
+		return st.Orange(s, r.bold)
 	}
-	from, to := "- "+l.from, "+ "+l.to
-	if l.decls {
-		switch {
-		case l.from != "" && l.to != "":
-			return []string{"  " + st.Grey(from), "  " + located(to, st.Orange(to, bold))}
-		case l.from != "":
-			return []string{"  " + located(from, st.Red(from, bold))}
-		default:
-			return []string{"  " + located(to, st.Green(to, bold))}
-		}
-	}
-	// Removals and incompatible additions are red, compatible additions
-	// green, other changes cyan or, when incompatible, yellow.
 	code := codeYellow
 	switch {
-	case l.glyph == "-" || l.glyph == "!":
+	case r.glyph == "-" || r.glyph == "!":
 		code = codeRed
-	case l.glyph == "+":
+	case r.glyph == "+":
 		code = codeGreen
-	case l.compatible:
+	case !r.bold:
 		code = codeCyan
 	}
-	msg := l.message()
-	out := []string{"  " + located(msg, st.color(msg, bold, code))}
-	if l.from != "" {
-		out = append(out, "      "+st.Grey(from))
-	}
-	if l.to != "" {
-		out = append(out, "      "+st.Orange(to, bold))
-	}
-	return out
+	return st.color(s, r.bold, code)
 }
 
 // splitFromTo splits the "X to Y" that follows "changed from " in a message
@@ -615,13 +667,18 @@ func complete(s string) bool {
 	return depth == 0
 }
 
-// noChanges is the message for an empty diff, naming the base release when
-// there is one so that @latest shows what it resolved to.
-func noChanges(res Result) string {
+// noChanges is the message for an empty public diff, naming the base
+// release when there is one so that @latest shows what it resolved to, and
+// pointing at --filter=all when internal packages were left out.
+func noChanges(res Result, filter Visibility) string {
+	s := "no exported API changes"
 	if res.BaseVersion != "" {
-		return "no exported API changes since " + res.BaseVersion
+		s += " since " + res.BaseVersion
 	}
-	return "no exported API changes"
+	if filter == Public {
+		s += "; add --filter=all to include internal API changes"
+	}
+	return s
 }
 
 func formatSummary(st Style, sum Summary, res Result) string {
@@ -663,52 +720,47 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss changed", n, noun)
 }
 
-// writeMarkdown renders each package as a bold path followed by a fenced
-// diff block, which GitHub colors: "-" lines red, "+" lines green. An
-// incompatible change is marked "!" and a compatible one "~".
+// writeMarkdown renders the same rows as the text layout, each package as
+// a bold path followed by a fenced diff block, which GitHub colors: "-"
+// lines red, "+" lines green and "!" lines orange. Where the text layout
+// uses bold for an incompatible change, the row's "+" or "~" becomes "!"
+// (a removal keeps its "-"), so that a breaking change stands out in a
+// pull request comment too.
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
-	sum, isum := Summarize(res), SummarizeInternal(res)
-
 	var b strings.Builder
-	for _, p := range res.Packages {
-		lines := packageLines(p, opts)
-		if len(lines) == 0 {
-			continue
-		}
-		width := posWidth(lines, line.message)
-		fmt.Fprintf(&b, "**%s**\n\n```diff\n", header(p))
-		for _, l := range lines {
-			glyph := l.glyph
-			if glyph == "~" && !l.compatible {
-				glyph = "!"
-			}
-			b.WriteString(glyph + " " + l.head)
-			if l.pos != "" {
-				b.WriteString(padding(l.message(), width) + "  " + l.pos)
-			}
+	for i, s := range sections(res, opts) {
+		if i > 0 {
 			b.WriteString("\n")
-			if l.from != "" {
-				b.WriteString("-   " + l.from + "\n")
-			}
-			if l.to != "" {
-				b.WriteString("+   " + l.to + "\n")
-			}
 		}
-		b.WriteString("```\n\n")
-	}
-	if opts.Filter != Internal {
-		if sum.PackagesChanged == 0 {
-			fmt.Fprintf(&b, "_%s_\n", noChanges(res))
-		} else {
+		for _, p := range s.packages {
+			rows, width := packageRows(p, opts)
+			fmt.Fprintf(&b, "**%s**\n\n```diff\n", header(p))
+			for _, r := range rows {
+				glyph, sep := r.glyph, " "
+				if r.bold && glyph != "-" {
+					glyph = "!"
+				}
+				if r.nested {
+					sep = "   "
+				}
+				b.WriteString(glyph + sep + r.text)
+				if r.pos != "" {
+					b.WriteString(padding(r.label(), width) + "  " + r.pos)
+				}
+				b.WriteString("\n")
+			}
+			b.WriteString("```\n\n")
+		}
+		switch {
+		case s.internal && s.secondary, !s.internal && s.summary != "":
+			fmt.Fprintf(&b, "_%s_\n", s.summary)
+		case s.internal:
+			fmt.Fprintf(&b, "%s\n", s.summary)
+		default:
+			sum := Summarize(res)
 			fmt.Fprintf(&b, "%s · %d incompatible · %d compatible · would require: **%s**%s\n",
 				plural(sum.PackagesChanged, "package"), sum.Incompatible, sum.Compatible, sum.Release(), versions(res))
 		}
-	}
-	switch opts.Filter {
-	case All:
-		fmt.Fprintf(&b, "\n_%s_\n", internalSummary(isum))
-	case Internal:
-		fmt.Fprintf(&b, "%s\n", internalSummary(isum))
 	}
 	_, err := io.WriteString(w, b.String())
 	return err

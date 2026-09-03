@@ -23,4 +23,10 @@ example.com/m/util
   + type Stringer = fmt.Stringer  util/util.go:10:6
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
+
+example.com/m/internal/hidden (internal)
+  - func Hidden()  v1.0.0:internal/hidden/hidden.go:3:6
+  + func Added()   internal/hidden/hidden.go:5:6
+
+internal: 1 package changed · 1 incompatible · 1 compatible
 # stderr

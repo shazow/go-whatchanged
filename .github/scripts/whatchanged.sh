@@ -181,10 +181,11 @@ if [ "$INPUT_SUMMARY" = true ]; then
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
-# The summary lines are whatever follows the last fenced block, minus the
-# markdown emphasis.
-summary=$(awk '/^```/ {buf = ""; next} {buf = buf $0 "\n"} END {printf "%s", buf}' "$md" |
-  sed -e '/^$/d' -e 's/\*\*//g' -e 's/^_\(.*\)_$/\1/')
+# The summary lines are everything outside the fenced blocks that is not a
+# package heading, minus the markdown emphasis: the public API's line and,
+# when internal packages changed, theirs.
+summary=$(awk '/^```/ {fence = !fence; next} fence || /^\*\*/ || /^$/ {next} {print}' "$md" |
+  sed -e 's/\*\*//g' -e 's/^_\(.*\)_$/\1/')
 
 delim="go-whatchanged-$RANDOM$RANDOM"
 {

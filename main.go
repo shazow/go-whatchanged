@@ -5,29 +5,22 @@
 package main
 
 import (
-	"flag"
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
 	"runtime/debug"
 	"strings"
 
+	"github.com/jessevdk/go-flags"
 	"golang.org/x/term"
 
 	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
 
-const usage = `usage: go-whatchanged [flags] [<base> [<head>]]
-
-Show how the exported API of the Go module differs between <base> and <head>.
+const description = `Show how the exported API of the Go module differs between <base> and <head>.
 With no arguments, compare HEAD against the working tree: what your
 uncommitted changes do to the API.
-
-  base   optional commit-ish for the old side (hash, tag, branch, HEAD~2, ...),
-         or @latest for the newest release tag (v1.2.3) among the ancestors
-         of the head commit; default: HEAD
-  head   optional commit-ish for the new side; default: the working tree,
-         including uncommitted and untracked files
 
 When the base is a release tag, the summary also names the version the
 changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
@@ -36,112 +29,66 @@ changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
 matching anything: "store/..." is the store package and everything below
 it. Both may be repeated or given comma-separated lists.
 
+--filter=all, the default, lists the public API first and the internal
+packages after it; internal packages never count towards the summary, the
+required release or the exit code.
+
 The tool never writes to disk and never runs the go command.
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 
 With --exit-fail=LEVEL the exit code names the semantic version bump the
-changes would require, when it is LEVEL or higher:
-  100 major · 101 minor · 102 patch
-(--exit-fail=patch is therefore always non-zero, unless there is an error.)
+changes would require, when it is LEVEL or higher: 100 for major, 101 for
+minor and 102 for patch (--exit-fail=patch is therefore always non-zero,
+unless there is an error).`
 
-Flags:
-`
+// options is the command line, as go-flags parses it.
+type options struct {
+	Repo       string   `long:"repo" value-name:"DIR" description:"path inside a git repository (default: current directory)"`
+	GOOS       string   `long:"goos" value-name:"OS" description:"build target OS (default: the running platform's)"`
+	GOARCH     string   `long:"goarch" value-name:"ARCH" description:"build target architecture (default: the running platform's)"`
+	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (repeatable, or comma-separated)"`
+	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (repeatable, or comma-separated)"`
+	Filter     string   `long:"filter" choice:"all" choice:"public" choice:"internal" default:"all" description:"packages to diff (internal ones never count in the summary or exit code)"`
+	Breaking   bool     `long:"breaking" description:"show only incompatible changes"`
+	Signatures string   `long:"signatures" choice:"full" choice:"minimal" default:"full" description:"show each change as its declarations (full) or as one message line (minimal)"`
+	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
+	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output layout"`
+	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
+	Strict     bool     `long:"strict" description:"treat type-check errors as fatal"`
+	ExitFail   string   `long:"exit-fail" choice:"major" choice:"minor" choice:"patch" description:"exit 100/101/102 when the required bump is major, minor or patch, or higher"`
+	Version    bool     `long:"version" description:"print the version of go-whatchanged and exit"`
+
+	Args struct {
+		Base string `positional-arg-name:"base" description:"commit-ish for the old side (hash, tag, branch, HEAD~2, ...), or @latest for the newest release tag (v1.2.3) among the ancestors of the head commit (default: HEAD)"`
+		Head string `positional-arg-name:"head" description:"commit-ish for the new side (default: the working tree, including uncommitted and untracked files)"`
+	} `positional-args:"yes"`
+}
 
 func main() {
 	os.Exit(run(os.Args[1:]))
 }
 
 func run(args []string) int {
-	fs := flag.NewFlagSet("go-whatchanged", flag.ContinueOnError)
-	fs.SetOutput(os.Stderr)
-	fs.Usage = func() {
-		fmt.Fprint(os.Stderr, usage)
-		fs.PrintDefaults()
-	}
-	var opts whatchanged.Options
-	var color, exitFail, format, signatures, filter string
-	var showVersion bool
-	fs.StringVar(&opts.Repo, "repo", "", "path inside a git repository (default: current directory)")
-	fs.StringVar(&opts.GOOS, "goos", runtime.GOOS, "build target OS")
-	fs.StringVar(&opts.GOARCH, "goarch", runtime.GOARCH, "build target architecture")
-	fs.BoolVar(&opts.Breaking, "breaking", false, "show only incompatible changes")
-	fs.Var((*patterns)(&opts.Packages), "pkg", "diff only packages matching `pattern` (repeatable)")
-	fs.Var((*patterns)(&opts.Exclude), "exclude", "skip packages matching `pattern` (repeatable)")
-	fs.StringVar(&filter, "filter", "public", "packages to diff: public, internal or all (internal ones never count in the summary or exit code)")
-	fs.BoolVar(&opts.Positions, "pos", false, "annotate each change with its source position")
-	fs.StringVar(&signatures, "signatures", "full", "show each change as its declarations (full) or as one message line (minimal)")
-	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
-	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
-	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")
-	fs.StringVar(&format, "format", "text", "output layout: text, markdown (md) or json")
-	fs.BoolVar(&showVersion, "version", false, "print the version of go-whatchanged and exit")
-	if err := fs.Parse(args); err != nil {
-		if err == flag.ErrHelp {
+	o, err := parseArgs(args)
+	if err != nil {
+		var ferr *flags.Error
+		if errors.As(err, &ferr) && ferr.Type == flags.ErrHelp {
+			fmt.Fprintln(os.Stdout, ferr.Message)
 			return whatchanged.ExitClean
 		}
+		fmt.Fprintf(os.Stderr, "go-whatchanged: %v\n", err)
 		return whatchanged.ExitError
 	}
-	if showVersion {
+	if o.Version {
 		fmt.Println(version())
 		return whatchanged.ExitClean
 	}
-
-	switch color {
-	case "always":
-		opts.Color = true
-	case "never":
-		opts.Color = false
-	case "auto":
-		opts.Color = autoColor()
-	default:
-		fmt.Fprintf(os.Stderr, "go-whatchanged: invalid --color value %q (want auto, always or never)\n", color)
-		return whatchanged.ExitError
-	}
-
-	if exitFail != "" {
-		fail, err := whatchanged.ParseFailOn(exitFail)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "go-whatchanged: --exit-fail: %v\n", err)
-			return whatchanged.ExitError
-		}
-		opts.ExitFail = fail
-	}
-
-	f, err := whatchanged.ParseFormat(format)
+	opts, err := o.whatchanged()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "go-whatchanged: --format: %v\n", err)
+		fmt.Fprintf(os.Stderr, "go-whatchanged: %v\n", err)
 		return whatchanged.ExitError
 	}
-	opts.Format = f
-
-	sig, err := whatchanged.ParseSignatures(signatures)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "go-whatchanged: --signatures: %v\n", err)
-		return whatchanged.ExitError
-	}
-	opts.Signatures = sig
-
-	vis, err := whatchanged.ParseFilter(filter)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "go-whatchanged: --filter: %v\n", err)
-		return whatchanged.ExitError
-	}
-	opts.Filter = vis
-
-	switch fs.NArg() {
-	case 0:
-		// Base defaults to HEAD inside whatchanged.Run.
-	case 1:
-		opts.Base = fs.Arg(0)
-	case 2:
-		opts.Base = fs.Arg(0)
-		opts.Head = fs.Arg(1)
-	default:
-		fs.Usage()
-		return whatchanged.ExitError
-	}
-
 	opts.Stdout = os.Stdout
 	opts.Stderr = os.Stderr
 	code, err := whatchanged.Run(opts)
@@ -151,12 +98,74 @@ func run(args []string) int {
 	return code
 }
 
+// parseArgs parses the command line. A --help request comes back as a
+// flags.Error of type flags.ErrHelp whose message is the help text.
+func parseArgs(args []string) (*options, error) {
+	o := &options{}
+	// PrintErrors is deliberately left out: run is the single place parse
+	// errors get printed, so they never appear twice.
+	p := flags.NewParser(o, flags.HelpFlag|flags.PassDoubleDash)
+	p.Name = "go-whatchanged"
+	p.Usage = "[OPTIONS]"
+	p.LongDescription = description
+	rest, err := p.ParseArgs(args)
+	if err != nil {
+		return nil, err
+	}
+	if len(rest) > 0 {
+		return nil, fmt.Errorf("too many arguments: %s (want [<base> [<head>]])", strings.Join(rest, " "))
+	}
+	return o, nil
+}
+
+// whatchanged converts the parsed command line into run options.
+func (o *options) whatchanged() (whatchanged.Options, error) {
+	opts := whatchanged.Options{
+		Repo:      o.Repo,
+		GOOS:      o.GOOS,
+		GOARCH:    o.GOARCH,
+		Packages:  o.Pkg,
+		Exclude:   o.Exclude,
+		Breaking:  o.Breaking,
+		Positions: o.Pos,
+		Strict:    o.Strict,
+		Base:      o.Args.Base,
+		Head:      o.Args.Head,
+	}
+	switch o.Color {
+	case "always":
+		opts.Color = true
+	case "never":
+		opts.Color = false
+	default:
+		opts.Color = autoColor()
+	}
+	if o.ExitFail != "" {
+		fail, err := whatchanged.ParseFailOn(o.ExitFail)
+		if err != nil {
+			return opts, fmt.Errorf("--exit-fail: %w", err)
+		}
+		opts.ExitFail = fail
+	}
+	var err error
+	if opts.Format, err = whatchanged.ParseFormat(o.Format); err != nil {
+		return opts, fmt.Errorf("--format: %w", err)
+	}
+	if opts.Signatures, err = whatchanged.ParseSignatures(o.Signatures); err != nil {
+		return opts, fmt.Errorf("--signatures: %w", err)
+	}
+	if opts.Filter, err = whatchanged.ParseFilter(o.Filter); err != nil {
+		return opts, fmt.Errorf("--filter: %w", err)
+	}
+	return opts, nil
+}
+
 // patterns collects a repeatable, comma-separated pattern flag.
 type patterns []string
 
-func (p *patterns) String() string { return strings.Join(*p, ",") }
-
-func (p *patterns) Set(s string) error {
+// UnmarshalFlag adds the patterns of one flag occurrence, implementing
+// flags.Unmarshaler.
+func (p *patterns) UnmarshalFlag(s string) error {
 	for v := range strings.SplitSeq(s, ",") {
 		if v = strings.TrimSpace(v); v != "" {
 			*p = append(*p, v)
@@ -164,6 +173,9 @@ func (p *patterns) Set(s string) error {
 	}
 	return nil
 }
+
+// MarshalFlag implements flags.Marshaler.
+func (p patterns) MarshalFlag() (string, error) { return strings.Join(p, ","), nil }
 
 // version describes this build: the module version go install recorded (or
 // the VCS-derived version of a go build), and the Go release it was built

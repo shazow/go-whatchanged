@@ -19,4 +19,10 @@ example.com/m/util
   ~ Stringer: changed from Stringer to fmt.Stringer
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
+
+example.com/m/internal/hidden (internal)
+  - Hidden: removed
+  + Added: added
+
+internal: 1 package changed · 1 incompatible · 1 compatible
 # stderr
