@@ -147,7 +147,7 @@ const (
 	JSON
 )
 
-// ParseFormat parses a --format value: "text", "markdown" or "json".
+// ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
 func ParseFormat(s string) (Format, error) {
 	switch strings.ToLower(s) {
 	case "text":

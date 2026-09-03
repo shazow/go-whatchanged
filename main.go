@@ -74,7 +74,7 @@ func run(args []string) int {
 	fs.StringVar(&color, "color", "auto", "colorize output: auto, always or never (auto honors NO_COLOR)")
 	fs.BoolVar(&opts.Strict, "strict", false, "treat type-check errors as fatal")
 	fs.StringVar(&exitFail, "exit-fail", "", "exit 100/101/102 when the required bump is major, minor or patch, or higher")
-	fs.StringVar(&format, "format", "text", "output layout: text, markdown or json")
+	fs.StringVar(&format, "format", "text", "output layout: text, markdown (md) or json")
 	fs.BoolVar(&showVersion, "version", false, "print the version of go-whatchanged and exit")
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {

@@ -122,7 +122,7 @@ func ParseFailOn(s string) (FailOn, error) {
 	}
 }
 
-// ParseFormat parses a --format value: "text", "markdown" or "json".
+// ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
 func ParseFormat(s string) (render.Format, error) {
 	return render.ParseFormat(s)
 }
