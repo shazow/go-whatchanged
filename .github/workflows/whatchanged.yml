@@ -1,10 +1,11 @@
-name: What changed
+name: go-whatchanged
 
 on:
   pull_request:
 
 permissions:
   contents: read
+  pull-requests: write # for the comment
 
 jobs:
   api:
@@ -21,3 +22,5 @@ jobs:
       # its packages are internal or main, which the default filter, all,
       # includes.
       - uses: ./
+        with:
+          comment: true

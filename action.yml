@@ -1,7 +1,8 @@
 name: go-whatchanged
 description: >-
   What changed in the public API? A semantic diff of a Go module's exported
-  API between two revisions, written to the job summary.
+  API between two revisions, written to the job summary and, when asked,
+  posted as a pull request comment.
 author: shazow
 branding:
   icon: git-pull-request
@@ -89,6 +90,18 @@ inputs:
     description: Heading above the diff in the job summary. Empty for none.
     required: false
     default: API changes
+  comment:
+    description: >-
+      Post the diff as a pull request comment, folded under its summary
+      line, and update that comment on every later push. Needs
+      pull-requests: write. The first comment waits until there is
+      something to show.
+    required: false
+    default: "false"
+  token:
+    description: The token for the pull request comment.
+    required: false
+    default: ${{ github.token }}
 
 outputs:
   release:
@@ -158,5 +171,8 @@ runs:
         INPUT_FAIL_ON: ${{ inputs.fail-on }}
         INPUT_SUMMARY: ${{ inputs.summary }}
         INPUT_TITLE: ${{ inputs.title }}
+        INPUT_COMMENT: ${{ inputs.comment }}
+        GH_TOKEN: ${{ inputs.token }}
         PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
       run: bash "$GITHUB_ACTION_PATH/.github/scripts/whatchanged.sh"
