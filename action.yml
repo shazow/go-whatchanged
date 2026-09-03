@@ -1,0 +1,160 @@
+name: go-whatchanged
+description: >-
+  What changed in the public API? A semantic diff of a Go module's exported
+  API between two revisions, written to the job summary.
+author: shazow
+branding:
+  icon: git-pull-request
+  color: blue
+
+inputs:
+  base:
+    description: >-
+      Commit-ish for the old side (hash, tag, branch, HEAD~2, ...) or @latest
+      for the newest release tag among the ancestors of head. Default: on a
+      pull_request event, the merge-base of head and the base branch;
+      otherwise @latest.
+    required: false
+    default: ""
+  head:
+    description: >-
+      Commit-ish for the new side. Empty means the working tree, including
+      uncommitted files.
+    required: false
+    default: HEAD
+  working-directory:
+    description: Directory of the module to diff, inside the checkout.
+    required: false
+    default: "."
+  pkg:
+    description: >-
+      Diff only packages matching these patterns, comma- or newline-separated:
+      import paths or module-relative paths, where "..." matches anything
+      ("store/..." is the store package and everything below it).
+    required: false
+    default: ""
+  exclude:
+    description: Skip packages matching these patterns (same syntax as pkg).
+    required: false
+    default: ""
+  filter:
+    description: >-
+      Which packages take part: public (the importable API), internal or all.
+      Internal packages are listed but never count towards the summary, the
+      outputs or fail-on.
+    required: false
+    default: public
+  breaking:
+    description: >-
+      Show only incompatible changes. The counts still describe the full diff.
+    required: false
+    default: "false"
+  signatures:
+    description: >-
+      full shows each symbol's declaration under its change; minimal prints
+      one line per change.
+    required: false
+    default: full
+  pos:
+    description: Annotate each change with the source position of its declaration.
+    required: false
+    default: "false"
+  strict:
+    description: Treat type-check errors as fatal instead of warnings.
+    required: false
+    default: "false"
+  goos:
+    description: Build target OS. Default is the runner's.
+    required: false
+    default: ""
+  goarch:
+    description: Build target architecture. Default is the runner's.
+    required: false
+    default: ""
+  fail-on:
+    description: >-
+      Fail the step when the changes would require this release level or
+      higher: major (incompatible changes), minor (also compatible additions)
+      or patch (any change at all). Empty never fails. The summary and the
+      outputs are written either way.
+    required: false
+    default: ""
+  summary:
+    description: Append the diff to the job summary.
+    required: false
+    default: "true"
+  title:
+    description: Heading above the diff in the job summary. Empty for none.
+    required: false
+    default: API changes
+
+outputs:
+  release:
+    description: >-
+      The release the changes would require: major, minor or patch (patch
+      means no changes).
+    value: ${{ steps.diff.outputs.release }}
+  packages-changed:
+    description: Number of packages with changes.
+    value: ${{ steps.diff.outputs.packages-changed }}
+  incompatible:
+    description: Number of incompatible changes.
+    value: ${{ steps.diff.outputs.incompatible }}
+  compatible:
+    description: Number of compatible changes.
+    value: ${{ steps.diff.outputs.compatible }}
+  base:
+    description: >-
+      The old side as diffed: the tag @latest resolved to, or the revision
+      given or defaulted.
+    value: ${{ steps.diff.outputs.base }}
+  head:
+    description: The new side as diffed, or "working tree".
+    value: ${{ steps.diff.outputs.head }}
+  base-version:
+    description: The base release tag, when the base is one.
+    value: ${{ steps.diff.outputs.base-version }}
+  next-version:
+    description: The version the changes call for, when the base is a release tag.
+    value: ${{ steps.diff.outputs.next-version }}
+  summary:
+    description: The summary line(s) as plain text.
+    value: ${{ steps.diff.outputs.summary }}
+  markdown:
+    description: The whole report as markdown, ready for a pull request comment.
+    value: ${{ steps.diff.outputs.markdown }}
+  json:
+    description: The whole report as JSON (see --format=json in the README).
+    value: ${{ steps.diff.outputs.json }}
+
+runs:
+  using: composite
+  steps:
+    # Built from this action's own checkout, so the ref that pins the action
+    # also picks the version of the tool. Needs a Go toolchain on PATH.
+    - name: Build go-whatchanged
+      shell: bash
+      run: |
+        cd "$GITHUB_ACTION_PATH"
+        go build -o "$RUNNER_TEMP/go-whatchanged/" .
+    - name: Diff the API
+      id: diff
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      env:
+        INPUT_BASE: ${{ inputs.base }}
+        INPUT_HEAD: ${{ inputs.head }}
+        INPUT_PKG: ${{ inputs.pkg }}
+        INPUT_EXCLUDE: ${{ inputs.exclude }}
+        INPUT_FILTER: ${{ inputs.filter }}
+        INPUT_BREAKING: ${{ inputs.breaking }}
+        INPUT_SIGNATURES: ${{ inputs.signatures }}
+        INPUT_POS: ${{ inputs.pos }}
+        INPUT_STRICT: ${{ inputs.strict }}
+        INPUT_GOOS: ${{ inputs.goos }}
+        INPUT_GOARCH: ${{ inputs.goarch }}
+        INPUT_FAIL_ON: ${{ inputs.fail-on }}
+        INPUT_SUMMARY: ${{ inputs.summary }}
+        INPUT_TITLE: ${{ inputs.title }}
+        PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+      run: bash "$GITHUB_ACTION_PATH/.github/scripts/whatchanged.sh"

@@ -1,0 +1,24 @@
+name: What changed
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  api:
+    name: API changes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # history, for the merge-base with the base branch
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      # Dogfood: the action from this very checkout, on this module. All of
+      # its packages are internal, so only --filter=all shows anything.
+      - uses: ./
+        with:
+          filter: all
