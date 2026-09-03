@@ -23,19 +23,23 @@ type Package struct {
 	// module is "internal": the package is importable only from within the
 	// module and is not part of its public API.
 	Internal bool
+	// Main is set for a main package: a command, which nothing can import
+	// and which is therefore not part of the module's public API either.
+	Main bool
 }
 
 // Packages walks root and returns every package that contributes to the
 // module's exported API, keyed by import path. Directories named testdata
 // or vendor, directories starting with "." or "_", and nested modules are
-// skipped, as are main packages and directories without buildable Go files.
-// Directories named internal are skipped too unless internal is set, in
-// which case their packages are returned with Internal marked.
+// skipped, as are directories without buildable Go files. Main packages are
+// skipped too unless main is set, in which case they are returned with Main
+// marked, and directories named internal unless internal is set, in which
+// case their packages are returned with Internal marked.
 //
 // Directories that cannot be imported for reasons other than having no Go
 // files (for instance, several package clauses in one directory) are
 // reported in problems and otherwise skipped.
-func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal bool) (pkgs map[string]Package, problems map[string]string, err error) {
+func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal, main bool) (pkgs map[string]Package, problems map[string]string, err error) {
 	pkgs = map[string]Package{}
 	problems = map[string]string{}
 	var walk func(dir, rel string, isInternal bool) error
@@ -47,8 +51,8 @@ func Packages(ctxt *build.Context, fsys FS, root, modPath string, internal bool)
 		bp, ierr := ctxt.ImportDir(dir, 0)
 		switch ierr.(type) {
 		case nil:
-			if bp.Name != "main" && len(bp.GoFiles) > 0 {
-				pkgs[importPath] = Package{Dir: dir, Build: bp, Internal: isInternal}
+			if (bp.Name != "main" || main) && len(bp.GoFiles) > 0 {
+				pkgs[importPath] = Package{Dir: dir, Build: bp, Internal: isInternal, Main: bp.Name == "main"}
 			}
 		case *build.NoGoError:
 			// Nothing to diff here; still descend.

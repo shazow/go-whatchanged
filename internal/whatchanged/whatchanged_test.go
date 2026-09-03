@@ -1956,3 +1956,55 @@ func TestParseSignatures(t *testing.T) {
 		t.Error("ParseSignatures accepted short")
 	}
 }
+
+func TestFilterMainPackages(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.write("cmd/m/main.go", "package main\n\nfunc Version() string { return \"1\" }\n\nfunc main() {}\n")
+	f.write("internal/cmd/tool/main.go", "package main\n\nfunc Run() {}\n\nfunc main() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Added() {}\n")
+	f.write("cmd/m/main.go", "package main\n\nfunc main() {}\n")
+	f.write("internal/cmd/tool/main.go", "package main\n\nfunc Run() {}\n\nfunc Also() {}\n\nfunc main() {}\n")
+
+	// Main packages do not exist unless asked for.
+	r := f.mustRun("HEAD", "", Options{})
+	if want := "example.com/m/a\n  + func Added()\n\n1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n"; r.stdout != want {
+		t.Errorf("default: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// --filter=main adds them to the internal section, marked; they never
+	// count towards the public summary, the release or the exit code.
+	r = f.mustRun("HEAD", "", Options{Main: true, ExitFail: FailMajor})
+	want := "example.com/m/a\n  + func Added()\n\n" +
+		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n\n" +
+		"example.com/m/cmd/m (main)\n  - func Version() string\n\n" +
+		"example.com/m/internal/cmd/tool (internal, main)\n  + func Also()\n\n" +
+		"internal: 2 packages changed · 1 incompatible · 1 compatible\n"
+	if r.stdout != want {
+		t.Errorf("main: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("main: exit = %d, want %d", r.code, ExitClean)
+	}
+
+	// --filter=public,main: the importable API, then the commands alone;
+	// public still leaves internal directories out, commands included.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Main: true})
+	want = "example.com/m/a\n  + func Added()\n\n" +
+		"1 package changed · 0 incompatible · 1 compatible · would require: MINOR\n\n" +
+		"example.com/m/cmd/m (main)\n  - func Version() string\n\n" +
+		"internal: 1 package changed · 1 incompatible · 0 compatible\n"
+	if r.stdout != want {
+		t.Errorf("public,main: stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// JSON marks them and counts them under summary.internal.
+	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Main: true, Format: render.JSON})
+	mustContain(t, r.stdout, `"main": true`, `"path": "example.com/m/cmd/m"`)
+	mustNotContain(t, r.stdout, `"internal": true`)
+	if !strings.Contains(r.stdout, "\"internal\": {\n") {
+		t.Errorf("public,main json: no summary.internal in %s", r.stdout)
+	}
+}

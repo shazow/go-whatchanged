@@ -33,8 +33,10 @@ it. Both may be repeated or given comma-separated lists.
 
 --filter=all, the default, lists the public API first and the internal
 packages after it; internal packages never count towards the summary, the
-required release or the exit code. --filter=breaking narrows the diff to
-incompatible changes and combines with the others: --filter=public,breaking.
+required release or the exit code. --filter=main adds main packages
+(commands), which nothing can import and which are listed with the internal
+packages. --filter=breaking narrows the diff to incompatible changes. Both
+combine with the others: --filter=public,breaking or --filter=all,main.
 
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
@@ -53,7 +55,7 @@ type options struct {
 	Repo       string   `long:"repo" value-name:"DIR" description:"path inside a git repository (default: current directory)"`
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
-	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, public or internal, and breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, public or internal, plus main to include main packages and breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Signatures string   `long:"signatures" choice:"full" choice:"minimal" default:"full" description:"show each change as its declarations (full) or as one message line (minimal)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
@@ -131,6 +133,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Exclude:   o.Exclude,
 		Filter:    o.Filter.visibility(),
 		Breaking:  o.Filter.breaking(),
+		Main:      o.Filter.main(),
 		Positions: o.Pos,
 		Strict:    o.Strict,
 		Base:      o.Args.Base,
@@ -163,8 +166,8 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
 // "all", "public" or "internal" say which packages take part (the last
-// two add up to all) and "breaking" narrows the diff to incompatible
-// changes. It is a slice so that go-flags drops the default when the flag
+// two add up to all), "main" adds main packages and "breaking" narrows the
+// diff to incompatible changes. It is a slice so that go-flags drops the default when the flag
 // is given.
 type filter []string
 
@@ -176,10 +179,10 @@ func (f *filter) UnmarshalFlag(s string) error {
 		switch term {
 		case "":
 			continue
-		case "all", "public", "internal", "breaking":
+		case "all", "public", "internal", "main", "breaking":
 			*f = append(*f, term)
 		default:
-			return fmt.Errorf("invalid filter %q (want all, public, internal or breaking)", term)
+			return fmt.Errorf("invalid filter %q (want all, public, internal, main or breaking)", term)
 		}
 	}
 	return nil
@@ -204,6 +207,9 @@ func (f filter) visibility() render.Visibility {
 
 // breaking reports whether only incompatible changes are wanted.
 func (f filter) breaking() bool { return slices.Contains(f, "breaking") }
+
+// main reports whether main packages take part.
+func (f filter) main() bool { return slices.Contains(f, "main") }
 
 // patterns collects a repeatable, comma-separated pattern flag.
 type patterns []string

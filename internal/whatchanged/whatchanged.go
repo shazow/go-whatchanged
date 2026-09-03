@@ -53,6 +53,10 @@ type Options struct {
 	// marked, but never count towards the public API's summary, the
 	// required release or the exit code.
 	Filter render.Visibility
+	// Main adds main packages (commands) to the selection. Nothing can
+	// import them, so they are listed with the internal packages and
+	// never count towards the public API's summary either.
+	Main bool
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Signatures selects whether each change shows the symbol's
@@ -301,6 +305,7 @@ type side struct {
 	ld        *loader.Loader
 	pkgs      map[string]*types.Package
 	internal  map[string]bool // import paths of internal packages
+	main      map[string]bool // import paths of main packages
 	all       []string        // every import path Options.Filter selects, before Options.Packages and Exclude
 	problem   map[string]string
 	notes     []string // module-level warnings, reported under the module path
@@ -458,17 +463,18 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 			res.GoVersion(), limit, limit))
 	}
 
-	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), opts.Filter != render.Public)
+	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), opts.Filter != render.Public, opts.Main)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
 	s.problem = problems
 	s.pkgs = make(map[string]*types.Package, len(found))
 	s.internal = make(map[string]bool)
+	s.main = make(map[string]bool)
 	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
-		if !opts.Filter.Includes(found[p].Internal) {
+		if !found[p].Main && !opts.Filter.Includes(found[p].Internal) {
 			continue
 		}
 		s.all = append(s.all, p)
@@ -485,6 +491,7 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 		}
 		s.pkgs[p] = pkg
 		s.internal[p] = found[p].Internal
+		s.main[p] = found[p].Main
 	}
 	if err := s.ld.Err(); err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
@@ -521,7 +528,7 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 	for _, p := range slices.Sorted(maps.Keys(union)) {
 		old, inBase := base.pkgs[p]
 		nw, inHead := head.pkgs[p]
-		pkg := render.Package{Path: p, Internal: base.internal[p] || head.internal[p]}
+		pkg := render.Package{Path: p, Internal: base.internal[p] || head.internal[p], Main: base.main[p] || head.main[p]}
 		switch {
 		case inBase && inHead:
 			pkg.Status = render.Both
