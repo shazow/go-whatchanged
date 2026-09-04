@@ -732,6 +732,12 @@ func padding(text string, width int) string {
 }
 
 func header(p Package) string {
+	return p.Path + notes(p)
+}
+
+// notes is the parenthesized suffix of a package's header, " (internal,
+// new)", or "" when there is nothing to note.
+func notes(p Package) string {
 	var notes []string
 	if p.Internal {
 		notes = append(notes, "internal")
@@ -746,9 +752,9 @@ func header(p Package) string {
 		notes = append(notes, "removed")
 	}
 	if len(notes) == 0 {
-		return p.Path
+		return ""
 	}
-	return p.Path + " (" + strings.Join(notes, ", ") + ")"
+	return " (" + strings.Join(notes, ", ") + ")"
 }
 
 // section is one part of the text and Markdown layouts: the public API,
@@ -975,10 +981,12 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss changed", n, noun)
 }
 
-// writeMarkdown renders each package as a bold path followed by a fenced
-// Go block, which GitHub highlights as Go: keywords, types, strings and
-// comments each in their own color. A code block cannot color a whole
-// line, so the diff's own signal lives in comments; see goBlock.
+// writeMarkdown renders each package as a level-3 heading, its path in
+// code, followed by a fenced Go block, which GitHub highlights as Go:
+// keywords, types, strings and comments each in their own color. A code
+// block cannot color a whole line, so the diff's own signal lives in
+// comments; see goBlock. The headings nest under the level-2 title the
+// action puts above the report.
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	var b strings.Builder
 	for i, s := range sections(res, opts) {
@@ -986,7 +994,7 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		for _, p := range s.packages {
-			fmt.Fprintf(&b, "**%s**\n\n", header(p))
+			fmt.Fprintf(&b, "### `%s`%s\n\n", p.Path, notes(p))
 			goBlock(&b, p, opts)
 			b.WriteString("\n")
 		}

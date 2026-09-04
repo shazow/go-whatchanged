@@ -1,26 +1,26 @@
 # stdout
-**example.com/m/deps**
+### `example.com/m/deps`
 
 ```go
 // Added
 import "example.com/dep"
 ```
 
-**example.com/m/fresh (new)**
+### `example.com/m/fresh` (new)
 
 ```go
 // Added
 func Hello()
 ```
 
-**example.com/m/gone (removed)**
+### `example.com/m/gone` (removed)
 
 ```go
 // Removed
 func Gone()
 ```
 
-**example.com/m/store**
+### `example.com/m/store`
 
 ```go
 // Removed
@@ -48,7 +48,7 @@ type Point struct {
 }
 ```
 
-**example.com/m/util**
+### `example.com/m/util`
 
 ```go
 // Changed
@@ -61,7 +61,7 @@ func (Sizer) Size() int // incompatible
 
 4 packages changed · 7 incompatible · 4 compatible · would require: **MAJOR** (v1.0.0 → v2.0.0)
 
-**example.com/m/internal/hidden (internal)**
+### `example.com/m/internal/hidden` (internal)
 
 ```go
 // Removed

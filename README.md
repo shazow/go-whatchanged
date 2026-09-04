@@ -254,8 +254,9 @@ since cgo is disabled.
 
 ## Output formats
 
-`--format=markdown` renders each package as a `go` block, which GitHub
-highlights as Go, for a pull request comment or a job summary. The
+`--format=markdown` renders each package as a heading and a `go` block,
+which GitHub highlights as Go, for a pull request comment or a job
+summary. The
 changes are grouped under `// Removed`, `// Changed` and `// Added`, from
 what breaks to what is merely new; a changed symbol shows its old
 declaration with `// ->` trailing and its new one below it, so that both
@@ -266,7 +267,7 @@ column.
 
 ````
 $ go-whatchanged --format=markdown @latest
-**example.com/m/store**
+### `example.com/m/store`
 
 ```go
 // Removed
@@ -281,7 +282,7 @@ func (c *Client) Ping() error
 type Options struct{ Timeout int }
 ```
 
-**example.com/m/util**
+### `example.com/m/util`
 
 ```go
 // Added
