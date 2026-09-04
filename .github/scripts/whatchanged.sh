@@ -135,7 +135,7 @@ run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 short() {
   if [[ $1 =~ ^[0-9a-f]{40}$ ]]; then echo "${1:0:7}"; else echo "$1"; fi
 }
-compared="<sub>Compared <code>$(short "$(jq -r .base "$json")")</code> with <code>$(short "$(jq -r .head "$json")")</code> · <a href=\"$run_url\">job summary</a></sub>"
+compared="Compared <code>$(short "$(jq -r .base "$json")")</code> with <code>$(short "$(jq -r .head "$json")")</code> · <a href=\"$run_url\">job summary</a>"
 
 echo "::group::report"
 cat "$md"
@@ -144,7 +144,7 @@ if [ "$INPUT_SUMMARY" = true ]; then
   {
     [ -z "$INPUT_TITLE" ] || printf '### %s %s\n\n' "$glyph" "$INPUT_TITLE"
     cat "$md"
-    printf '\n%s\n' "$compared"
+    printf '\n<sub>%s</sub>\n' "$compared"
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
@@ -197,18 +197,20 @@ find_comment() {
 }
 
 # comment_body writes the pull request comment to $1: the marker, then the
-# report folded into a details block whose summary line is the verdict.
-# Comments hold 65536 characters; a longer report is cut at a paragraph
-# boundary and points at the job summary, which has no limit.
+# report folded into a details block whose summary line is the verdict,
+# with a footer that names the sides, links the job summary and credits
+# the tool. Comments hold 65536 characters; a longer report is cut at a
+# paragraph boundary and points at the job summary, which has no limit.
 comment_body() {
-  local out=$1 marker=$2 limit=65536 report=$work/comment-report.md room
+  local out=$1 marker=$2 limit=65536 report=$work/comment-report.md room footer
+  footer="<sub>$compared · <a href=\"https://github.com/shazow/go-whatchanged\">powered by go-whatchanged</a></sub>"
   {
     echo "$marker"
     echo "<details>"
     printf '<summary>%s%s%s</summary>\n\n' "$glyph " "${INPUT_TITLE:+<b>$INPUT_TITLE</b>: }" \
       "$(printf '%s\n' "$summary" | paste -sd '|' | sed 's/|/ · /g')"
   } >"$out"
-  room=$((limit - $(wc -c <"$out") - $(printf '%s' "$compared" | wc -c) - 200))
+  room=$((limit - $(wc -c <"$out") - $(printf '%s' "$footer" | wc -c) - 200))
   if [ "$(wc -c <"$md")" -le "$room" ]; then
     cp "$md" "$report"
   else
@@ -218,7 +220,7 @@ comment_body() {
   fi
   {
     cat "$report"
-    printf '\n%s\n</details>\n' "$compared"
+    printf '\n%s\n</details>\n' "$footer"
   } >>"$out"
 }
 
