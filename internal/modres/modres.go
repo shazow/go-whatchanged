@@ -1,7 +1,8 @@
 // Package modres resolves import paths to directories for one side of a diff
 // using only go.mod, GOROOT, the module cache and the directories that
 // replace directives name. It never runs the go command and never touches
-// the network.
+// the network itself; a module the cache lacks is handed to the caller's
+// Resolver.Missing hook, or reported as a MissingModuleError.
 package modres
 
 import (
@@ -80,7 +81,8 @@ const (
 )
 
 // MissingModuleError reports a module that resolution needs but the module
-// cache does not have. The tool never downloads, so the caller says how to.
+// cache does not have, when no Resolver.Missing hook is set to fetch it. The
+// caller says how to get it.
 type MissingModuleError struct {
 	Path, Version string
 }
@@ -98,6 +100,15 @@ type Location struct {
 
 // Resolver maps import paths to directories for one side.
 type Resolver struct {
+	// Missing, when set, is called for a module version that go.mod
+	// requires (or a replace directive names) but the module cache lacks,
+	// and returns the directory holding that version's tree, readable
+	// through the Resolver's FS: the caller may fetch it on demand. Its
+	// errors are returned as they are, so they should name the module. It
+	// must be set before the first Resolve. When nil, such a module is a
+	// MissingModuleError.
+	Missing func(mod module.Version) (dir string, err error)
+
 	fs        FS
 	env       Env
 	root      string // main module root
@@ -108,7 +119,8 @@ type Resolver struct {
 	stdGo     string
 
 	mu         sync.Mutex
-	goVersions map[string]string // module root dir → go version
+	goVersions map[string]string         // module root dir → go version
+	fetched    map[module.Version]string // module versions Missing provided → root dir
 }
 
 type replacement struct {
@@ -151,6 +163,7 @@ func New(fs FS, root string, env Env) (*Resolver, error) {
 		goVersion:  goVersion,
 		replaces:   map[module.Version]replacement{},
 		goVersions: map[string]string{},
+		fetched:    map[module.Version]string{},
 	}
 	for _, req := range mf.Require {
 		r.requires = append(r.requires, req.Mod)
@@ -267,7 +280,9 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 		}
 		modRoot = filepath.Join(r.env.GOMODCACHE, filepath.FromSlash(escPath)+"@"+escVer)
 		if !r.fs.IsDir(modRoot) {
-			return Location{}, &MissingModuleError{Path: mod.Path, Version: mod.Version}
+			if modRoot, err = r.fetch(mod); err != nil {
+				return Location{}, err
+			}
 		}
 	}
 	dir := modRoot
@@ -275,6 +290,31 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 		dir = joinPath(modRoot, rest)
 	}
 	return Location{Dir: dir, Kind: Dep, GoVersion: r.moduleGoVersion(modRoot)}, nil
+}
+
+// fetch obtains a module version the cache lacks through Missing, once per
+// version, or reports it missing when there is no hook.
+func (r *Resolver) fetch(mod module.Version) (string, error) {
+	if r.Missing == nil {
+		return "", &MissingModuleError{Path: mod.Path, Version: mod.Version}
+	}
+	r.mu.Lock()
+	dir, ok := r.fetched[mod]
+	r.mu.Unlock()
+	if ok {
+		return dir, nil
+	}
+	dir, err := r.Missing(mod)
+	if err != nil {
+		return "", err
+	}
+	if !r.fs.IsDir(dir) {
+		return "", fmt.Errorf("module %s@%s: fetched to %s, which is not a directory", mod.Path, mod.Version, dir)
+	}
+	r.mu.Lock()
+	r.fetched[mod] = dir
+	r.mu.Unlock()
+	return dir, nil
 }
 
 // moduleGoVersion reads the go directive of the module rooted at dir,

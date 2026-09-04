@@ -12,9 +12,10 @@ names the semantic version the changes call for. The comparison itself is
 done by [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff);
 this tool makes it work on any git history without touching your checkout.
 
-- **Read-only.** No temporary directories, no clones, no worktrees, no `go`
-  command, no network. Both sides are read from the git object store and
-  type-checked in memory.
+- **Read-only.** No temporary directories, no clones, no worktrees. Both
+  sides are read from the git object store and type-checked in memory. The
+  `go` command runs only to download a module the cache lacks, and
+  `--fsreadonly` forbids even that.
 - **Release-aware.** `@latest` stands for the last release tag, and the
   summary names the version the changes call for.
 - **CI-ready.** Markdown for pull requests, JSON for tools, exit codes for
@@ -81,6 +82,7 @@ Options:
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
+  --fsreadonly       never write to the filesystem or run the go command
   --exit-fail=LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher
   --version          print the version and exit
@@ -324,17 +326,24 @@ steps:
 ## Guarantees
 
 Run it on a dirty checkout, on a shared CI runner, in a linked worktree
-from `git worktree add`: nothing is changed.
+from `git worktree add`: nothing in the repository is changed.
 
-- **No disk writes.** No temporary directories, no checkouts, no build
-  cache, no `go.sum` edits. It only reads the repository, `.git`,
+- **No repository writes.** No temporary directories, no checkouts, no
+  build cache, no `go.sum` edits. It reads the repository, `.git`,
   `$GOROOT/src`, `$GOMODCACHE` and the directories that `replace`
   directives point at.
-- **No `go` command.** Both sides are parsed and type-checked in-process
+- **The module cache is the one exception.** A module that a side's
+  `go.mod` pins but the cache lacks is fetched with `go mod download`, run
+  from outside any module with `GOWORK=off`, so that the go command never
+  sees, let alone edits, the checkout's `go.mod`, `go.sum` or `go.work`.
+  That download is the only time the tool runs the go command or reaches
+  the network, through the usual `GOPROXY`, `GOPRIVATE` and `GONOSUMDB`.
+- **`--fsreadonly` removes the exception.** With it the tool never writes
+  anywhere and never runs the go command; a missing module is an error
+  that says how to download it, and that dropping the flag would.
+- **In-process type-checking.** Both sides are parsed and type-checked
   with `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
   `import "C"` are skipped, so an API declared only in them is not diffed.
-- **No network.** Dependencies come from the module cache; nothing is
-  fetched.
 - **No repository mutation.** Only go-git's object store is used. The
   worktree, index and refs are never touched.
 
@@ -352,6 +361,12 @@ and dependency packages are type-checked once and shared between them when
 their imports resolve identically on both; otherwise, as when a dependency
 imports the main module, they are checked once per side, so that neither
 side is ever linked against the other side's packages.
+
+A module the cache lacks is fetched on demand through one small interface,
+`internal/modfetch.Source`: resolve a query to a version, fetch a version
+to a readable tree. Its only implementation runs the go command; a client
+for the module proxy protocol could replace it without the rest of the
+tool noticing, and `--fsreadonly` simply leaves it out.
 
 ## Limitations
 

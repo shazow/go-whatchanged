@@ -2,6 +2,7 @@ package whatchanged
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +28,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 
+	"github.com/shazow/go-whatchanged/internal/modfetch"
 	"github.com/shazow/go-whatchanged/internal/modres"
 	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/vfs"
@@ -218,7 +222,7 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	if head != "" {
 		headSpec = sideSpec{rev: head, mounts: mounts}
 	}
-	res, err := runRepo(f.open, sideSpec{rev: opts.baseRev(), mounts: mounts}, headSpec, "", f.env, opts)
+	res, err := runRepo(f.t.Context(), f.open, sideSpec{rev: opts.baseRev(), mounts: mounts}, headSpec, "", f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
@@ -715,15 +719,15 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	}
 	mustContain(t, r.err.Error(), `unresolvable import "example.org/nothere" (required by example.com/m/a)`)
 
-	// A module go.mod requires but the module cache lacks is fatal too, and
-	// the error says how to download it, since the tool never does.
+	// A module go.mod requires but the module cache lacks is fatal too when
+	// there is nothing to fetch it with, and the error says how to get it.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/nothere v1.2.3\n")
 	r = f.run("HEAD", "", Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
 	mustContain(t, r.err.Error(),
-		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; to download the modules go.mod pins:\n\tgo mod download")
+		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it, or download the modules go.mod pins:\n\tgo mod download")
 
 	// For a revision, the fix downloads from a copy of that revision's
 	// go.mod, so that the checkout is not touched.
@@ -736,8 +740,80 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	}
 	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
 	mustContain(t, r.err.Error(),
-		"HEAD: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; to download the modules HEAD pins:\n\tmkdir -p "+
+		"HEAD: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it, or download the modules HEAD pins:\n\tmkdir -p "+
 			dir+" && git show HEAD:go.mod > "+filepath.Join(dir, "go.mod")+" && (cd "+dir+" && go mod download)")
+}
+
+// fakeSource is a modfetch.Source serving module versions from an in-memory
+// filesystem, each at a synthetic directory of its own, the way an
+// in-process Source would: nothing it serves is in the module cache.
+type fakeSource struct {
+	fs      billy.Filesystem
+	mu      sync.Mutex
+	fetched []module.Version
+}
+
+func (s *fakeSource) Resolve(_ context.Context, path, query string) (module.Version, error) {
+	return module.Version{Path: path, Version: query}, nil
+}
+
+func (s *fakeSource) Fetch(_ context.Context, mod module.Version) (*modfetch.Module, error) {
+	root := mod.Path + "@" + mod.Version
+	sub, err := s.fs.Chroot(root)
+	if err != nil {
+		return nil, err
+	}
+	if _, err := sub.Stat("go.mod"); err != nil {
+		return nil, &modfetch.NotFoundError{Path: mod.Path, Query: mod.Version}
+	}
+	s.mu.Lock()
+	s.fetched = append(s.fetched, mod)
+	s.mu.Unlock()
+	return &modfetch.Module{Version: mod, Dir: vfs.SyntheticPrefix + "fetched/" + root, FS: &billyFS{fs: sub}}, nil
+}
+
+func TestFetchMissingModule(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.useFakeModcache() // empty: every dependency is missing
+	remote := memfs.New()
+	writeFile(t, remote, "example.org/dep@v1.0.0/go.mod", "module example.org/dep\n\ngo 1.24\n")
+	writeFile(t, remote, "example.org/dep@v1.0.0/dep.go", "package dep\n\ntype T struct{}\n")
+	src := &fakeSource{fs: remote}
+
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/dep v1.0.0\n")
+	f.write("a/a.go", "package a\n\nimport \"example.org/dep\"\n\nfunc A() dep.T { return dep.T{} }\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nimport \"example.org/dep\"\n\nfunc A() dep.T { return dep.T{} }\n\nfunc B() dep.T { return dep.T{} }\n")
+
+	// With a Source, the missing module is fetched and mounted where the
+	// Source says, on both sides.
+	r := f.mustRun("HEAD", "", Options{Fetch: src, Color: false})
+	mustContain(t, r.stdout, "+ func B() dep.T")
+	mustNotContain(t, r.stdout, "func A()")
+	if len(src.fetched) == 0 || slices.ContainsFunc(src.fetched, func(m module.Version) bool {
+		return m != (module.Version{Path: "example.org/dep", Version: "v1.0.0"})
+	}) {
+		t.Errorf("fetched = %v", src.fetched)
+	}
+
+	// Without one, the run is read-only and the error says which flag to
+	// drop.
+	r = f.run("HEAD", "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "module example.org/dep@v1.0.0 not in module cache; remove --fsreadonly to let go-whatchanged download it")
+
+	// A module the Source cannot find is the Source's error, named once.
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/dep v1.0.0\n\nrequire example.org/absent v1.5.0\n")
+	f.write("a/a.go", "package a\n\nimport \"example.org/absent\"\n\nvar X = absent.X\n")
+	r = f.run("HEAD", "", Options{Fetch: src})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `working tree: unresolvable import "example.org/absent" (required by example.com/m/a): example.org/absent@v1.5.0 not found`)
+	mustNotContain(t, r.err.Error(), "fsreadonly")
 }
 
 func TestDownloadHint(t *testing.T) {
@@ -868,7 +944,7 @@ func TestReplaceDirectoryOutsideModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := runRepo(t.Context(), f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,7 +1024,7 @@ func TestSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := runRepo(t.Context(), f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1513,7 +1589,7 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := runRepo(t.Context(), f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

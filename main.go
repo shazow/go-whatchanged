@@ -16,6 +16,7 @@ import (
 	"github.com/jessevdk/go-flags"
 	"golang.org/x/term"
 
+	"github.com/shazow/go-whatchanged/internal/modfetch"
 	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
@@ -42,7 +43,11 @@ narrows the diff to incompatible changes and combines with any of them:
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
 
-The tool never writes to disk and never runs the go command.
+A module that go.mod pins but the module cache lacks is downloaded with
+go mod download, run outside the repository so that nothing in it is read
+or written; the module cache is the only place the tool writes. With
+--fsreadonly it never writes anywhere and never runs the go command, and a
+missing module is an error that says how to fetch it.
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 
@@ -62,6 +67,7 @@ type options struct {
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
 	Strict     bool     `long:"strict" description:"treat type-check errors as fatal"`
+	FSReadOnly bool     `long:"fsreadonly" description:"never write to the filesystem or run the go command: a module missing from the module cache is an error instead of a download"`
 	ExitFail   string   `long:"exit-fail" choice:"major" choice:"minor" choice:"patch" description:"exit 100/101/102 when the required bump is major, minor or patch, or higher"`
 	Version    bool     `long:"version" description:"print the version of go-whatchanged and exit"`
 
@@ -139,6 +145,9 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Strict:    o.Strict,
 		Base:      o.Args.Base,
 		Head:      o.Args.Head,
+	}
+	if !o.FSReadOnly {
+		opts.Fetch = &modfetch.GoCommand{Stderr: os.Stderr}
 	}
 	switch o.Color {
 	case "always":

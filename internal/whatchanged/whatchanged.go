@@ -1,9 +1,11 @@
 // Package whatchanged computes a semantic diff of a Go module's exported API
 // between two git revisions, or a revision and the working tree, without
-// writing to disk or invoking the go command.
+// writing to disk or invoking the go command, except to fetch modules the
+// module cache lacks through Options.Fetch.
 package whatchanged
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"go/token"
@@ -23,9 +25,11 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/exp/apidiff"
+	"golang.org/x/mod/module"
 
 	"github.com/shazow/go-whatchanged/internal/discover"
 	"github.com/shazow/go-whatchanged/internal/loader"
+	"github.com/shazow/go-whatchanged/internal/modfetch"
 	"github.com/shazow/go-whatchanged/internal/modres"
 	"github.com/shazow/go-whatchanged/internal/release"
 	"github.com/shazow/go-whatchanged/internal/render"
@@ -76,6 +80,10 @@ type Options struct {
 	// Format selects the output layout; the zero value is the colorized
 	// text layout.
 	Format render.Format
+	// Fetch obtains modules that go.mod requires but the module cache
+	// lacks. Nil keeps the run read-only: such a module is an error whose
+	// message says how to get it.
+	Fetch modfetch.Source
 
 	// Stdout receives the diff; Stderr receives warnings.
 	Stdout, Stderr io.Writer
@@ -220,7 +228,7 @@ func Run(opts Options) (int, error) {
 	} else {
 		head = sideSpec{dir: modRoot}
 	}
-	res, err := runRepo(open, sideSpec{rev: base}, head, rel, env, opts)
+	res, err := runRepo(context.Background(), open, sideSpec{rev: base}, head, rel, env, opts)
 	if err != nil {
 		return ExitError, err
 	}
@@ -352,8 +360,9 @@ type openFunc func() (*git.Repository, error)
 // The two sides load concurrently and each opens its own repository handle:
 // go-git's filesystem storage builds its packfile index lazily without
 // locking, so a handle shared between the two goroutines races and makes
-// revisions spuriously unresolvable ("reference not found").
-func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opts Options) (*render.Result, error) {
+// revisions spuriously unresolvable ("reference not found"). The first side
+// to fail cancels the other's context, which stops its fetches.
+func runRepo(ctx context.Context, open openFunc, base, head sideSpec, rel string, env modres.Env, opts Options) (*render.Result, error) {
 	if head.rev == LatestRelease {
 		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
 	}
@@ -372,6 +381,8 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 		opts.GOARCH = runtime.GOARCH
 	}
 
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	var (
 		wg    sync.WaitGroup
 		sides [2]*side
@@ -379,7 +390,10 @@ func runRepo(open openFunc, base, head sideSpec, rel string, env modres.Env, opt
 	)
 	for i, spec := range [2]sideSpec{base, head} {
 		wg.Go(func() {
-			sides[i], errs[i] = loadSide(open, spec, rel, env, opts, fset, shared)
+			sides[i], errs[i] = loadSide(ctx, open, spec, rel, env, opts, fset, shared)
+			if errs[i] != nil {
+				cancel()
+			}
 		})
 	}
 	wg.Wait()
@@ -449,7 +463,7 @@ func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 	return s, nil
 }
 
-func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+func loadSide(ctx context.Context, open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
 	s, err := spec.mount(open, rel)
 	if err != nil {
 		return nil, err
@@ -459,6 +473,9 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 	res, err := modres.New(s.overlay, s.root, env)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
+	}
+	if opts.Fetch != nil {
+		res.Missing = s.fetcher(ctx, opts.Fetch)
 	}
 	s.res = res
 	s.ld = loader.New(ctxt, fset, res, shared)
@@ -506,21 +523,39 @@ func loadSide(open openFunc, spec sideSpec, rel string, env modres.Env, opts Opt
 	return s, nil
 }
 
+// fetcher returns the resolver hook that fetches a missing module through
+// src and makes its tree visible on this side: a tree served by its own
+// filesystem is mounted into the side's overlay, one on disk is reachable
+// already.
+func (s *side) fetcher(ctx context.Context, src modfetch.Source) func(module.Version) (string, error) {
+	return func(mod module.Version) (string, error) {
+		m, err := src.Fetch(ctx, mod)
+		if err != nil {
+			return "", err
+		}
+		if m.FS != nil {
+			s.overlay.Add(vfs.Mount{Path: m.Dir, FS: m.FS})
+		}
+		return m.Dir, nil
+	}
+}
+
 // downloadHint is the fix to append when err reports a module missing from
-// the module cache, which the tool never fills itself: go mod download in
-// the module for the working tree and, for a revision, the same from a
-// copy of its go.mod in a temporary directory, so that the checkout is not
-// touched. rel is the module root relative to the repository root.
+// the module cache, which happens only when Options.Fetch is nil, that is
+// under --fsreadonly: drop the flag, or run go mod download in the module
+// for the working tree and, for a revision, the same from a copy of its
+// go.mod in a temporary directory, so that the checkout is not touched. rel
+// is the module root relative to the repository root.
 func (s *side) downloadHint(err error, rel string) string {
 	var missing *modres.MissingModuleError
 	if !errors.As(err, &missing) {
 		return ""
 	}
 	if s.rev == "" {
-		return "; to download the modules go.mod pins:\n\tgo mod download"
+		return "; remove --fsreadonly to let go-whatchanged download it, or download the modules go.mod pins:\n\tgo mod download"
 	}
 	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
-	return fmt.Sprintf("; to download the modules %s pins:\n\tmkdir -p %s && git show %s:%s > %s && (cd %s && go mod download)",
+	return fmt.Sprintf("; remove --fsreadonly to let go-whatchanged download it, or download the modules %s pins:\n\tmkdir -p %s && git show %s:%s > %s && (cd %s && go mod download)",
 		s.rev, dir, s.rev, path.Join(rel, "go.mod"), filepath.Join(dir, "go.mod"), dir)
 }
 
