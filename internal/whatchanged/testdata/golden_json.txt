@@ -68,8 +68,9 @@
           "kind": "changed",
           "compatible": false,
           "message": "Config.Timeout: changed from int to int64",
-          "before": "field Config.Timeout int",
-          "after": "field Config.Timeout int64"
+          "before": "Timeout int",
+          "after": "Timeout int64",
+          "struct": "Config"
         },
         {
           "symbol": "Open",
@@ -84,8 +85,8 @@
           "kind": "changed",
           "compatible": false,
           "message": "Version: changed from untyped string to untyped int",
-          "before": "const Version untyped string = \"1\"",
-          "after": "const Version untyped int = 1"
+          "before": "const Version = \"1\"",
+          "after": "const Version = 1"
         },
         {
           "symbol": "(*Client).Ping",
@@ -99,14 +100,15 @@
           "kind": "added",
           "compatible": true,
           "message": "Options: added",
-          "after": "type Options struct{Timeout int}"
+          "after": "type Options struct{ Timeout int }"
         },
         {
           "symbol": "Point.Z",
           "kind": "added",
           "compatible": true,
           "message": "Point.Z: added",
-          "after": "field Point.Z int"
+          "after": "Z int",
+          "struct": "Point"
         }
       ]
     },
@@ -126,7 +128,7 @@
           "kind": "changed",
           "compatible": false,
           "message": "Stringer: changed from Stringer to fmt.Stringer",
-          "before": "type Stringer interface{String() string}",
+          "before": "type Stringer interface{ String() string }",
           "after": "type Stringer = fmt.Stringer"
         }
       ]

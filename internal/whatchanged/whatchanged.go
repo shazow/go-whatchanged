@@ -692,12 +692,13 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 	return res
 }
 
-// annotate fills in the declarations and the position of the symbol a
-// change is about. A removal is described by the base side's object, an
-// addition by the head side's, and a "changed from X to Y" message by both
-// (the declarations are only set when both can be looked up, so that the
-// renderer can fall back to the types quoted in the message). Whole-package
-// changes and symbols that cannot be looked up get neither.
+// annotate fills in the declarations, the struct of a field and the
+// position of the symbol a change is about. A removal is described by the
+// base side's object, an addition by the head side's, and a "changed from
+// X to Y" message by both (the declarations are only set when both can be
+// looked up, so that the renderer can fall back to the types quoted in the
+// message). Whole-package changes and symbols that cannot be looked up get
+// neither.
 func annotate(c *render.Change, fset *token.FileSet, base, head *side, old, nw *types.Package) {
 	sym := c.Symbol()
 	if sym == "" {
@@ -707,12 +708,12 @@ func annotate(c *render.Change, fset *token.FileSet, base, head *side, old, nw *
 	switch c.Kind() {
 	case "removed":
 		if oldObj != nil {
-			c.Before = declString(oldObj, old, sym)
+			c.Before, c.Struct = declString(oldObj, old), structOf(oldObj, sym)
 			c.Pos = base.position(fset.Position(oldObj.Pos()))
 		}
 	case "added":
 		if newObj != nil {
-			c.After = declString(newObj, nw, sym)
+			c.After, c.Struct = declString(newObj, nw), structOf(newObj, sym)
 			c.Pos = head.position(fset.Position(newObj.Pos()))
 		}
 	default:
@@ -720,7 +721,7 @@ func annotate(c *render.Change, fset *token.FileSet, base, head *side, old, nw *
 			c.Pos = head.position(fset.Position(newObj.Pos()))
 		}
 		if oldObj != nil && newObj != nil && strings.Contains(c.Message, "changed from ") {
-			c.Before, c.After = declString(oldObj, old, sym), declString(newObj, nw, sym)
+			c.Before, c.After, c.Struct = declString(oldObj, old), declString(newObj, nw), structOf(newObj, sym)
 		}
 	}
 }

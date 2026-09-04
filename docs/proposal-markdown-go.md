@@ -30,6 +30,14 @@ group implies says so in a trailing comment: an incompatible addition,
 which is a method added to an interface, or a compatible change, such as
 a func that became a var.
 
+The declarations are Go as gofmt would print it, since the highlighter
+does best on lines that parse: `type Options struct{ Timeout int }` with
+gofmt's spacing, a struct or interface with several members on several
+lines, `const Version = 1` with no type on an untyped constant, which has
+none in source. The fields of a struct are shown together, as a fragment
+of the struct's declaration with the changed fields alone inside, one
+fragment per group the fields fall in.
+
 **example.com/m/store**
 
 ```go
@@ -37,26 +45,30 @@ a func that became a var.
 func (c *Client) Close() error
 
 // Changed
-field Config.Timeout int // ->
-field Config.Timeout int64
+type Config struct {
+	Timeout int // ->
+	Timeout int64
+}
 
 func Open(path string) (*Client, error) // ->
 func Open(path string, o Options) (*Client, error)
 
-const Version untyped string = "1" // ->
-const Version untyped int = 1
+const Version = "1" // ->
+const Version = 1
 
 // Added
 func (c *Client) Ping() error
-type Options struct{Timeout int}
-field Point.Z int
+type Options struct{ Timeout int }
+type Point struct {
+	Z int
+}
 ```
 
 **example.com/m/util**
 
 ```go
 // Changed
-type Stringer interface{String() string} // ->
+type Stringer interface{ String() string } // ->
 type Stringer = fmt.Stringer
 
 // Added
@@ -95,7 +107,8 @@ For comparison, the same two packages as the `diff` block rendered them:
 With `--pos`, each line that locates a change carries its position in
 the trailing comment, after the compatibility note when there is one.
 The comments line up in a column, as gofmt aligns them, set by the lines
-of the block that carry a comment:
+of the block that carry a comment, the fields of a struct fragment in a
+column of their own:
 
 **example.com/m/store**
 
@@ -104,30 +117,34 @@ of the block that carry a comment:
 func (c *Client) Close() error                     // v1.0.0:store/store.go:7:18
 
 // Changed
-field Config.Timeout int                           // ->
-field Config.Timeout int64                         // store/store.go:17:21
+type Config struct {
+	Timeout int   // ->
+	Timeout int64 // store/store.go:17:21
+}
 
 func Open(path string) (*Client, error)            // ->
 func Open(path string, o Options) (*Client, error) // store/store.go:11:6
 
-const Version untyped string = "1"                 // ->
-const Version untyped int = 1                      // store/store.go:19:7
+const Version = "1"                                // ->
+const Version = 1                                  // store/store.go:19:7
 
 // Added
 func (c *Client) Ping() error                      // store/store.go:7:18
-type Options struct{Timeout int}                   // store/store.go:9:6
-field Point.Z int                                  // store/store.go:15:26
+type Options struct{ Timeout int }                 // store/store.go:9:6
+type Point struct {
+	Z int         // store/store.go:15:26
+}
 ```
 
 **example.com/m/util**
 
 ```go
 // Changed
-type Stringer interface{String() string} // ->
-type Stringer = fmt.Stringer             // util/util.go:10:6
+type Stringer interface{ String() string } // ->
+type Stringer = fmt.Stringer               // util/util.go:10:6
 
 // Added
-func (Sizer) Size() int                  // incompatible · util/util.go:7:2
+func (Sizer) Size() int                    // incompatible · util/util.go:7:2
 ```
 
 ### Changes without a declaration
@@ -178,26 +195,30 @@ func Gone()
 func (c *Client) Close() error
 
 // Changed
-field Config.Timeout int // ->
-field Config.Timeout int64
+type Config struct {
+	Timeout int // ->
+	Timeout int64
+}
 
 func Open(path string) (*Client, error) // ->
 func Open(path string, o Options) (*Client, error)
 
-const Version untyped string = "1" // ->
-const Version untyped int = 1
+const Version = "1" // ->
+const Version = 1
 
 // Added
 func (c *Client) Ping() error
-type Options struct{Timeout int}
-field Point.Z int
+type Options struct{ Timeout int }
+type Point struct {
+	Z int
+}
 ```
 
 **example.com/m/util**
 
 ```go
 // Changed
-type Stringer interface{String() string} // ->
+type Stringer interface{ String() string } // ->
 type Stringer = fmt.Stringer
 
 // Added
@@ -222,35 +243,6 @@ _internal: 1 package changed · 1 incompatible · 1 compatible_
 </details>
 
 ## Possible refinements
-
-**Go-shaped declarations.** The highlighter does best on lines that parse
-as Go. Three of our forms do not, and each has a Go spelling:
-
-| Today | As Go |
-|---|---|
-| `field Config.Timeout int64` | `type Config struct { Timeout int64 }`, one fragment per struct with the changed fields alone inside |
-| `const Version untyped int = 1` | `const Version = 1`, since an untyped constant has no type in source, or `const Version int = 1` |
-| `type Options struct{Timeout int}` | `type Options struct{ Timeout int }`, the `go/format` spacing |
-
-The struct fragment reads well and groups a struct's fields, which today
-are scattered lines:
-
-```go
-// Changed
-type Config struct {
-	Timeout int // ->
-	Timeout int64
-}
-
-// Added
-type Point struct {
-	Z int
-}
-```
-
-These strings come from `declString`, not the renderer, and feed the
-text layout and the JSON `before` and `after` fields too, so a change
-here changes all three outputs.
 
 **New declaration first.** The pair could lead with the new declaration,
 which is the one a reader will call, and point the `// ->` at the old
@@ -281,19 +273,23 @@ the bulk of the compatible group, carry nothing.
 // Incompatible
 func (c *Client) Close() error // removed
 
-field Config.Timeout int // ->
-field Config.Timeout int64
+type Config struct {
+	Timeout int // ->
+	Timeout int64
+}
 
 func Open(path string) (*Client, error) // ->
 func Open(path string, o Options) (*Client, error)
 
-const Version untyped string = "1" // ->
-const Version untyped int = 1
+const Version = "1" // ->
+const Version = 1
 
 // Compatible
 func (c *Client) Ping() error
-type Options struct{Timeout int}
-field Point.Z int
+type Options struct{ Timeout int }
+type Point struct {
+	Z int
+}
 ```
 
 **example.com/m/util**
@@ -302,7 +298,7 @@ field Point.Z int
 // Incompatible
 func (Sizer) Size() int // added
 
-type Stringer interface{String() string} // ->
+type Stringer interface{ String() string } // ->
 type Stringer = fmt.Stringer
 ```
 
@@ -332,22 +328,26 @@ func (c *Client) Close() error
 **Changed** · 3 incompatible
 
 ```go
-field Config.Timeout int // ->
-field Config.Timeout int64
+type Config struct {
+	Timeout int // ->
+	Timeout int64
+}
 
 func Open(path string) (*Client, error) // ->
 func Open(path string, o Options) (*Client, error)
 
-const Version untyped string = "1" // ->
-const Version untyped int = 1
+const Version = "1" // ->
+const Version = 1
 ```
 
 **Added** · 3 compatible
 
 ```go
 func (c *Client) Ping() error
-type Options struct{Timeout int}
-field Point.Z int
+type Options struct{ Timeout int }
+type Point struct {
+	Z int
+}
 ```
 
 **example.com/m/util**
@@ -355,7 +355,7 @@ field Point.Z int
 **Changed** · 1 incompatible
 
 ```go
-type Stringer interface{String() string} // ->
+type Stringer interface{ String() string } // ->
 type Stringer = fmt.Stringer
 ```
 
@@ -403,8 +403,10 @@ func Open(path string, o Options) (*Client, error)
 
 ```go
 func (c *Client) Ping() error
-type Options struct{Timeout int}
-field Point.Z int
+type Options struct{ Timeout int }
+type Point struct {
+	Z int
+}
 ```
 
 </td></tr>

@@ -4,16 +4,18 @@ example.com/m/gone (removed)
 
 example.com/m/store
   - func (c *Client) Close() error
-  - field Config.Timeout int
-  + field Config.Timeout int64
+  ~ type Config struct {
+  -     Timeout int
+  +     Timeout int64
+    }
   - func Open(path string) (*Client, error)
   + func Open(path string, o Options) (*Client, error)
-  - const Version untyped string = "1"
-  + const Version untyped int = 1
+  - const Version = "1"
+  + const Version = 1
 
 example.com/m/util
   + func (Sizer) Size() int
-  - type Stringer interface{String() string}
+  - type Stringer interface{ String() string }
   + type Stringer = fmt.Stringer
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)

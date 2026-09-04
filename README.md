@@ -35,7 +35,7 @@ example.com/m/store
   - func Open(path string) (*Client, error)
   + func Open(path string, o Options) (*Client, error)
   + func (c *Client) Ping() error
-  + type Options struct{Timeout int}
+  + type Options struct{ Timeout int }
 
 example.com/m/util
   + func (Sizer) Size() int
@@ -205,9 +205,12 @@ the summary still describe the full diff.
 
 ## Reading the output
 
-Bold marks an incompatible change: a removal, a changed signature, a
-method added to an interface. A line with no declaration to show carries
-apidiff's message behind a glyph:
+Each change shows the declaration of its symbol, formatted as gofmt
+formats it; the fields of a struct are shown together, as a fragment of
+the struct with the changed fields alone inside. Bold marks an
+incompatible change: a removal, a changed signature, a method added to an
+interface. A line with no declaration to show carries apidiff's message
+behind a glyph:
 
 | Glyph | Meaning |
 |---|---|
@@ -242,7 +245,7 @@ func Open(path string, o Options) (*Client, error)
 
 // Added
 func (c *Client) Ping() error
-type Options struct{Timeout int}
+type Options struct{ Timeout int }
 ```
 
 **example.com/m/util**
@@ -257,7 +260,9 @@ func (Sizer) Size() int // incompatible
 
 `--format=json` prints one document for scripts and bots; its field names
 are part of the tool's interface. `base_version` and `next_version` are
-present when the base is a release tag, `pos` with `--pos`.
+present when the base is a release tag, `pos` with `--pos`, and `struct`
+on a struct field's change, whose `before` and `after` are the field's
+declaration inside it.
 
 ```json
 {

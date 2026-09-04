@@ -20,26 +20,30 @@ func Gone()
 func (c *Client) Close() error
 
 // Changed
-field Config.Timeout int // ->
-field Config.Timeout int64
+type Config struct {
+	Timeout int // ->
+	Timeout int64
+}
 
 func Open(path string) (*Client, error) // ->
 func Open(path string, o Options) (*Client, error)
 
-const Version untyped string = "1" // ->
-const Version untyped int = 1
+const Version = "1" // ->
+const Version = 1
 
 // Added
 func (c *Client) Ping() error
-type Options struct{Timeout int}
-field Point.Z int
+type Options struct{ Timeout int }
+type Point struct {
+	Z int
+}
 ```
 
 **example.com/m/util**
 
 ```go
 // Changed
-type Stringer interface{String() string} // ->
+type Stringer interface{ String() string } // ->
 type Stringer = fmt.Stringer
 
 // Added

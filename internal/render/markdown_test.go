@@ -73,3 +73,64 @@ func TestGoBlock(t *testing.T) {
 		}
 	}
 }
+
+// TestStructFragment covers the fields of one struct across groups: the
+// Go block shows one fragment per group, the text layout one for the
+// struct, and the comment column of a fragment is its own.
+func TestStructFragment(t *testing.T) {
+	t.Parallel()
+	pkg := Package{Path: "example.com/m/p", Changes: []Change{
+		{Message: "Config.Timeout: changed from int to int64", Before: "Timeout int", After: "Timeout int64", Struct: "Config",
+			Pos: Position{File: "p/p.go", Line: 5, Col: 2}},
+		{Message: "Config.Retries: changed from int to uint", Before: "Retries int", After: "Retries uint", Struct: "Config"},
+		{Message: "Config.Name: removed", Before: "Name string", Struct: "Config"},
+		{Message: "Config.Logger: added", Compatible: true, After: "*log.Logger", Struct: "Config",
+			Pos: Position{File: "p/p.go", Line: 8, Col: 2}},
+		{Message: "F: added", Compatible: true, After: "func F(a, b, c, d, e int) (err error)"},
+	}}
+	res := Result{Base: "v1.0.0", Head: "working tree", Packages: []Package{pkg}}
+	for _, tc := range []struct {
+		name string
+		opts Options
+		want string
+	}{
+		{"markdown", Options{Format: Markdown, Positions: true}, "```go\n" +
+			"// Removed\n" +
+			"type Config struct {\n" +
+			"\tName string\n" +
+			"}\n" +
+			"\n// Changed\n" +
+			"type Config struct {\n" +
+			"\tTimeout int   // ->\n" +
+			"\tTimeout int64 // p/p.go:5:2\n" +
+			"\n" +
+			"\tRetries int   // ->\n" +
+			"\tRetries uint\n" +
+			"}\n" +
+			"\n// Added\n" +
+			"type Config struct {\n" +
+			"\t*log.Logger   // p/p.go:8:2\n" +
+			"}\n" +
+			"func F(a, b, c, d, e int) (err error)\n" +
+			"```\n"},
+		{"text", Options{Positions: true}, "example.com/m/p\n" +
+			"  ~ type Config struct {\n" +
+			"  -     Timeout int\n" +
+			"  +     Timeout int64  p/p.go:5:2\n" +
+			"  -     Retries int\n" +
+			"  +     Retries uint\n" +
+			"  -     Name string\n" +
+			"  +     *log.Logger    p/p.go:8:2\n" +
+			"    }\n" +
+			"  + func F(a, b, c, d, e int) (err error)\n" +
+			"\n1 package changed · 3 incompatible · 2 compatible · would require: MAJOR\n"},
+	} {
+		var b strings.Builder
+		if err := Write(&b, res, tc.opts); err != nil {
+			t.Fatal(err)
+		}
+		if got := b.String(); !strings.Contains(got, tc.want) {
+			t.Errorf("%s: got\n%s\nwant to contain\n%s", tc.name, got, tc.want)
+		}
+	}
+}
