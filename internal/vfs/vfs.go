@@ -16,6 +16,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 )
 
 // FS is the minimal read-only filesystem surface go/build needs.
@@ -35,8 +36,10 @@ type Mount struct {
 }
 
 // Overlay routes paths through a list of mounts and falls back to the host
-// operating system for everything else.
+// operating system for everything else. Mounts may be added while the
+// overlay is in use; see Add.
 type Overlay struct {
+	mu     sync.RWMutex
 	mounts []Mount
 }
 
@@ -52,6 +55,21 @@ func NewOverlay(mounts ...Mount) *Overlay {
 	return &Overlay{mounts: ms}
 }
 
+// Add attaches another mount, for a tree that becomes available after the
+// overlay was built, such as a module fetched on demand. A mount at a path
+// already mounted is ignored. Add is safe to call concurrently with the
+// read methods.
+func (o *Overlay) Add(m Mount) {
+	m.Path = cleanAbs(m.Path)
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if slices.ContainsFunc(o.mounts, func(e Mount) bool { return e.Path == m.Path }) {
+		return
+	}
+	o.mounts = append(o.mounts, m)
+	slices.SortStableFunc(o.mounts, func(a, b Mount) int { return len(b.Path) - len(a.Path) })
+}
+
 // cleanAbs normalizes p to a slash-separated cleaned path.
 func cleanAbs(p string) string {
 	return path.Clean(filepath.ToSlash(p))
@@ -60,6 +78,8 @@ func cleanAbs(p string) string {
 // lookup returns the mount serving name and the path relative to that mount.
 func (o *Overlay) lookup(name string) (FS, string, bool) {
 	clean := cleanAbs(name)
+	o.mu.RLock()
+	defer o.mu.RUnlock()
 	for _, m := range o.mounts {
 		if clean == m.Path {
 			return m.FS, ".", true

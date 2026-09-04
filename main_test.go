@@ -1,11 +1,13 @@
 package main
 
 import (
+	"os"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
 
+	"github.com/shazow/go-whatchanged/internal/modfetch"
 	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/whatchanged"
 )
@@ -41,6 +43,18 @@ func TestParseArgs(t *testing.T) {
 	if opts.Filter != render.All || opts.Signatures != render.FullSignatures || opts.Format != render.Text || opts.Base != "" || opts.Head != "" {
 		t.Errorf("defaults = %+v", opts)
 	}
+	// Missing modules are downloaded with the go command unless
+	// --fsreadonly forbids it.
+	if _, ok := opts.Fetch.(*modfetch.GoCommand); !ok {
+		t.Errorf("default Fetch = %T, want *modfetch.GoCommand", opts.Fetch)
+	}
+	if o, err := parseArgs([]string{"--fsreadonly"}); err != nil {
+		t.Fatal(err)
+	} else if opts, err := o.whatchanged(); err != nil {
+		t.Fatal(err)
+	} else if opts.Fetch != nil {
+		t.Errorf("--fsreadonly: Fetch = %T, want nil", opts.Fetch)
+	}
 
 	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--signatures=minimal", "--exit-fail=minor", "--filter", "breaking", "--pos", "--color=never", "v1.4.0", "HEAD"})
 	if err != nil {
@@ -55,6 +69,7 @@ func TestParseArgs(t *testing.T) {
 		Packages: []string{"store/...", "util", "a"}, Exclude: []string{"b"},
 		Filter: render.Internal, Format: render.Markdown, Signatures: render.MinimalSignatures,
 		ExitFail: whatchanged.FailMinor, Breaking: true, Positions: true,
+		Fetch: &modfetch.GoCommand{Stderr: os.Stderr},
 	}
 	if !reflect.DeepEqual(opts, want) {
 		t.Errorf("opts = %+v\nwant   %+v", opts, want)
@@ -89,7 +104,7 @@ func TestParseArgs(t *testing.T) {
 	}
 
 	// Bad values and extra arguments are errors; --help is not.
-	for _, args := range [][]string{{"--filter=private"}, {"--format", "yaml"}, {"-filter", "all"}, {"--breaking"}, {"--goos=linux"}, {"a", "b", "c"}, {"--bogus"}} {
+	for _, args := range [][]string{{"--filter=private"}, {"--format", "yaml"}, {"-filter", "all"}, {"--breaking"}, {"--goos=linux"}, {"--repo=."}, {"a", "b", "c"}, {"--bogus"}} {
 		if _, err := parseArgs(args); err == nil {
 			t.Errorf("parseArgs(%q) succeeded", args)
 		}

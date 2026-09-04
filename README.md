@@ -12,9 +12,10 @@ names the semantic version the changes call for. The comparison itself is
 done by [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff);
 this tool makes it work on any git history without touching your checkout.
 
-- **Read-only.** No temporary directories, no clones, no worktrees, no `go`
-  command, no network. Both sides are read from the git object store and
-  type-checked in memory.
+- **Read-only.** No temporary directories, no clones, no worktrees. Both
+  sides are read from the git object store and type-checked in memory. The
+  `go` command runs only to download a module the cache lacks, and
+  `--fsreadonly` forbids even that.
 - **Release-aware.** `@latest` stands for the last release tag, and the
   summary names the version the changes call for.
 - **CI-ready.** Markdown for pull requests, JSON for tools, exit codes for
@@ -54,8 +55,11 @@ go install github.com/shazow/go-whatchanged@latest
 |---|---|
 | What do my uncommitted changes do to the API? | `go-whatchanged` |
 | What has changed since the last release? | `go-whatchanged @latest` |
-| What did release `v1.4.0` ship? | `go-whatchanged @latest v1.4.0` |
-| What does this branch change, compared to `main`? | `go-whatchanged origin/main` |
+| What did release `v1.4.0` ship? | `go-whatchanged @latest @v1.4.0` |
+| What does this branch change, compared to `main`? | `go-whatchanged @origin/main` |
+| What is unreleased on `main` of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
+| What did a published release change? | `go-whatchanged github.com/stretchr/testify@v1.9.0 @v1.10.0` |
+| What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
@@ -63,13 +67,16 @@ go install github.com/shazow/go-whatchanged@latest
 ```
 go-whatchanged [options] [<base> [<head>]]
 
-  base   commit-ish for the old side: hash, tag, branch, HEAD~2, ...
-         or @latest, the newest release tag among the ancestors of head.
-         Default: HEAD.
-  head   commit-ish for the new side. Default: the working tree.
+  base   the old side, as location@version: @v1.4.0, @HEAD~2 or
+         @origin/main in the current repository, @latest for its newest
+         release tag among the ancestors of head; github.com/x/m@v1.2.0 or
+         github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for
+         another checkout. Default: @HEAD.
+  head   the new side, in the same forms. @main alone means main in the
+         base's repository or module. Default: the working tree, or @HEAD
+         for a module.
 
 Options:
-  --repo=DIR         path inside a git repository (default: current directory)
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
   --filter=WHICH     all, or any of public | internal | main: which
@@ -81,6 +88,7 @@ Options:
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
+  --fsreadonly       never write to the filesystem or run the go command
   --exit-fail=LEVEL  exit 100/101/102 when the required bump is major, minor
                      or patch, or higher
   --version          print the version and exit
@@ -91,10 +99,10 @@ Options:
 
 Before tagging, `go-whatchanged @latest` shows everything since the last
 release and the version it calls for. After tagging, `go-whatchanged
-@latest v1.4.0` lists what the tag ships, for the release notes:
+@latest @v1.4.0` lists what the tag ships, for the release notes:
 
 ```
-$ go-whatchanged @latest v1.4.0
+$ go-whatchanged @latest @v1.4.0
 example.com/m/util
   + func Pad(s string, n int) string
 
@@ -111,10 +119,78 @@ internal: 1 package changed · 1 incompatible · 1 compatible
 tags are the ones the `go` command would publish: `v1.4.0`, `sub/v1.4.0`
 for a module below the repository root, `v2.x.y` for a `/v2` module. With
 uncommitted changes on the tagged commit itself, `@latest` therefore skips
-that tag; name it instead: `go-whatchanged v1.4.0`.
+that tag; name it instead: `go-whatchanged @v1.4.0`.
 
 At `v0` an incompatible change suggests the next minor, and a pre-release
 always suggests its final release.
+
+### Naming the sides
+
+Each side is `location@version`, the way the go command names versions.
+The location is a module path, a directory, or nothing:
+
+| Location | `@version` means | Alone |
+|---|---|---|
+| none: `@v1.4.0`, `@HEAD~2`, `@origin/main` | a revision of the current repository, or for the head, of the base's repository or module | the default: `@HEAD` as base, the working tree as head |
+| `@latest` | the newest release tag among the ancestors of the head | |
+| a module path: `github.com/x/m@v1.2.0` | a published module version, fetched into the module cache; `@latest` its newest release, `@main` a branch, `@HEAD` the default branch, `@abc1234` a commit | an error: a module needs a version |
+| a directory: `~/src/m@v1.2.0`, `./m@latest`, `../m@main` | a revision of that checkout | that checkout's `HEAD` as base, its working tree as head |
+
+A directory is anything spelled as a path, starting with `./`, `../`, `~/`
+or `/`, as the go command tells a directory from an import path. Module
+versions come through the proxy the go command is configured for, and a
+branch or `@HEAD` may lag the repository by the proxy's cache. A version
+whose go.mod declares go 1.16 or older cannot be diffed; see
+[Limitations](#limitations).
+
+### Examples
+
+A library you maintain, from its checkout:
+
+```sh
+go-whatchanged                          # what my uncommitted changes do to the API
+go-whatchanged @latest                  # everything since the last release, and the version it calls for
+go-whatchanged @latest @v1.4.0          # what v1.4.0 shipped, for the release notes
+go-whatchanged @origin/main             # what this branch changes, compared to main
+go-whatchanged @v1.3.0 @v1.4.0          # between any two revisions
+go-whatchanged --filter=breaking @latest        # only the changes that break importers
+go-whatchanged --exit-fail=major @latest        # a compatibility gate: exit 100 on a required major
+```
+
+A module you depend on, without a checkout, before and after an upgrade:
+
+```sh
+go-whatchanged github.com/gorilla/mux@v1.8.0 @v1.8.1          # what the upgrade changes
+go-whatchanged --filter=breaking github.com/spf13/viper@v1.18.0 @v1.19.0
+go-whatchanged github.com/stretchr/testify@latest             # what is unreleased on its default branch
+go-whatchanged github.com/stretchr/testify@latest @master     # or on a named branch
+go-whatchanged github.com/stretchr/testify@v1.10.0 @abc1234   # up to a commit
+```
+
+A monorepo, with a module below the root and tags like `services/api/v1.2.0`:
+
+```sh
+cd services/api && go-whatchanged @latest         # the module of the current directory
+go-whatchanged ./services/api@latest              # the same, from the root
+go-whatchanged ./services/api@v1.1.0 @v1.2.0
+```
+
+An application, where the API that matters is internal or the commands:
+
+```sh
+go-whatchanged --filter=internal @latest          # the internal packages alone
+go-whatchanged --filter=main @latest              # the main packages: changed flags, say
+go-whatchanged --pkg store/... --exclude cmd/... @latest
+```
+
+Other checkouts, a fork against its upstream, another platform, a script:
+
+```sh
+go-whatchanged ~/src/m@latest                     # another checkout, from anywhere
+go-whatchanged ~/src/upstream@v1.4.0 ~/src/fork@main
+GOOS=windows go-whatchanged @latest               # the API as built for another platform
+go-whatchanged --format=json @latest | jq .summary
+```
 
 ### Large modules and applications
 
@@ -276,8 +352,8 @@ permissions:
 
 | Input | Default | Meaning |
 |---|---|---|
-| `base` | the pull request's merge-base, else `@latest` | Commit-ish or `@latest` for the old side. |
-| `head` | `HEAD` | Commit-ish for the new side. Empty means the working tree. |
+| `base` | the pull request's merge-base, else `@latest` | The old side, `@rev` or `@latest`. |
+| `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
 | `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
@@ -313,28 +389,35 @@ steps:
 - uses: actions/setup-go@v5
   with:
     go-version-file: go.mod
-- run: go mod download
 - run: go install github.com/shazow/go-whatchanged@latest
 - run: |
-    go-whatchanged --format=markdown origin/${{ github.base_ref }} HEAD \
+    go-whatchanged --format=markdown @origin/${{ github.base_ref }} @HEAD \
       >> "$GITHUB_STEP_SUMMARY"
-- run: go-whatchanged --exit-fail=major origin/${{ github.base_ref }} HEAD
+- run: go-whatchanged --exit-fail=major @origin/${{ github.base_ref }} @HEAD
 ```
 
 ## Guarantees
 
 Run it on a dirty checkout, on a shared CI runner, in a linked worktree
-from `git worktree add`: nothing is changed.
+from `git worktree add`: nothing in the repository is changed.
 
-- **No disk writes.** No temporary directories, no checkouts, no build
-  cache, no `go.sum` edits. It only reads the repository, `.git`,
+- **No repository writes.** No temporary directories, no checkouts, no
+  build cache, no `go.sum` edits. It reads the repository, `.git`,
   `$GOROOT/src`, `$GOMODCACHE` and the directories that `replace`
   directives point at.
-- **No `go` command.** Both sides are parsed and type-checked in-process
+- **The module cache is the one exception.** The modules that a side's
+  `go.mod` pins and the cache lacks are fetched together with one
+  `go mod download`, run from outside any module with `GOWORK=off`, so
+  that the go command never sees, let alone edits, the checkout's
+  `go.mod`, `go.sum` or `go.work`. That download is the only time the tool
+  runs the go command or reaches the network, through the usual `GOPROXY`,
+  `GOPRIVATE` and `GONOSUMDB`.
+- **`--fsreadonly` removes the exception.** With it the tool never writes
+  anywhere and never runs the go command; a module the cache lacks is an
+  error that says to drop the flag.
+- **In-process type-checking.** Both sides are parsed and type-checked
   with `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
   `import "C"` are skipped, so an API declared only in them is not diffed.
-- **No network.** Dependencies come from the module cache; nothing is
-  fetched.
 - **No repository mutation.** Only go-git's object store is used. The
   worktree, index and refs are never touched.
 
@@ -353,12 +436,24 @@ their imports resolve identically on both; otherwise, as when a dependency
 imports the main module, they are checked once per side, so that neither
 side is ever linked against the other side's packages.
 
+A module the cache lacks is fetched through one small interface,
+`internal/modfetch.Source`: resolve a query to a version, fetch a version
+to a readable tree, or several at once. Before a side is type-checked,
+every requirement of its `go.mod` that the cache lacks is fetched as one
+batch, in parallel, and anything that still turns out to be missing is
+fetched on demand. The interface's only implementation runs the go
+command; a client for the module proxy protocol could replace it without
+the rest of the tool noticing, and `--fsreadonly` simply leaves it out.
+
 ## Limitations
 
 - One platform per run, picked by `GOOS` and `GOARCH`; no union diff
   across platforms.
 - No `go.work`, vendor mode or GOPATH mode. Dependencies come from the
   module cache and `replace` directories.
+- Modules at `go 1.16` or older in their go.mod cannot be diffed, whether a
+  revision or a published version: without module graph pruning, go.mod
+  alone does not say where every import comes from.
 - Only the main module's API is compared, not its dependencies'.
 - Not a library, for now: everything lives under `internal/`, and the
   command line and the JSON layout are the interface.

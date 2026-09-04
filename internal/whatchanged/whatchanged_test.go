@@ -2,6 +2,7 @@ package whatchanged
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -16,6 +17,7 @@ import (
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -26,7 +28,9 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
 	"golang.org/x/mod/modfile"
+	"golang.org/x/mod/module"
 
+	"github.com/shazow/go-whatchanged/internal/modfetch"
 	"github.com/shazow/go-whatchanged/internal/modres"
 	"github.com/shazow/go-whatchanged/internal/render"
 	"github.com/shazow/go-whatchanged/internal/vfs"
@@ -200,6 +204,7 @@ type runResult struct {
 	stdout, stderr string
 	code           int
 	err            error
+	res            *render.Result
 }
 
 // run diffs base against the fixture's in-memory worktree (or head, if set).
@@ -210,20 +215,37 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	opts.Stdout = &out
 	opts.Stderr = &errb
 	opts.Base = base
+	headSpec := sideSpec{fs: &billyFS{fs: f.fs}}
+	if head != "" {
+		headSpec = sideSpec{rev: head}
+	}
+	if base == "" {
+		base = DefaultBase
+	}
+	return f.runSpecs(sideSpec{rev: base}, headSpec, opts)
+}
+
+// runSpecs diffs two sides given as specs, filling in the fixture's
+// repository and module cache.
+func (f *fixture) runSpecs(base, head sideSpec, opts Options) runResult {
+	f.t.Helper()
+	var out, errb bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errb
 	var mounts []vfs.Mount
 	if f.modcache != nil {
 		mounts = []vfs.Mount{{Path: f.env.GOMODCACHE, FS: &billyFS{fs: f.modcache}}}
 	}
-	headSpec := sideSpec{fs: &billyFS{fs: f.fs}, mounts: mounts}
-	if head != "" {
-		headSpec = sideSpec{rev: head, mounts: mounts}
+	for _, s := range []*sideSpec{&base, &head} {
+		s.open = f.open
+		s.mounts = mounts
 	}
-	res, err := runRepo(f.open, sideSpec{rev: opts.baseRev(), mounts: mounts}, headSpec, "", f.env, opts)
+	res, err := compare(f.t.Context(), base, head, f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
 	code, err := finish(res, opts)
-	return runResult{stdout: out.String(), stderr: errb.String(), code: code, err: err}
+	return runResult{stdout: out.String(), stderr: errb.String(), code: code, err: err, res: res}
 }
 
 // mustRun is run for a diff that is expected to succeed.
@@ -558,9 +580,8 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 	for i := range 10 {
 		var out, errb bytes.Buffer
 		code, err := Run(Options{
-			Repo:   dir,
-			Base:   base.String()[:7], // abbreviated, as typed from git log
-			Head:   head.String(),
+			Base:   dir + "@" + base.String()[:7], // abbreviated, as typed from git log
+			Head:   "@" + head.String(),
 			Stdout: &out,
 			Stderr: &errb,
 		})
@@ -603,7 +624,7 @@ func TestLinkedWorktree(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code, err := Run(Options{Repo: linked, Base: "HEAD~1", Stdout: &out, Stderr: &errb})
+	code, err := Run(Options{Base: linked + "@HEAD~1", Stdout: &out, Stderr: &errb})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -613,7 +634,7 @@ func TestLinkedWorktree(t *testing.T) {
 	mustContain(t, out.String(), "  + func B()\n", "  + func Uncommitted()\n")
 
 	out.Reset()
-	code, err = Run(Options{Repo: linked, Base: base.String(), Head: "HEAD", Stdout: &out, Stderr: &errb})
+	code, err = Run(Options{Base: linked + "@" + base.String(), Head: "@HEAD", Stdout: &out, Stderr: &errb})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -687,7 +708,7 @@ func TestBadRevision(t *testing.T) {
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), `resolve "does-not-exist"`)
+	mustContain(t, r.err.Error(), "@does-not-exist: no such tag, branch or commit")
 }
 
 func TestMissingGoMod(t *testing.T) {
@@ -715,39 +736,294 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	}
 	mustContain(t, r.err.Error(), `unresolvable import "example.org/nothere" (required by example.com/m/a)`)
 
-	// A module go.mod requires but the module cache lacks is fatal too, and
-	// the error says how to download it, since the tool never does.
+	// A module go.mod requires but the module cache lacks is fatal too when
+	// there is nothing to fetch it with, and the error names the flag.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/nothere v1.2.3\n")
 	r = f.run("HEAD", "", Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
 	mustContain(t, r.err.Error(),
-		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; to download the modules go.mod pins:\n\tgo mod download")
+		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it")
+}
 
-	// For a revision, the fix downloads from a copy of that revision's
-	// go.mod, so that the checkout is not touched.
-	f.commit("dep")
-	f.write("go.mod", "module example.com/m\n\ngo 1.24\n")
-	f.write("a/a.go", "package a\n")
+// fakeSource is a modfetch.Source serving module versions from an in-memory
+// filesystem, each at a synthetic directory of its own, the way an
+// in-process Source would: nothing it serves is in the module cache.
+type fakeSource struct {
+	fs         billy.Filesystem
+	versions   map[string]string // query → version; anything else resolves to itself
+	gomods     map[string]string // version → go.mod, for a tree that has none
+	mu         sync.Mutex
+	fetched    []module.Version
+	prefetched [][]module.Version
+}
+
+// Prefetch records the batch; the modules are served by Fetch as usual.
+func (s *fakeSource) Prefetch(_ context.Context, mods []module.Version) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prefetched = append(s.prefetched, mods)
+	return nil
+}
+
+func (s *fakeSource) Resolve(_ context.Context, path, query string) (module.Version, error) {
+	if v, ok := s.versions[query]; ok {
+		query = v
+	}
+	return module.Version{Path: path, Version: query}, nil
+}
+
+func (s *fakeSource) Fetch(_ context.Context, mod module.Version) (*modfetch.Module, error) {
+	root := mod.String()
+	if fi, err := s.fs.Stat(root); err != nil || !fi.IsDir() {
+		return nil, fmt.Errorf("%s: not found", mod)
+	}
+	sub, err := s.fs.Chroot(root)
+	if err != nil {
+		return nil, err
+	}
+	gomod := []byte(s.gomods[mod.Version])
+	if f, err := sub.Open("go.mod"); err == nil {
+		gomod, err = io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	s.mu.Lock()
+	s.fetched = append(s.fetched, mod)
+	s.mu.Unlock()
+	return &modfetch.Module{Version: mod, Dir: vfs.SyntheticPrefix + "fetched/" + root, FS: &billyFS{fs: sub}, GoMod: gomod}, nil
+}
+
+func TestFetchMissingModule(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.useFakeModcache() // empty: every dependency is missing
+	remote := memfs.New()
+	writeFile(t, remote, "example.org/dep@v1.0.0/go.mod", "module example.org/dep\n\ngo 1.24\n")
+	writeFile(t, remote, "example.org/dep@v1.0.0/dep.go", "package dep\n\ntype T struct{}\n")
+	src := &fakeSource{fs: remote}
+
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/dep v1.0.0\n")
+	f.write("a/a.go", "package a\n\nimport \"example.org/dep\"\n\nfunc A() dep.T { return dep.T{} }\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nimport \"example.org/dep\"\n\nfunc A() dep.T { return dep.T{} }\n\nfunc B() dep.T { return dep.T{} }\n")
+
+	// With a Source, the missing module is fetched and mounted where the
+	// Source says, on both sides, after each side asked for its missing
+	// requirements as a batch.
+	r := f.mustRun("HEAD", "", Options{Fetch: src, Color: false})
+	mustContain(t, r.stdout, "+ func B() dep.T")
+	mustNotContain(t, r.stdout, "func A()")
+	dep := module.Version{Path: "example.org/dep", Version: "v1.0.0"}
+	if len(src.fetched) == 0 || slices.ContainsFunc(src.fetched, func(m module.Version) bool { return m != dep }) {
+		t.Errorf("fetched = %v", src.fetched)
+	}
+	if len(src.prefetched) != 2 || !slices.Equal(src.prefetched[0], []module.Version{dep}) || !slices.Equal(src.prefetched[1], []module.Version{dep}) {
+		t.Errorf("prefetched = %v, want [%v] per side", src.prefetched, dep)
+	}
+
+	// Without one, the run is read-only and the error says which flag to
+	// drop.
 	r = f.run("HEAD", "", Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
-	mustContain(t, r.err.Error(),
-		"HEAD: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; to download the modules HEAD pins:\n\tmkdir -p "+
-			dir+" && git show HEAD:go.mod > "+filepath.Join(dir, "go.mod")+" && (cd "+dir+" && go mod download)")
+	mustContain(t, r.err.Error(), "module example.org/dep@v1.0.0 not in module cache; remove --fsreadonly to let go-whatchanged download it")
+
+	// A module the Source cannot find is the Source's error, named once.
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/dep v1.0.0\n\nrequire example.org/absent v1.5.0\n")
+	f.write("a/a.go", "package a\n\nimport \"example.org/absent\"\n\nvar X = absent.X\n")
+	r = f.run("HEAD", "", Options{Fetch: src})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `working tree: unresolvable import "example.org/absent" (required by example.com/m/a): example.org/absent@v1.5.0: not found`)
+	mustNotContain(t, r.err.Error(), "fsreadonly")
 }
 
-func TestDownloadHint(t *testing.T) {
+func TestModuleSides(t *testing.T) {
 	t.Parallel()
-	missing := fmt.Errorf("wrapped: %w", &modres.MissingModuleError{Path: "example.org/x", Version: "v1.0.0"})
-	// A module below the repository root names its go.mod by its path.
-	mustContain(t, (&side{rev: "v1.4.0"}).downloadHint(missing, "sub"), "git show v1.4.0:sub/go.mod > ")
-	if hint := (&side{rev: "v1.4.0"}).downloadHint(fmt.Errorf("something else"), ""); hint != "" {
-		t.Errorf("hint for an unrelated error = %q", hint)
+	f := newFixture(t)
+	f.useFakeModcache()
+	remote := memfs.New()
+	const tip = "v1.1.1-0.20260101000000-abcdef123456"
+	for v, body := range map[string]string{
+		"v1.0.0": "func A() {}\n",
+		"v1.1.0": "func A() {}\n\nfunc B() {}\n",
+		tip:      "func A() {}\n\nfunc B() {}\n\nfunc C() {}\n",
+	} {
+		writeFile(t, remote, "example.org/lib@"+v+"/lib.go", "package lib\n\n"+body)
 	}
+	// The tree of v1.0.0 has no go.mod; the source knows it anyway.
+	for _, v := range []string{"v1.1.0", tip} {
+		writeFile(t, remote, "example.org/lib@"+v+"/go.mod", "module example.org/lib\n\ngo 1.24\n\nreplace example.org/other => ../other\n")
+	}
+	src := &fakeSource{
+		fs:       remote,
+		versions: map[string]string{"latest": "v1.1.0", "HEAD": tip},
+		gomods:   map[string]string{"v1.0.0": "module example.org/lib\n\ngo 1.24\n"},
+	}
+	lib := func(q string) sideSpec { return sideSpec{mod: module.Version{Path: "example.org/lib", Version: q}} }
+
+	// Latest release against the default branch: the base version is the
+	// release, so the summary suggests the next one; replace directives
+	// in the fetched go.mod are ignored.
+	r := f.runSpecs(lib("latest"), lib("HEAD"), Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "+ func C()", "would require: MINOR (v1.1.0 → v1.2.0)")
+	mustNotContain(t, r.stdout, "func B()")
+	if r.res.Base != "example.org/lib@v1.1.0" || r.res.Head != "example.org/lib@"+tip {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+
+	// Two releases, the older without a go.mod in its tree.
+	r = f.runSpecs(lib("v1.0.0"), lib("v1.1.0"), Options{Fetch: src, Positions: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "+ func B()", "example.org/lib@v1.1.0:lib.go:5")
+	mustNotContain(t, r.stdout, "func C()")
+
+	// A pseudo-version base is no release, so nothing is suggested.
+	r = f.runSpecs(lib(tip), lib("v1.1.0"), Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "- func C()", "would require: MAJOR\n")
+	mustNotContain(t, r.stdout, "→")
+
+	// Without a source there is nothing to fetch a module version with.
+	r = f.runSpecs(lib("latest"), lib("HEAD"), Options{})
+	if r.err == nil || !strings.Contains(r.err.Error(), "example.org/lib@latest: diffing a module version needs the go command; remove --fsreadonly") {
+		t.Errorf("without a source: %v", r.err)
+	}
+}
+
+func TestParseTargets(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, tc := range []struct {
+		base, head string
+		wantBase   target
+		wantHead   target
+	}{
+		{"", "", target{dir: ".", query: "HEAD"}, target{dir: "."}},
+		{"@v1.4.0", "", target{dir: ".", query: "v1.4.0"}, target{dir: "."}},
+		{"@v1.4.0", "@main", target{dir: ".", query: "v1.4.0"}, target{dir: ".", query: "main"}},
+		{"@latest", "@HEAD", target{dir: ".", query: LatestRelease}, target{dir: ".", query: "HEAD"}},
+		{"@origin/main", "", target{dir: ".", query: "origin/main"}, target{dir: "."}},
+		{"@HEAD@{1}", "@main@{upstream}", target{dir: ".", query: "HEAD@{1}"}, target{dir: ".", query: "main@{upstream}"}},
+		{"github.com/x/m@latest", "", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "HEAD"}},
+		{"github.com/x/m@latest", "@main", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "main"}},
+		{"github.com/x/m@v1.0.0", "@v1.1.0", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/m", query: "v1.1.0"}},
+		{"github.com/x/m@v1.0.0", "@latest", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/m", query: "latest"}},
+		// A local head beside a module base names its checkout.
+		{"github.com/x/m@v1.0.0", ".@HEAD", target{module: "github.com/x/m", query: "v1.0.0"}, target{dir: ".", query: "HEAD"}},
+		{"github.com/x/m@v1.0.0", "github.com/x/n@v2.0.0", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/n", query: "v2.0.0"}},
+		{dir + "@latest", "", target{dir: dir, query: LatestRelease}, target{dir: dir}},
+		{dir + "@v1.0.0", "@main", target{dir: dir, query: "v1.0.0"}, target{dir: dir, query: "main"}},
+		{dir + "@v1.0.0", dir + "@main", target{dir: dir, query: "v1.0.0"}, target{dir: dir, query: "main"}},
+		{dir, "", target{dir: dir, query: "HEAD"}, target{dir: dir}},
+		{"./sub@v1", "", target{dir: "./sub", query: "v1"}, target{dir: "./sub"}},
+		{"./sub@v1", "../other", target{dir: "./sub", query: "v1"}, target{dir: "../other"}},
+		{"~/src/m@v1", "", target{dir: filepath.Join(home, "src", "m"), query: "v1"}, target{dir: filepath.Join(home, "src", "m")}},
+	} {
+		base, head, err := parseTargets(tc.base, tc.head)
+		if err != nil {
+			t.Errorf("parseTargets(%q, %q): %v", tc.base, tc.head, err)
+			continue
+		}
+		if base != tc.wantBase || head != tc.wantHead {
+			t.Errorf("parseTargets(%q, %q) = %+v, %+v; want %+v, %+v", tc.base, tc.head, base, head, tc.wantBase, tc.wantHead)
+		}
+	}
+	for _, tc := range []struct{ base, head, want string }{
+		{"@", "", "missing a version"},
+		{"github.com/x/m@", "", "missing a version"},
+		{"github.com/x/m", "", "a module needs a version: github.com/x/m@latest"},
+		{"github.com/x/m@v1", "github.com/x/n", "a module needs a version: github.com/x/n@HEAD"},
+		{"@v1", "@", "missing a version"},
+		{"@v1", "@latest", "can only be the base"},
+		// Without an @, an argument is a location: a bare revision is not
+		// a module path, and a directory is spelled as a path.
+		{"v1.4.0", "", "a tag, branch or commit of the current repository is written with an @: @v1.4.0"},
+		{"origin/main", "", "written with an @: @origin/main"},
+		{"sub@v1", "", "written with an @: @sub@v1"},
+		{"testdata@v1", "", "a directory is written as a path: ./testdata@v1"},
+	} {
+		_, _, err := parseTargets(tc.base, tc.head)
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("parseTargets(%q, %q) = %v, want %q", tc.base, tc.head, err, tc.want)
+		}
+	}
+}
+
+func TestUnknownRevision(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	h := f.commit("one")
+
+	// With no tags, the error names the forms a revision takes.
+	r := f.run("nope", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@nope: no such tag, branch or commit; a revision is written @<tag>, @<branch>, @<commit> or @HEAD~2, and @latest is the newest release tag")
+	mustNotContain(t, r.err.Error(), "tags:")
+
+	// With tags, it lists them, newest first, release versions before
+	// the rest, and stops after a few.
+	for _, name := range []string{"v1.10.0", "v1.9.0", "v1.8.0", "v1.7.0", "v1.6.0", "v1.5.0", "v1.4.0", "build-42"} {
+		f.tag(name, h)
+	}
+	r = f.run("HEAD", "v1.4", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@v1.4: no such tag, branch or commit (tags: v1.10.0, v1.9.0, v1.8.0, v1.7.0, v1.6.0, v1.5.0, and 2 more); a revision is written")
+}
+
+func TestMissingDirectory(t *testing.T) {
+	t.Parallel()
+	// A directory that does not exist must not fall through to the
+	// repository above it.
+	nope := filepath.Join(t.TempDir(), "nope")
+	var out, errb bytes.Buffer
+	_, err := Run(Options{Base: nope + "@HEAD", Stdout: &out, Stderr: &errb})
+	if err == nil || !strings.Contains(err.Error(), nope+": no such directory") {
+		t.Errorf("Run(%s@HEAD) = %v", nope, err)
+	}
+}
+
+func TestDirectoryTargets(t *testing.T) {
+	t.Parallel()
+	dir, base, head := diskFixture(t)
+	// The tests run inside this project's repository; a directory target
+	// names another one, and "@rev" follows it.
+	var out, errb bytes.Buffer
+	code, err := Run(Options{Base: dir + "@" + base.String()[:7], Head: "@" + head.String(), Stdout: &out, Stderr: &errb})
+	if err != nil || code != ExitClean {
+		t.Fatalf("exit = %d, err = %v, stderr = %q", code, err, errb.String())
+	}
+	mustContain(t, out.String(), "example.com/m/a\n  + func B()\n")
+
+	// Alone, the head is that checkout's working tree.
+	out.Reset()
+	code, err = Run(Options{Base: dir + "@" + base.String(), Stdout: &out, Stderr: &errb})
+	if err != nil || code != ExitClean {
+		t.Fatalf("exit = %d, err = %v, stderr = %q", code, err, errb.String())
+	}
+	mustContain(t, out.String(), "  + func B()\n")
 }
 
 // ownDeps reads this project's go.mod (two directories up from this
@@ -868,7 +1144,7 @@ func TestReplaceDirectoryOutsideModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := compare(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -948,7 +1224,7 @@ func TestSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := compare(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1155,8 +1431,7 @@ func TestWriteGuard(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code, err := Run(Options{
-		Repo:   repoDir,
-		Base:   "HEAD",
+		Base:   repoDir + "@HEAD",
 		GOOS:   runtime.GOOS,
 		GOARCH: runtime.GOARCH,
 		Stdout: &out,
@@ -1513,7 +1788,7 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := compare(t.Context(), sideSpec{rev: LatestRelease, open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
