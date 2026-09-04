@@ -25,16 +25,16 @@ const description = `Show how the exported API of the Go module differs between 
 With no arguments, compare HEAD against the working tree: what your
 uncommitted changes do to the API.
 
-Each side is named the way the go command names versions. A bare revision
-is one of the current repository: v1.4.0, HEAD~2, origin/main. A module
-path with a version suffix is a published module, fetched into the module
-cache: github.com/x/m@v1.2.0, github.com/x/m@latest for its newest
-release, github.com/x/m@main for a branch. A directory with a suffix is a
-revision of that checkout: ~/src/m@latest. A head of @query alone applies
-the query to the base's repository or module: "v1.4.0 @main" compares
-two revisions here, "github.com/x/m@latest @main" a module's last release
-with its main branch, and with no head at all a module base is compared
-with @HEAD, its default branch.
+Each side is named the way the go command names versions, as
+location@version. With no location, @v1.4.0, @HEAD~2 or @origin/main is a
+revision of the current repository and @latest its newest release tag. A
+module path is a published module, fetched into the module cache:
+github.com/x/m@v1.2.0, github.com/x/m@latest for its newest release,
+github.com/x/m@main for a branch. A directory is a checkout, ~/src/m@latest.
+For the head, no location means the base's repository or module: "@v1.4.0
+@main" compares two revisions here, "github.com/x/m@latest @main" a
+module's last release with its main branch, and with no head at all a
+module base is compared with @HEAD, its default branch.
 
 When the base is a release tag, the summary also names the version the
 changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
@@ -82,7 +82,7 @@ type options struct {
 	Version    bool     `long:"version" description:"print the version of go-whatchanged and exit"`
 
 	Args struct {
-		Base string `positional-arg-name:"base" description:"the old side: a commit-ish in the current repository (hash, tag, branch, HEAD~2, ...) or @latest for its newest release tag; a module version such as github.com/x/m@v1.2.0 or github.com/x/m@latest; or a checkout with a suffix, ~/src/m@v1.2.0 (default: HEAD)"`
+		Base string `positional-arg-name:"base" description:"the old side, as location@version: @v1.4.0, @HEAD~2 or @origin/main in the current repository, @latest for its newest release tag; github.com/x/m@v1.2.0 or github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for another checkout (default: @HEAD)"`
 		Head string `positional-arg-name:"head" description:"the new side, in the same forms; @main alone means main in the base's repository or module (default: the working tree, including uncommitted and untracked files, or @HEAD for a module)"`
 	} `positional-args:"yes"`
 }

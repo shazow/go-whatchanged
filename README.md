@@ -55,9 +55,9 @@ go install github.com/shazow/go-whatchanged@latest
 |---|---|
 | What do my uncommitted changes do to the API? | `go-whatchanged` |
 | What has changed since the last release? | `go-whatchanged @latest` |
-| What did release `v1.4.0` ship? | `go-whatchanged @latest v1.4.0` |
-| What does this branch change, compared to `main`? | `go-whatchanged origin/main` |
-| What is unreleased on the `main` branch of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
+| What did release `v1.4.0` ship? | `go-whatchanged @latest @v1.4.0` |
+| What does this branch change, compared to `main`? | `go-whatchanged @origin/main` |
+| What is unreleased on `main` of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
 | What did a published release change? | `go-whatchanged github.com/stretchr/testify@v1.9.0 @v1.10.0` |
 | What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
@@ -67,11 +67,11 @@ go install github.com/shazow/go-whatchanged@latest
 ```
 go-whatchanged [options] [<base> [<head>]]
 
-  base   the old side: a commit-ish of the current repository (hash, tag,
-         branch, HEAD~2, ...) or @latest, its newest release tag among the
-         ancestors of head; a module version, github.com/x/m@v1.2.0 or
-         github.com/x/m@latest; or a checkout with a suffix, ~/src/m@v1.2.0.
-         Default: HEAD.
+  base   the old side, as location@version: @v1.4.0, @HEAD~2 or
+         @origin/main in the current repository, @latest for its newest
+         release tag among the ancestors of head; github.com/x/m@v1.2.0 or
+         github.com/x/m@latest for a published module; ~/src/m@v1.2.0 for
+         another checkout. Default: @HEAD.
   head   the new side, in the same forms. @main alone means main in the
          base's repository or module. Default: the working tree, or @HEAD
          for a module.
@@ -99,10 +99,10 @@ Options:
 
 Before tagging, `go-whatchanged @latest` shows everything since the last
 release and the version it calls for. After tagging, `go-whatchanged
-@latest v1.4.0` lists what the tag ships, for the release notes:
+@latest @v1.4.0` lists what the tag ships, for the release notes:
 
 ```
-$ go-whatchanged @latest v1.4.0
+$ go-whatchanged @latest @v1.4.0
 example.com/m/util
   + func Pad(s string, n int) string
 
@@ -119,36 +119,78 @@ internal: 1 package changed · 1 incompatible · 1 compatible
 tags are the ones the `go` command would publish: `v1.4.0`, `sub/v1.4.0`
 for a module below the repository root, `v2.x.y` for a `/v2` module. With
 uncommitted changes on the tagged commit itself, `@latest` therefore skips
-that tag; name it instead: `go-whatchanged v1.4.0`.
+that tag; name it instead: `go-whatchanged @v1.4.0`.
 
 At `v0` an incompatible change suggests the next minor, and a pre-release
 always suggests its final release.
 
-### Published modules and other checkouts
+### Naming the sides
 
-Sides are named the way the go command names versions. A module path with
-a suffix is a published module, fetched into the module cache:
-`github.com/stretchr/testify@latest` is its newest release, `@v1.10.0` a
-release, `@main` a branch, `@HEAD` the default branch, `@abc1234` a
-commit. A head of `@query` alone applies the query to the base's module,
-and with no head at all a module base is compared with `@HEAD`: what is
-unreleased on the default branch, and the version it calls for.
+Each side is `location@version`, the way the go command names versions.
+The location is a module path, a directory, or nothing:
 
-```
-$ go-whatchanged github.com/stretchr/testify@latest
-...
-2 packages changed · 0 incompatible · 3 compatible · would require: MINOR (v1.12.1 → v1.13.0)
-```
+| Location | `@version` means | Alone |
+|---|---|---|
+| none: `@v1.4.0`, `@HEAD~2`, `@origin/main` | a revision of the current repository, or for the head, of the base's repository or module | the default: `@HEAD` as base, the working tree as head |
+| `@latest` | the newest release tag among the ancestors of the head | |
+| a module path: `github.com/x/m@v1.2.0` | a published module version, fetched into the module cache; `@latest` its newest release, `@main` a branch, `@HEAD` the default branch, `@abc1234` a commit | an error: a module needs a version |
+| a directory: `~/src/m@v1.2.0`, `./m@latest`, `../m@main` | a revision of that checkout | that checkout's `HEAD` as base, its working tree as head |
 
-A directory with a suffix names a revision of that checkout, `~/src/m@latest`
-or `../m@v1.2.0`, and `@main` beside it a revision of the same checkout. A
-bare revision, `v1.4.0` or `origin/main`, is one of the current repository,
-so `go-whatchanged v1.4.0 @main` compares two of its revisions.
-
-Module versions come through the proxy the go command is configured for,
-and a branch or `@HEAD` may lag the repository by the proxy's cache. A
-version whose go.mod declares go 1.16 or older cannot be diffed; see
+A directory is anything spelled as a path, starting with `./`, `../`, `~/`
+or `/`, as the go command tells a directory from an import path. Module
+versions come through the proxy the go command is configured for, and a
+branch or `@HEAD` may lag the repository by the proxy's cache. A version
+whose go.mod declares go 1.16 or older cannot be diffed; see
 [Limitations](#limitations).
+
+### Examples
+
+A library you maintain, from its checkout:
+
+```sh
+go-whatchanged                          # what my uncommitted changes do to the API
+go-whatchanged @latest                  # everything since the last release, and the version it calls for
+go-whatchanged @latest @v1.4.0          # what v1.4.0 shipped, for the release notes
+go-whatchanged @origin/main             # what this branch changes, compared to main
+go-whatchanged @v1.3.0 @v1.4.0          # between any two revisions
+go-whatchanged --filter=breaking @latest        # only the changes that break importers
+go-whatchanged --exit-fail=major @latest        # a compatibility gate: exit 100 on a required major
+```
+
+A module you depend on, without a checkout, before and after an upgrade:
+
+```sh
+go-whatchanged github.com/gorilla/mux@v1.8.0 @v1.8.1          # what the upgrade changes
+go-whatchanged --filter=breaking github.com/spf13/viper@v1.18.0 @v1.19.0
+go-whatchanged github.com/stretchr/testify@latest             # what is unreleased on its default branch
+go-whatchanged github.com/stretchr/testify@latest @master     # or on a named branch
+go-whatchanged github.com/stretchr/testify@v1.10.0 @abc1234   # up to a commit
+```
+
+A monorepo, with a module below the root and tags like `services/api/v1.2.0`:
+
+```sh
+cd services/api && go-whatchanged @latest         # the module of the current directory
+go-whatchanged ./services/api@latest              # the same, from the root
+go-whatchanged ./services/api@v1.1.0 @v1.2.0
+```
+
+An application, where the API that matters is internal or the commands:
+
+```sh
+go-whatchanged --filter=internal @latest          # the internal packages alone
+go-whatchanged --filter=main @latest              # the main packages: changed flags, say
+go-whatchanged --pkg store/... --exclude cmd/... @latest
+```
+
+Other checkouts, a fork against its upstream, another platform, a script:
+
+```sh
+go-whatchanged ~/src/m@latest                     # another checkout, from anywhere
+go-whatchanged ~/src/upstream@v1.4.0 ~/src/fork@main
+GOOS=windows go-whatchanged @latest               # the API as built for another platform
+go-whatchanged --format=json @latest | jq .summary
+```
 
 ### Large modules and applications
 
@@ -350,9 +392,9 @@ steps:
 - run: go mod download
 - run: go install github.com/shazow/go-whatchanged@latest
 - run: |
-    go-whatchanged --format=markdown origin/${{ github.base_ref }} HEAD \
+    go-whatchanged --format=markdown @origin/${{ github.base_ref }} @HEAD \
       >> "$GITHUB_STEP_SUMMARY"
-- run: go-whatchanged --exit-fail=major origin/${{ github.base_ref }} HEAD
+- run: go-whatchanged --exit-fail=major @origin/${{ github.base_ref }} @HEAD
 ```
 
 ## Guarantees

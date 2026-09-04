@@ -578,8 +578,8 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 		var out, errb bytes.Buffer
 		code, err := Run(Options{
 			Repo:   dir,
-			Base:   base.String()[:7], // abbreviated, as typed from git log
-			Head:   head.String(),
+			Base:   "@" + base.String()[:7], // abbreviated, as typed from git log
+			Head:   "@" + head.String(),
 			Stdout: &out,
 			Stderr: &errb,
 		})
@@ -622,7 +622,7 @@ func TestLinkedWorktree(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code, err := Run(Options{Repo: linked, Base: "HEAD~1", Stdout: &out, Stderr: &errb})
+	code, err := Run(Options{Repo: linked, Base: "@HEAD~1", Stdout: &out, Stderr: &errb})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -632,7 +632,7 @@ func TestLinkedWorktree(t *testing.T) {
 	mustContain(t, out.String(), "  + func B()\n", "  + func Uncommitted()\n")
 
 	out.Reset()
-	code, err = Run(Options{Repo: linked, Base: base.String(), Head: "HEAD", Stdout: &out, Stderr: &errb})
+	code, err = Run(Options{Repo: linked, Base: "@" + base.String(), Head: "@HEAD", Stdout: &out, Stderr: &errb})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -929,20 +929,24 @@ func TestParseTargets(t *testing.T) {
 		wantHead   target
 	}{
 		{"", "", target{dir: ".", query: "HEAD"}, target{dir: "."}},
-		{"v1.4.0", "", target{dir: ".", query: "v1.4.0"}, target{dir: "."}},
-		{"v1.4.0", "@main", target{dir: ".", query: "v1.4.0"}, target{dir: ".", query: "main"}},
-		{"@latest", "HEAD", target{dir: ".", query: LatestRelease}, target{dir: ".", query: "HEAD"}},
-		{"origin/main", "", target{dir: ".", query: "origin/main"}, target{dir: "."}},
+		{"@v1.4.0", "", target{dir: ".", query: "v1.4.0"}, target{dir: "."}},
+		{"@v1.4.0", "@main", target{dir: ".", query: "v1.4.0"}, target{dir: ".", query: "main"}},
+		{"@latest", "@HEAD", target{dir: ".", query: LatestRelease}, target{dir: ".", query: "HEAD"}},
+		{"@origin/main", "", target{dir: ".", query: "origin/main"}, target{dir: "."}},
+		{"@HEAD@{1}", "@main@{upstream}", target{dir: ".", query: "HEAD@{1}"}, target{dir: ".", query: "main@{upstream}"}},
 		{"github.com/x/m@latest", "", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "HEAD"}},
 		{"github.com/x/m@latest", "@main", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "main"}},
 		{"github.com/x/m@v1.0.0", "@v1.1.0", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/m", query: "v1.1.0"}},
 		{"github.com/x/m@v1.0.0", "@latest", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/m", query: "latest"}},
-		// A bare revision beside a module is one of the local repository.
-		{"github.com/x/m@v1.0.0", "HEAD", target{module: "github.com/x/m", query: "v1.0.0"}, target{dir: ".", query: "HEAD"}},
+		// A local head beside a module base names its checkout.
+		{"github.com/x/m@v1.0.0", ".@HEAD", target{module: "github.com/x/m", query: "v1.0.0"}, target{dir: ".", query: "HEAD"}},
+		{"github.com/x/m@v1.0.0", "github.com/x/n@v2.0.0", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/n", query: "v2.0.0"}},
 		{dir + "@latest", "", target{dir: dir, query: LatestRelease}, target{dir: dir}},
 		{dir + "@v1.0.0", "@main", target{dir: dir, query: "v1.0.0"}, target{dir: dir, query: "main"}},
+		{dir + "@v1.0.0", dir + "@main", target{dir: dir, query: "v1.0.0"}, target{dir: dir, query: "main"}},
 		{dir, "", target{dir: dir, query: "HEAD"}, target{dir: dir}},
 		{"./sub@v1", "", target{dir: "./sub", query: "v1"}, target{dir: "./sub"}},
+		{"./sub@v1", "../other", target{dir: "./sub", query: "v1"}, target{dir: "../other"}},
 		{"~/src/m@v1", "", target{dir: filepath.Join(home, "src", "m"), query: "v1"}, target{dir: filepath.Join(home, "src", "m")}},
 	} {
 		base, head, err := parseTargets(tc.base, tc.head, "")
@@ -955,17 +959,23 @@ func TestParseTargets(t *testing.T) {
 		}
 	}
 	// The default directory stands in for ".".
-	base, head, err := parseTargets("v1", "@v2", "/repo")
+	base, head, err := parseTargets("@v1", "@v2", "/repo")
 	if err != nil || base != (target{dir: "/repo", query: "v1"}) || head != (target{dir: "/repo", query: "v2"}) {
 		t.Errorf("with a default directory: %+v, %+v, %v", base, head, err)
 	}
 	for _, tc := range []struct{ base, head, want string }{
 		{"@", "", "missing a version"},
 		{"github.com/x/m@", "", "missing a version"},
-		{"github.com/x/m", "", "needs a version"},
-		{"v1", "@", "missing a version"},
-		{"v1", "@latest", "can only be the base"},
-		{"nota/module@v1", "", "neither a module path nor a directory"},
+		{"github.com/x/m", "", "a module needs a version: github.com/x/m@latest"},
+		{"github.com/x/m@v1", "github.com/x/n", "a module needs a version: github.com/x/n@HEAD"},
+		{"@v1", "@", "missing a version"},
+		{"@v1", "@latest", "can only be the base"},
+		// Without an @, an argument is a location: a bare revision is not
+		// a module path, and a directory is spelled as a path.
+		{"v1.4.0", "", "did you mean @v1.4.0?"},
+		{"origin/main", "", "did you mean @origin/main?"},
+		{"sub@v1", "", "did you mean @sub@v1?"},
+		{"testdata@v1", "", "did you mean ./testdata@v1?"},
 	} {
 		_, _, err := parseTargets(tc.base, tc.head, "")
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -1411,7 +1421,7 @@ func TestWriteGuard(t *testing.T) {
 	var out, errb bytes.Buffer
 	code, err := Run(Options{
 		Repo:   repoDir,
-		Base:   "HEAD",
+		Base:   "@HEAD",
 		GOOS:   runtime.GOOS,
 		GOARCH: runtime.GOARCH,
 		Stdout: &out,

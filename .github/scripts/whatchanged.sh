@@ -71,6 +71,15 @@ resolve_base() {
   fi
 }
 
+# with_at prefixes a bare commit-ish with @, leaving a location@version
+# argument alone.
+with_at() {
+  case $1 in
+    *@*) echo "$1" ;;
+    *) echo "@$1" ;;
+  esac
+}
+
 # module_root is the nearest go.mod at or above the working directory: the
 # module go-whatchanged diffs.
 module_root() {
@@ -143,8 +152,10 @@ warmed=
 head=$INPUT_HEAD
 base=$INPUT_BASE
 [ -n "$base" ] || base=$(resolve_base)
-revs=("$base")
-[ -z "$head" ] || revs+=("$head")
+# The tool names a revision of the checkout as @rev; the inputs may omit
+# the @ (a commit-ish) or carry a location of their own (github.com/x/m@v1).
+revs=("$(with_at "$base")")
+[ -z "$head" ] || revs+=("$(with_at "$head")")
 
 flags=(--filter "$INPUT_FILTER" --signatures "$INPUT_SIGNATURES")
 [ -z "$INPUT_PKG" ] || flags+=(--pkg "$(printf '%s' "$INPUT_PKG" | tr '\n' ,)")
