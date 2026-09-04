@@ -188,7 +188,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		opts.ExitFail = fail
 	}
 	var err error
-	if opts.Format, err = whatchanged.ParseFormat(o.Format); err != nil {
+	if opts.Format, err = render.ParseFormat(o.Format); err != nil {
 		return opts, fmt.Errorf("--format: %w", err)
 	}
 	return opts, nil

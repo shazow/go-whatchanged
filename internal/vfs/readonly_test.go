@@ -31,9 +31,6 @@ func TestReadOnly(t *testing.T) {
 	f.Close()
 
 	fsys := ReadOnly(inner)
-	if ReadOnly(fsys) != fsys {
-		t.Error("ReadOnly wrapped a read-only filesystem again")
-	}
 	if billy.CapabilityCheck(fsys, billy.WriteCapability) || billy.CapabilityCheck(fsys, billy.ReadAndWriteCapability) || billy.CapabilityCheck(fsys, billy.TruncateCapability) {
 		t.Errorf("Capabilities() = %b advertises writing", billy.Capabilities(fsys))
 	}

@@ -63,11 +63,7 @@ func dotGit(root billy.Filesystem, dir string) (billy.Filesystem, error) {
 	if !strings.HasPrefix(line, prefix) {
 		return nil, fmt.Errorf(".git file has no %s prefix", prefix)
 	}
-	gitdir := strings.TrimSpace(line[len(prefix):])
-	if !filepath.IsAbs(gitdir) {
-		gitdir = filepath.Join(dir, gitdir)
-	}
-	return ReadOnly(osfs.New(gitdir)), nil
+	return dirAt(dir, strings.TrimSpace(line[len(prefix):])), nil
 }
 
 // commonDir returns the main repository's .git directory that a linked
@@ -84,10 +80,7 @@ func commonDir(dot billy.Filesystem) (billy.Filesystem, error) {
 	if path == "" {
 		return nil, nil
 	}
-	if !filepath.IsAbs(path) {
-		path = filepath.Join(dot.Root(), path)
-	}
-	common := ReadOnly(osfs.New(path))
+	common := dirAt(dot.Root(), path)
 	if _, err := common.Stat(""); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, git.ErrRepositoryIncomplete
@@ -95,6 +88,16 @@ func commonDir(dot billy.Filesystem) (billy.Filesystem, error) {
 		return nil, err
 	}
 	return common, nil
+}
+
+// dirAt returns the read-only filesystem rooted at path, taken relative to
+// base unless absolute, as git takes the paths in its .git and commondir
+// files.
+func dirAt(base, path string) billy.Filesystem {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(base, path)
+	}
+	return ReadOnly(osfs.New(path))
 }
 
 // readLine returns the first line of the named file.

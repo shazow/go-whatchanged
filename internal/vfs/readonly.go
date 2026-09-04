@@ -24,9 +24,6 @@ var ErrReadOnly = errors.New("read-only filesystem")
 // that the promise never to touch the repository rests on this type rather
 // than on go-git's behaviour.
 func ReadOnly(fsys billy.Filesystem) billy.Filesystem {
-	if _, ok := fsys.(*readOnlyFS); ok {
-		return fsys
-	}
 	return &readOnlyFS{fsys}
 }
 

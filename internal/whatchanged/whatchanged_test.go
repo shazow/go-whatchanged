@@ -2154,19 +2154,6 @@ func TestFormatsWithoutChanges(t *testing.T) {
 	mustNotContain(t, r.stdout, "base_version", "next_version")
 }
 
-func TestParseFormat(t *testing.T) {
-	t.Parallel()
-	for in, want := range map[string]render.Format{"text": render.Text, "markdown": render.Markdown, "md": render.Markdown, "JSON": render.JSON} {
-		got, err := ParseFormat(in)
-		if err != nil || got != want {
-			t.Errorf("ParseFormat(%q) = %v, %v; want %v", in, got, err, want)
-		}
-	}
-	if _, err := ParseFormat("yaml"); err == nil {
-		t.Error("ParseFormat accepted yaml")
-	}
-}
-
 func TestPositions(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
@@ -2505,19 +2492,6 @@ func TestDeclarations(t *testing.T) {
 	mustContain(t, r.stdout, "```go\n// Changed\ntype Opts int      // ->\ntype Opts struct { // a/a.go:9:6\n\tA int\n\tB string\n}\n\n// Added\ntype I interface { // a/a.go:14:6\n\tM()\n\tN()\n}\n```\n")
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"after": "type Opts struct {\n\tA int\n\tB string\n}"`)
-}
-
-func TestParseFilter(t *testing.T) {
-	t.Parallel()
-	for in, want := range map[string]render.Visibility{"public": render.Public, "internal": render.Internal, "main": render.Main, "ALL": render.All} {
-		got, err := ParseFilter(in)
-		if err != nil || got != want {
-			t.Errorf("ParseFilter(%q) = %v, %v; want %v", in, got, err, want)
-		}
-	}
-	if _, err := ParseFilter("private"); err == nil {
-		t.Error("ParseFilter accepted private")
-	}
 }
 
 func TestFilterMainPackages(t *testing.T) {

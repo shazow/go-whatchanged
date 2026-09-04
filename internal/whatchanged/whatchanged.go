@@ -147,17 +147,6 @@ func ParseFailOn(s string) (FailOn, error) {
 	}
 }
 
-// ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
-func ParseFormat(s string) (render.Format, error) {
-	return render.ParseFormat(s)
-}
-
-// ParseFilter parses one --filter term: "public", "internal", "main" or
-// "all".
-func ParseFilter(s string) (render.Visibility, error) {
-	return render.ParseVisibility(s)
-}
-
 // threshold is the lowest level that fails, or ok=false for FailNever.
 func (f FailOn) threshold() (floor render.Level, ok bool) {
 	switch f {
