@@ -119,6 +119,9 @@ func TestGoCommandFetch(t *testing.T) {
 	if lines := log(); len(lines) != 1 || !strings.HasSuffix(lines[0], "mod download -json example.com/m@v1.2.0") {
 		t.Errorf("downloads = %q, want one", lines)
 	}
+	if got := strings.Count(stderr.String(), "downloading example.com/m v1.2.0\n"); got != 1 {
+		t.Errorf("progress lines = %d, want 1:\n%s", got, stderr.String())
+	}
 
 	_, err := g.Fetch(ctx, module.Version{Path: "example.com/m", Version: "v9.9.9"})
 	var nf *NotFoundError

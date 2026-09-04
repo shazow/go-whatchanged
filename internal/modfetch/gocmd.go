@@ -26,9 +26,10 @@ type GoCommand struct {
 	Go string
 	// Env is appended to the environment the commands inherit.
 	Env []string
-	// Stderr receives what the go command prints on its standard error,
-	// such as "go: downloading ..." progress lines; nil discards it. The
-	// text is also kept for error messages.
+	// Stderr receives a "downloading path version" line per download, since
+	// the go command prints no progress in JSON mode, and whatever the go
+	// command does print on its standard error; nil discards both. The go
+	// command's text is also kept for error messages.
 	Stderr io.Writer
 
 	mu      sync.Mutex
@@ -89,6 +90,9 @@ func (g *GoCommand) Fetch(ctx context.Context, mod module.Version) (*Module, err
 }
 
 func (g *GoCommand) download(ctx context.Context, mod module.Version) (*Module, error) {
+	if g.Stderr != nil {
+		fmt.Fprintf(g.Stderr, "downloading %s %s\n", mod.Path, mod.Version)
+	}
 	out, stderr, err := g.run(ctx, "mod", "download", "-json", mod.Path+"@"+mod.Version)
 	var m struct {
 		Path, Version, Error string
