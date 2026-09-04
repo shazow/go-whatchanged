@@ -6,24 +6,17 @@
 
 What changed in the public API?
 
-`go-whatchanged` prints a semantic diff of a Go module's exported API between
-two git revisions, or between a revision and your uncommitted work, and
-names the semantic version the changes call for. The comparison itself is
-done by [`golang.org/x/exp/apidiff`](https://pkg.go.dev/golang.org/x/exp/apidiff);
-this tool makes it work on any git history without touching your checkout.
+`go-whatchanged` prints an API diff of a Go module's API between
+two versions.
 
-- **Read-only.** No temporary directories, no clones, no worktrees. Both
-  sides are read from the git object store and type-checked in memory. The
-  `go` command runs only to download a module the cache lacks, and
-  `--fsreadonly` forbids even that.
-- **Release-aware.** `@latest` stands for the last release tag, and the
-  summary names the version the changes call for.
+- **Read-only:** Happy path is optimized to avoid writing to the filesystem (no temporary directories, git clones, or worktrees). Only `go` commands are used for comparing remote packages that are not already cached, use `--fsreadonly` to disable any features that rely on writing the filesystem.
+- **Release-aware:** All standard Go version tags supported (`@latest` for latest tagged release; `@v1.2.3` for a specific tag; `@HEAD` for a ref like HEAD, etc).
 - **CI-ready.** Markdown for pull requests, JSON for tools, exit codes for
   gates, and a [GitHub Action](#github-action) that posts the diff to the
   job summary and as a pull request comment.
 
 **Status:** beta. It was fairly vibecoded, out of a desperate need to review
-large pull requests better, but the read-only constraints add a lot of
+large pull requests better, but the readonly constraints add a lot of
 safety (and efficiency) to how it works. It's quite useful!
 
 ## Example
