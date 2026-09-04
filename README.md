@@ -379,10 +379,7 @@ jobs:
       - uses: shazow/go-whatchanged@v1
 ```
 
-[docs/action.md](docs/action.md) has the rest: a compatibility gate, the
-public API alone, several modules, release notes on a tag push, pull
-requests from forks, every input and output, and the same job without the
-action.
+See [docs/action.md](docs/action.md) for more details.
 
 ## Guarantees
 
