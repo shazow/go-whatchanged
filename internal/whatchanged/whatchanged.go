@@ -22,11 +22,9 @@ import (
 	"sync"
 
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/exp/apidiff"
 	"golang.org/x/mod/module"
-	"golang.org/x/mod/semver"
 
 	"github.com/shazow/go-whatchanged/internal/discover"
 	"github.com/shazow/go-whatchanged/internal/loader"
@@ -261,7 +259,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 			return ExitError, err
 		}
 		if opts.Strict {
-			return ExitError, fmt.Errorf("%d type-check warning(s) (--strict)", len(res.Warnings))
+			return ExitError, fmt.Errorf("--strict: the %d type-check warning(s) above are fatal", len(res.Warnings))
 		}
 	}
 	ro := render.Options{
@@ -319,7 +317,10 @@ type sideSpec struct {
 // type-checks its packages.
 type side struct {
 	rev       string // git revision, empty for a directory side
-	label     string
+	label     string // how the output names the side: the revision, the module version or "working tree"
+	name      string // how an error names it: "@rev" for a revision, else label
+	rel       string // module root relative to the tree root, slash-separated, "" at the root
+	treeRoot  string // the mounted tree, or the repository on disk, holding root
 	mountPath string // synthetic path the side's tree is mounted at, "" on disk
 	overlay   *vfs.Overlay
 	root      string // the module root within the overlay
@@ -454,8 +455,10 @@ func (spec sideSpec) mount(ctx context.Context, src modfetch.Source) (*side, err
 			return nil, err
 		}
 		s.label = m.Version.String()
+		s.name = s.label
 		s.rev = s.label // positions read "path@version:file.go:1"
 		s.gomod = m.GoMod
+		s.treeRoot = m.Dir
 		if m.FS != nil {
 			s.mountPath = m.Dir
 			s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: m.Dir, FS: m.FS}}, spec.mounts...)...)
@@ -476,32 +479,96 @@ func (spec sideSpec) mount(ctx context.Context, src modfetch.Source) (*side, err
 			return nil, err
 		}
 		s.label = spec.rev
+		s.name = "@" + spec.rev
+		s.rel = spec.rel
 		s.mountPath = vfs.GitMountPath(tree)
+		s.treeRoot = s.mountPath
 		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
 		s.root = path.Join(s.mountPath, spec.rel)
 		s.prefix = s.root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
+		s.name = s.label
+		s.rel = spec.rel
 		s.mountPath = vfs.SyntheticPrefix + "worktree"
+		s.treeRoot = s.mountPath
 		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: spec.fs}}, spec.mounts...)...)
 		s.root = path.Join(s.mountPath, spec.rel)
 		s.prefix = s.root + "/"
 	default:
 		s.label = "working tree"
+		s.name = s.label
+		s.rel = spec.rel
 		s.overlay = vfs.NewOverlay(spec.mounts...)
 		s.root = spec.dir
 		s.prefix = s.root + string(filepath.Separator)
+		// The repository root is rel levels above the module root.
+		s.treeRoot = spec.dir
+		if spec.rel != "" {
+			for range strings.Count(spec.rel, "/") + 1 {
+				s.treeRoot = filepath.Dir(s.treeRoot)
+			}
+		}
 	}
 	return s, nil
 }
 
 // resolver returns the side's import resolver: from the fetched go.mod of
-// a module side, else from the go.mod in its tree.
+// a module side, else from the go.mod in its tree. The error names the
+// side and, for a tree without a go.mod, where the file was looked for in
+// the terms the user named the side in, rather than the synthetic path the
+// tree is mounted at.
 func (s *side) resolver(env modres.Env) (*modres.Resolver, error) {
+	var res *modres.Resolver
+	var err error
 	if s.gomod != nil {
-		return modres.NewModule(s.overlay, s.root, s.gomod, env)
+		res, err = modres.NewModule(s.overlay, s.root, s.gomod, env)
+	} else {
+		res, err = modres.New(s.overlay, s.root, env)
 	}
-	return modres.New(s.overlay, s.root, env)
+	var noMod *modres.NoGoModError
+	if errors.As(err, &noMod) {
+		return nil, fmt.Errorf("%s: %s", s.name, s.noGoMod())
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: %s", s.name, s.rewrite(err.Error()))
+	}
+	return res, nil
+}
+
+// noGoMod describes a module root without a go.mod. A revision that
+// predates the module, or the directory of a module that did not exist
+// yet, is the usual case.
+func (s *side) noGoMod() string {
+	switch {
+	case s.mountPath == "":
+		return fmt.Sprintf("no go.mod in %s (GOPATH mode is not supported)", s.root)
+	case s.rel != "":
+		return fmt.Sprintf("no %s/go.mod at this revision", s.rel)
+	case s.rev != "":
+		return "no go.mod at this revision (GOPATH mode is not supported)"
+	default:
+		return "no go.mod in the working tree (GOPATH mode is not supported)"
+	}
+}
+
+// goWork returns the go.work file between the module root and the root of
+// its tree, relative to that root, or "" when there is none. A workspace
+// is the usual reason an import of a sibling module cannot be resolved:
+// the tool reads go.mod alone.
+func (s *side) goWork() string {
+	join, parent, sep := path.Join, path.Dir, "/"
+	if s.mountPath == "" {
+		join, parent, sep = filepath.Join, filepath.Dir, string(filepath.Separator)
+	}
+	for dir := s.root; ; dir = parent(dir) {
+		if fi, err := s.overlay.Stat(join(dir, "go.work")); err == nil && !fi.IsDir() {
+			return filepath.ToSlash(strings.TrimPrefix(join(dir, "go.work"), s.treeRoot+sep))
+		}
+		if dir == s.treeRoot || parent(dir) == dir {
+			return ""
+		}
+	}
 }
 
 func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
@@ -513,7 +580,7 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 
 	res, err := s.resolver(env)
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", s.label, err)
+		return nil, err
 	}
 	if opts.Fetch != nil {
 		// A missing module is fetched and, when its tree comes with a
@@ -549,7 +616,7 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	internal := opts.Filter.Has(render.Internal) || opts.Filter.Has(render.Main)
 	found, problems, err := discover.Packages(&ctxt, s.overlay, s.root, res.ModPath(), internal, opts.Filter.Has(render.Main))
 	if err != nil {
-		return nil, fmt.Errorf("%s: %w", s.label, err)
+		return nil, fmt.Errorf("%s: %w", s.name, err)
 	}
 	s.problem = problems
 	s.pkgs = make(map[string]*types.Package, len(found))
@@ -571,7 +638,7 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	for _, p := range paths {
 		pkg, err := s.ld.Load(p, found[p].Dir, found[p].Build)
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", s.label, err)
+			return nil, fmt.Errorf("%s: %w", s.name, err)
 		}
 		s.pkgs[p] = pkg
 		s.internal[p] = found[p].Internal
@@ -584,65 +651,28 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		if errors.As(err, &missing) {
 			err = fmt.Errorf("%w; remove --fsreadonly to let go-whatchanged download it", err)
 		}
-		return nil, fmt.Errorf("%s: %w", s.label, err)
+		// In a workspace, the import of a sibling module resolves through
+		// go.work for the go command and not at all here.
+		if gowork := s.goWork(); gowork != "" {
+			err = fmt.Errorf("%w; %s is not consulted, so a workspace module must come from the module cache or a replace directive", err, gowork)
+		}
+		return nil, fmt.Errorf("%s: %w", s.name, err)
 	}
 	return s, nil
 }
 
+// resolveTree returns the tree of the commit rev names. go-git resolves
+// every revision to a commit, peeling annotated tags on the way.
 func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {
-	hash, err := repo.ResolveRevision(plumbing.Revision(rev))
-	if errors.Is(err, plumbing.ErrReferenceNotFound) {
-		return nil, fmt.Errorf("@%s: no such tag, branch or commit%s; a revision is written @<tag>, @<branch>, @<commit> or @HEAD~2, and @latest is the newest release tag", rev, tagList(repo))
+	hash, err := resolveCommit(repo, rev)
+	if err != nil {
+		return nil, err
 	}
+	commit, err := repo.CommitObject(hash)
 	if err != nil {
 		return nil, fmt.Errorf("@%s: %w", rev, err)
 	}
-	commit, err := repo.CommitObject(*hash)
-	if err != nil {
-		// Allow tree-ish objects that are not commits (e.g. a raw tree hash).
-		if tree, terr := repo.TreeObject(*hash); terr == nil {
-			return tree, nil
-		}
-		return nil, fmt.Errorf("resolve %q: %s is not a commit: %w", rev, hash, err)
-	}
 	return commit.Tree()
-}
-
-// tagList describes the repository's tags for an error message: the newest
-// few by semantic version, or "" when there are none.
-func tagList(repo *git.Repository) string {
-	refs, err := repo.Tags()
-	if err != nil {
-		return ""
-	}
-	var tags []string
-	_ = refs.ForEach(func(ref *plumbing.Reference) error {
-		tags = append(tags, ref.Name().Short())
-		return nil
-	})
-	if len(tags) == 0 {
-		return ""
-	}
-	// Newest first: valid semantic versions by version, the rest by name
-	// after them.
-	slices.SortFunc(tags, func(a, b string) int {
-		if va, vb := semver.IsValid(a), semver.IsValid(b); va != vb {
-			if va {
-				return -1
-			}
-			return 1
-		} else if va {
-			return semver.Compare(b, a)
-		}
-		return strings.Compare(a, b)
-	})
-	const show = 6
-	more := ""
-	if len(tags) > show {
-		more = fmt.Sprintf(", and %d more", len(tags)-show)
-		tags = tags[:show]
-	}
-	return " (tags: " + strings.Join(tags, ", ") + more + ")"
 }
 
 func diffSides(base, head *side, fset *token.FileSet) *render.Result {
@@ -778,7 +808,11 @@ func findModRoot(dir, gitRoot string) (string, error) {
 			return d, nil
 		}
 		if d == gitRoot {
-			return "", fmt.Errorf("no go.mod found between %s and the repository root %s", dir, gitRoot)
+			where := dir
+			if dir != gitRoot {
+				where = fmt.Sprintf("%s or above it, up to the repository root %s", dir, gitRoot)
+			}
+			return "", fmt.Errorf("no go.mod in %s; go-whatchanged diffs one Go module: run it inside the module, or name its directory, ./sub@HEAD", where)
 		}
 		parent := filepath.Dir(d)
 		if parent == d {
