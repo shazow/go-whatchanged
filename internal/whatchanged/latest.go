@@ -1,6 +1,7 @@
 package whatchanged
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -8,8 +9,10 @@ import (
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/plumbing/storer"
+	"golang.org/x/mod/module"
 	"golang.org/x/mod/semver"
 
+	"github.com/shazow/go-whatchanged/internal/modfetch"
 	"github.com/shazow/go-whatchanged/internal/modres"
 	"github.com/shazow/go-whatchanged/internal/release"
 )
@@ -23,25 +26,61 @@ import (
 // instead of being empty.
 const LatestRelease = "@latest"
 
-// resolveBase turns the base revision into a concrete one, resolving
-// LatestRelease, and reports the semantic version the base denotes when it
-// is a release tag of the module (so the summary can suggest the next
-// version). Problems reading the head side's go.mod are left for loadSide to
-// report, unless LatestRelease depends on it.
-func resolveBase(open openFunc, base string, head sideSpec, rel string, env modres.Env) (rev, version string, err error) {
-	var tags release.Tags
-	modPath, err := headModulePath(open, head, rel, env)
-	if err == nil {
-		tags, err = release.TagsFor(modPath, rel)
-	}
-	if base != LatestRelease {
-		if err != nil {
-			return base, "", nil
+// resolveSides turns the sides' queries into concrete revisions and
+// versions: a module side's query through src, and a git base of
+// LatestRelease into the newest release tag. It also reports the semantic
+// version the base denotes, when it is a release tag or a released module
+// version, so that the summary can suggest the next version.
+func resolveSides(ctx context.Context, base, head sideSpec, env modres.Env, src modfetch.Source) (b, h sideSpec, baseVersion string, err error) {
+	for i, spec := range []*sideSpec{&base, &head} {
+		if spec.mod.Path == "" {
+			continue
 		}
-		return base, tags.Version(tagName(base)), nil
+		if src == nil {
+			return base, head, "", fmt.Errorf("%s@%s: diffing a module version needs the go command; remove --fsreadonly", spec.mod.Path, spec.mod.Version)
+		}
+		v, err := src.Resolve(ctx, spec.mod.Path, spec.mod.Version)
+		if err != nil {
+			return base, head, "", err
+		}
+		spec.mod = v
+		if i == 0 && !module.IsPseudoVersion(v.Version) && semver.IsValid(v.Version) {
+			baseVersion = v.Version
+		}
+	}
+	if base.mod.Path != "" {
+		return base, head, baseVersion, nil
+	}
+	rev, version, err := resolveBase(ctx, base, head, env, src)
+	if err != nil {
+		return base, head, "", err
+	}
+	base.rev = rev
+	return base, head, version, nil
+}
+
+// resolveBase turns a git base revision into a concrete one, resolving
+// LatestRelease against the head's module, and reports the semantic version
+// the base denotes when it is a release tag of the module. Problems reading
+// the head side's go.mod are left for loadSide to report, unless
+// LatestRelease depends on it.
+func resolveBase(ctx context.Context, base, head sideSpec, env modres.Env, src modfetch.Source) (rev, version string, err error) {
+	var tags release.Tags
+	modPath := head.mod.Path
+	if modPath == "" {
+		modPath, err = headModulePath(ctx, head, env, src)
 	}
 	if err == nil {
-		rev, version, err = latestTag(open, tags, head.rev, modPath)
+		tags, err = release.TagsFor(modPath, base.rel)
+	}
+	if base.rev != LatestRelease {
+		if err != nil {
+			return base.rev, "", nil
+		}
+		return base.rev, tags.Version(tagName(base.rev)), nil
+	}
+	if err == nil {
+		rev, version, err = latestTag(base.open, tags, head.rev, modPath)
 	}
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", LatestRelease, err)
@@ -56,12 +95,12 @@ func tagName(rev string) string {
 }
 
 // headModulePath reads the module path from the head side's go.mod.
-func headModulePath(open openFunc, head sideSpec, rel string, env modres.Env) (string, error) {
-	s, err := head.mount(open, rel)
+func headModulePath(ctx context.Context, head sideSpec, env modres.Env, src modfetch.Source) (string, error) {
+	s, err := head.mount(ctx, src)
 	if err != nil {
 		return "", err
 	}
-	res, err := modres.New(s.overlay, s.root, env)
+	res, err := s.resolver(env)
 	if err != nil {
 		return "", fmt.Errorf("%s: %w", s.label, err)
 	}

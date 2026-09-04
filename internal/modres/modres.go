@@ -135,6 +135,22 @@ func New(fs FS, root string, env Env) (*Resolver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("cannot read %s: %w (GOPATH mode is not supported)", gomod, err)
 	}
+	return parse(fs, root, gomod, data, env, true)
+}
+
+// NewModule returns a resolver for a module version fetched from outside any
+// repository, rooted at root, whose go.mod is data: the tree of an old
+// version may have none, and the ecosystem synthesizes one. Its replace
+// directives are ignored, as the go command ignores them in every module
+// but the one it builds from, so that the API is resolved as importers of
+// the published version see it.
+func NewModule(fs FS, root string, data []byte, env Env) (*Resolver, error) {
+	return parse(fs, root, joinPath(root, "go.mod"), data, env, false)
+}
+
+// parse builds the resolver from the main module's go.mod, honouring its
+// replace directives when replaces is set.
+func parse(fs FS, root, gomod string, data []byte, env Env, replaces bool) (*Resolver, error) {
 	// This is the main module's go.mod, so parse it in full: the lax parser
 	// meant for dependencies drops replace directives.
 	mf, err := modfile.Parse(gomod, data, nil)
@@ -167,6 +183,9 @@ func New(fs FS, root string, env Env) (*Resolver, error) {
 	}
 	for _, req := range mf.Require {
 		r.requires = append(r.requires, req.Mod)
+	}
+	if !replaces {
+		mf.Replace = nil
 	}
 	for _, rep := range mf.Replace {
 		if rep.New.Version == "" {

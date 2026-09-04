@@ -104,7 +104,7 @@ func TestParseArgs(t *testing.T) {
 	}
 
 	// Bad values and extra arguments are errors; --help is not.
-	for _, args := range [][]string{{"--filter=private"}, {"--format", "yaml"}, {"-filter", "all"}, {"--breaking"}, {"--goos=linux"}, {"a", "b", "c"}, {"--bogus"}} {
+	for _, args := range [][]string{{"--filter=private"}, {"--format", "yaml"}, {"-filter", "all"}, {"--breaking"}, {"--goos=linux"}, {"--repo=."}, {"a", "b", "c"}, {"--bogus"}} {
 		if _, err := parseArgs(args); err == nil {
 			t.Errorf("parseArgs(%q) succeeded", args)
 		}

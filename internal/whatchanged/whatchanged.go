@@ -38,13 +38,20 @@ import (
 
 // Options configures a run.
 type Options struct {
-	// Repo is a path inside the git repository. Empty means the current
-	// directory. The enclosing .git is found by walking upward.
+	// Repo is the directory a bare revision refers to: a path inside a git
+	// repository, whose .git is found by walking upward. Empty means the
+	// current directory.
 	Repo string
-	// Base is the commit-ish for the old side. Empty means HEAD, so the
-	// zero value diffs the last commit against the working tree.
+	// Base names the old side: a revision in Repo (a commit-ish, or
+	// LatestRelease), a directory with a version suffix such as
+	// "~/src/m@v1.2.0", or a module version such as
+	// "github.com/x/m@v1.2.0" or "@latest". Empty means HEAD, so the zero
+	// value diffs the last commit against the working tree.
 	Base string
-	// Head is the commit-ish for the new side. Empty means the working tree.
+	// Head names the new side in the same forms; "@query" alone applies
+	// the query to the base's repository or module. Empty means the
+	// working tree of the base's repository, or "@HEAD", the default
+	// branch, for a module base.
 	Head string
 	// GOOS and GOARCH select the build target. Empty means the runtime values.
 	GOOS, GOARCH string
@@ -81,8 +88,9 @@ type Options struct {
 	// text layout.
 	Format render.Format
 	// Fetch obtains modules that go.mod requires but the module cache
-	// lacks. Nil keeps the run read-only: such a module is an error whose
-	// message says how to get it.
+	// lacks, and the module versions Base and Head may name. Nil keeps the
+	// run read-only: a missing module is an error whose message says how
+	// to get it, and a module version cannot be diffed.
 	Fetch modfetch.Source
 
 	// Stdout receives the diff; Stderr receives warnings.
@@ -175,33 +183,55 @@ func Run(opts Options) (int, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
 	}
-	base := opts.baseRev()
-
-	dir := opts.Repo
-	if dir == "" {
-		dir = "."
-	}
-	dir, err := filepath.Abs(dir)
+	base, head, err := parseTargets(opts.Base, opts.Head, opts.Repo)
 	if err != nil {
 		return ExitError, err
+	}
+	var specs [2]sideSpec
+	for i, t := range [2]target{base, head} {
+		if specs[i], err = t.spec(); err != nil {
+			return ExitError, err
+		}
+	}
+
+	env, err := modres.DefaultEnv()
+	if err != nil {
+		return ExitError, err
+	}
+	res, err := runRepo(context.Background(), specs[0], specs[1], env, opts)
+	if err != nil {
+		return ExitError, err
+	}
+	return finish(res, opts)
+}
+
+// spec opens what the target needs: the repository of a git or working-tree
+// target, checked up front so that a broken one is reported once rather
+// than from inside a side. A module target is resolved later, in runRepo.
+func (t target) spec() (sideSpec, error) {
+	if t.module != "" {
+		return sideSpec{mod: module.Version{Path: t.module, Version: t.query}}, nil
+	}
+	dir, err := filepath.Abs(t.dir)
+	if err != nil {
+		return sideSpec{}, err
 	}
 	gitRoot, err := findGitRoot(dir)
 	if err != nil {
-		return ExitError, err
+		return sideSpec{}, err
 	}
 	modRoot, err := findModRoot(dir, gitRoot)
 	if err != nil {
-		return ExitError, err
+		return sideSpec{}, err
 	}
 	rel, err := filepath.Rel(gitRoot, modRoot)
 	if err != nil {
-		return ExitError, err
+		return sideSpec{}, err
 	}
 	rel = filepath.ToSlash(rel)
 	if rel == "." {
 		rel = ""
 	}
-
 	open := func() (*git.Repository, error) {
 		// EnableDotGitCommonDir makes linked worktrees (git worktree add)
 		// work: their .git file points at a per-worktree directory whose
@@ -212,27 +242,16 @@ func Run(opts Options) (int, error) {
 		}
 		return repo, nil
 	}
-	// Report a broken repository up front rather than from inside a side.
 	if _, err := open(); err != nil {
-		return ExitError, err
+		return sideSpec{}, err
 	}
-
-	env, err := modres.DefaultEnv()
-	if err != nil {
-		return ExitError, err
-	}
-
-	var head sideSpec
-	if opts.Head != "" {
-		head = sideSpec{rev: opts.Head}
+	spec := sideSpec{open: open, rel: rel}
+	if t.query == "" {
+		spec.dir = modRoot
 	} else {
-		head = sideSpec{dir: modRoot}
+		spec.rev = t.query
 	}
-	res, err := runRepo(context.Background(), open, sideSpec{rev: base}, head, rel, env, opts)
-	if err != nil {
-		return ExitError, err
-	}
-	return finish(res, opts)
+	return spec, nil
 }
 
 // DefaultBase is the revision used for the old side when none is given.
@@ -295,13 +314,17 @@ func exitCode(sum render.Summary, fail FailOn) int {
 	}
 }
 
-// sideSpec names one side: a git revision, or a directory served either from
-// disk (fs == nil) or from an arbitrary read-only filesystem (tests).
+// sideSpec names one side: a git revision, a directory served either from
+// disk (fs == nil) or from an arbitrary read-only filesystem (tests), or a
+// module version fetched through Options.Fetch.
 type sideSpec struct {
-	rev    string
-	dir    string
-	fs     vfs.FS
-	mounts []vfs.Mount // extra mounts, such as a test's in-memory module cache
+	rev    string         // git revision; LatestRelease until resolveBase
+	dir    string         // working tree directory
+	fs     vfs.FS         // filesystem serving the working tree, instead of dir
+	open   openFunc       // the repository of a git or working tree side
+	rel    string         // module root relative to the repository root, slash-separated
+	mod    module.Version // module side; Version is the query until resolveSides
+	mounts []vfs.Mount    // extra mounts, such as a test's in-memory module cache
 }
 
 // side is one side of the diff: sideSpec.mount serves its tree and loadSide
@@ -313,6 +336,7 @@ type side struct {
 	overlay   *vfs.Overlay
 	root      string // the module root within the overlay
 	prefix    string // root as a path prefix, rewritten to label+":" in messages
+	gomod     []byte // the go.mod of a module side, from the fetch
 	res       *modres.Resolver
 	ld        *loader.Loader
 	pkgs      map[string]*types.Package
@@ -354,23 +378,21 @@ func (s *side) position(p token.Position) render.Position {
 // openFunc returns a fresh handle on the repository.
 type openFunc func() (*git.Repository, error)
 
-// runRepo diffs base against head. rel is the module root relative to the
-// repository root (slash-separated, "" for the root).
+// runRepo diffs base against head.
 //
 // The two sides load concurrently and each opens its own repository handle:
 // go-git's filesystem storage builds its packfile index lazily without
 // locking, so a handle shared between the two goroutines races and makes
 // revisions spuriously unresolvable ("reference not found"). The first side
 // to fail cancels the other's context, which stops its fetches.
-func runRepo(ctx context.Context, open openFunc, base, head sideSpec, rel string, env modres.Env, opts Options) (*render.Result, error) {
+func runRepo(ctx context.Context, base, head sideSpec, env modres.Env, opts Options) (*render.Result, error) {
 	if head.rev == LatestRelease {
 		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
 	}
-	rev, baseVersion, err := resolveBase(open, base.rev, head, rel, env)
+	base, head, baseVersion, err := resolveSides(ctx, base, head, env, opts.Fetch)
 	if err != nil {
 		return nil, err
 	}
-	base.rev = rev
 
 	fset := token.NewFileSet()
 	shared := loader.NewSharedCache()
@@ -390,7 +412,7 @@ func runRepo(ctx context.Context, open openFunc, base, head sideSpec, rel string
 	)
 	for i, spec := range [2]sideSpec{base, head} {
 		wg.Go(func() {
-			sides[i], errs[i] = loadSide(ctx, open, spec, rel, env, opts, fset, shared)
+			sides[i], errs[i] = loadSide(ctx, spec, env, opts, fset, shared)
 			if errs[i] != nil {
 				cancel()
 			}
@@ -429,13 +451,35 @@ func unmatchedPatterns(patterns []string, base, head *side) []render.Warning {
 }
 
 // mount serves the tree the spec names, from the git revision, the
-// filesystem or the directory on disk, and returns the side with its label,
-// its overlay and the module root within it; loadSide does the rest.
-func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
+// filesystem, the directory on disk or the fetched module, and returns the
+// side with its label, its overlay and the module root within it; loadSide
+// does the rest. src fetches a module side.
+func (spec sideSpec) mount(ctx context.Context, src modfetch.Source) (*side, error) {
 	s := &side{rev: spec.rev}
 	switch {
+	case spec.mod.Path != "":
+		if src == nil {
+			return nil, fmt.Errorf("%s@%s: diffing a module version needs the go command; remove --fsreadonly", spec.mod.Path, spec.mod.Version)
+		}
+		m, err := src.Fetch(ctx, spec.mod)
+		if err != nil {
+			return nil, err
+		}
+		s.label = m.Path + "@" + m.Version.Version
+		s.rev = s.label // positions read "path@version:file.go:1"
+		s.gomod = m.GoMod
+		if m.FS != nil {
+			s.mountPath = m.Dir
+			s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: m.Dir, FS: m.FS}}, spec.mounts...)...)
+			s.root = m.Dir
+			s.prefix = s.root + "/"
+		} else {
+			s.overlay = vfs.NewOverlay(spec.mounts...)
+			s.root = m.Dir
+			s.prefix = s.root + string(filepath.Separator)
+		}
 	case spec.rev != "":
-		repo, err := open()
+		repo, err := spec.open()
 		if err != nil {
 			return nil, err
 		}
@@ -446,13 +490,13 @@ func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 		s.label = spec.rev
 		s.mountPath = vfs.GitMountPath(tree)
 		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: vfs.NewGitFS(tree)}}, spec.mounts...)...)
-		s.root = path.Join(s.mountPath, rel)
+		s.root = path.Join(s.mountPath, spec.rel)
 		s.prefix = s.root + "/"
 	case spec.fs != nil:
 		s.label = "working tree"
 		s.mountPath = vfs.SyntheticPrefix + "worktree"
 		s.overlay = vfs.NewOverlay(append([]vfs.Mount{{Path: s.mountPath, FS: spec.fs}}, spec.mounts...)...)
-		s.root = path.Join(s.mountPath, rel)
+		s.root = path.Join(s.mountPath, spec.rel)
 		s.prefix = s.root + "/"
 	default:
 		s.label = "working tree"
@@ -463,14 +507,23 @@ func (spec sideSpec) mount(open openFunc, rel string) (*side, error) {
 	return s, nil
 }
 
-func loadSide(ctx context.Context, open openFunc, spec sideSpec, rel string, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
-	s, err := spec.mount(open, rel)
+// resolver returns the side's import resolver: from the fetched go.mod of
+// a module side, else from the go.mod in its tree.
+func (s *side) resolver(env modres.Env) (*modres.Resolver, error) {
+	if s.gomod != nil {
+		return modres.NewModule(s.overlay, s.root, s.gomod, env)
+	}
+	return modres.New(s.overlay, s.root, env)
+}
+
+func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, fset *token.FileSet, shared *loader.SharedCache) (*side, error) {
+	s, err := spec.mount(ctx, opts.Fetch)
 	if err != nil {
 		return nil, err
 	}
 	ctxt := vfs.Context(s.overlay, opts.GOOS, opts.GOARCH)
 
-	res, err := modres.New(s.overlay, s.root, env)
+	res, err := s.resolver(env)
 	if err != nil {
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
@@ -527,7 +580,7 @@ func loadSide(ctx context.Context, open openFunc, spec sideSpec, rel string, env
 		s.main[p] = found[p].Main
 	}
 	if err := s.ld.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w%s", s.label, err, s.downloadHint(err, rel))
+		return nil, fmt.Errorf("%s: %w%s", s.label, err, s.downloadHint(err, spec.rel))
 	}
 	return s, nil
 }

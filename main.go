@@ -25,6 +25,17 @@ const description = `Show how the exported API of the Go module differs between 
 With no arguments, compare HEAD against the working tree: what your
 uncommitted changes do to the API.
 
+Each side is named the way the go command names versions. A bare revision
+is one of the current repository: v1.4.0, HEAD~2, origin/main. A module
+path with a version suffix is a published module, fetched into the module
+cache: github.com/x/m@v1.2.0, github.com/x/m@latest for its newest
+release, github.com/x/m@main for a branch. A directory with a suffix is a
+revision of that checkout: ~/src/m@latest. A head of @query alone applies
+the query to the base's repository or module: "v1.4.0 @main" compares
+two revisions here, "github.com/x/m@latest @main" a module's last release
+with its main branch, and with no head at all a module base is compared
+with @HEAD, its default branch.
+
 When the base is a release tag, the summary also names the version the
 changes call for: "would require: MINOR (v1.4.0 → v1.5.0)".
 
@@ -58,7 +69,6 @@ unless there is an error).`
 
 // options is the command line, as go-flags parses it.
 type options struct {
-	Repo       string   `long:"repo" value-name:"DIR" description:"path inside a git repository (default: current directory)"`
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
 	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, or any of public, internal and main; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
@@ -72,8 +82,8 @@ type options struct {
 	Version    bool     `long:"version" description:"print the version of go-whatchanged and exit"`
 
 	Args struct {
-		Base string `positional-arg-name:"base" description:"commit-ish for the old side (hash, tag, branch, HEAD~2, ...), or @latest for the newest release tag (v1.2.3) among the ancestors of the head commit (default: HEAD)"`
-		Head string `positional-arg-name:"head" description:"commit-ish for the new side (default: the working tree, including uncommitted and untracked files)"`
+		Base string `positional-arg-name:"base" description:"the old side: a commit-ish in the current repository (hash, tag, branch, HEAD~2, ...) or @latest for its newest release tag; a module version such as github.com/x/m@v1.2.0 or github.com/x/m@latest; or a checkout with a suffix, ~/src/m@v1.2.0 (default: HEAD)"`
+		Head string `positional-arg-name:"head" description:"the new side, in the same forms; @main alone means main in the base's repository or module (default: the working tree, including uncommitted and untracked files, or @HEAD for a module)"`
 	} `positional-args:"yes"`
 }
 
@@ -133,7 +143,6 @@ func parseArgs(args []string) (*options, error) {
 // whatchanged converts the parsed command line into run options.
 func (o *options) whatchanged() (whatchanged.Options, error) {
 	opts := whatchanged.Options{
-		Repo:      o.Repo,
 		GOOS:      os.Getenv("GOOS"),
 		GOARCH:    os.Getenv("GOARCH"),
 		Packages:  o.Pkg,

@@ -57,6 +57,9 @@ go install github.com/shazow/go-whatchanged@latest
 | What has changed since the last release? | `go-whatchanged @latest` |
 | What did release `v1.4.0` ship? | `go-whatchanged @latest v1.4.0` |
 | What does this branch change, compared to `main`? | `go-whatchanged origin/main` |
+| What is unreleased on the `main` branch of a module I don't have checked out? | `go-whatchanged github.com/stretchr/testify@latest` |
+| What did a published release change? | `go-whatchanged github.com/stretchr/testify@v1.9.0 @v1.10.0` |
+| What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
@@ -64,13 +67,16 @@ go install github.com/shazow/go-whatchanged@latest
 ```
 go-whatchanged [options] [<base> [<head>]]
 
-  base   commit-ish for the old side: hash, tag, branch, HEAD~2, ...
-         or @latest, the newest release tag among the ancestors of head.
+  base   the old side: a commit-ish of the current repository (hash, tag,
+         branch, HEAD~2, ...) or @latest, its newest release tag among the
+         ancestors of head; a module version, github.com/x/m@v1.2.0 or
+         github.com/x/m@latest; or a checkout with a suffix, ~/src/m@v1.2.0.
          Default: HEAD.
-  head   commit-ish for the new side. Default: the working tree.
+  head   the new side, in the same forms. @main alone means main in the
+         base's repository or module. Default: the working tree, or @HEAD
+         for a module.
 
 Options:
-  --repo=DIR         path inside a git repository (default: current directory)
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
   --filter=WHICH     all, or any of public | internal | main: which
@@ -117,6 +123,32 @@ that tag; name it instead: `go-whatchanged v1.4.0`.
 
 At `v0` an incompatible change suggests the next minor, and a pre-release
 always suggests its final release.
+
+### Published modules and other checkouts
+
+Sides are named the way the go command names versions. A module path with
+a suffix is a published module, fetched into the module cache:
+`github.com/stretchr/testify@latest` is its newest release, `@v1.10.0` a
+release, `@main` a branch, `@HEAD` the default branch, `@abc1234` a
+commit. A head of `@query` alone applies the query to the base's module,
+and with no head at all a module base is compared with `@HEAD`: what is
+unreleased on the default branch, and the version it calls for.
+
+```
+$ go-whatchanged github.com/stretchr/testify@latest
+...
+2 packages changed · 0 incompatible · 3 compatible · would require: MINOR (v1.12.1 → v1.13.0)
+```
+
+A directory with a suffix names a revision of that checkout, `~/src/m@latest`
+or `../m@v1.2.0`, and `@main` beside it a revision of the same checkout. A
+bare revision, `v1.4.0` or `origin/main`, is one of the current repository,
+so `go-whatchanged v1.4.0 @main` compares two of its revisions.
+
+Module versions come through the proxy the go command is configured for,
+and a branch or `@HEAD` may lag the repository by the proxy's cache. A
+version whose go.mod declares go 1.16 or older cannot be diffed; see
+[Limitations](#limitations).
 
 ### Large modules and applications
 
@@ -378,6 +410,9 @@ noticing, and `--fsreadonly` simply leaves it out.
   across platforms.
 - No `go.work`, vendor mode or GOPATH mode. Dependencies come from the
   module cache and `replace` directories.
+- Modules at `go 1.16` or older in their go.mod cannot be diffed, whether a
+  revision or a published version: without module graph pruning, go.mod
+  alone does not say where every import comes from.
 - Only the main module's API is compared, not its dependencies'.
 - Not a library, for now: everything lives under `internal/`, and the
   command line and the JSON layout are the interface.

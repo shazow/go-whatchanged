@@ -204,6 +204,7 @@ type runResult struct {
 	stdout, stderr string
 	code           int
 	err            error
+	res            *render.Result
 }
 
 // run diffs base against the fixture's in-memory worktree (or head, if set).
@@ -214,20 +215,34 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	opts.Stdout = &out
 	opts.Stderr = &errb
 	opts.Base = base
+	headSpec := sideSpec{fs: &billyFS{fs: f.fs}}
+	if head != "" {
+		headSpec = sideSpec{rev: head}
+	}
+	return f.runSpecs(sideSpec{rev: opts.baseRev()}, headSpec, opts)
+}
+
+// runSpecs diffs two sides given as specs, filling in the fixture's
+// repository and module cache.
+func (f *fixture) runSpecs(base, head sideSpec, opts Options) runResult {
+	f.t.Helper()
+	var out, errb bytes.Buffer
+	opts.Stdout = &out
+	opts.Stderr = &errb
 	var mounts []vfs.Mount
 	if f.modcache != nil {
 		mounts = []vfs.Mount{{Path: f.env.GOMODCACHE, FS: &billyFS{fs: f.modcache}}}
 	}
-	headSpec := sideSpec{fs: &billyFS{fs: f.fs}, mounts: mounts}
-	if head != "" {
-		headSpec = sideSpec{rev: head, mounts: mounts}
+	for _, s := range []*sideSpec{&base, &head} {
+		s.open = f.open
+		s.mounts = mounts
 	}
-	res, err := runRepo(f.t.Context(), f.open, sideSpec{rev: opts.baseRev(), mounts: mounts}, headSpec, "", f.env, opts)
+	res, err := runRepo(f.t.Context(), base, head, f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
 	code, err := finish(res, opts)
-	return runResult{stdout: out.String(), stderr: errb.String(), code: code, err: err}
+	return runResult{stdout: out.String(), stderr: errb.String(), code: code, err: err, res: res}
 }
 
 // mustRun is run for a diff that is expected to succeed.
@@ -749,6 +764,8 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 // in-process Source would: nothing it serves is in the module cache.
 type fakeSource struct {
 	fs         billy.Filesystem
+	versions   map[string]string // query → version; anything else resolves to itself
+	gomods     map[string]string // version → go.mod, for a tree that has none
 	mu         sync.Mutex
 	fetched    []module.Version
 	prefetched [][]module.Version
@@ -763,22 +780,33 @@ func (s *fakeSource) Prefetch(_ context.Context, mods []module.Version) error {
 }
 
 func (s *fakeSource) Resolve(_ context.Context, path, query string) (module.Version, error) {
+	if v, ok := s.versions[query]; ok {
+		query = v
+	}
 	return module.Version{Path: path, Version: query}, nil
 }
 
 func (s *fakeSource) Fetch(_ context.Context, mod module.Version) (*modfetch.Module, error) {
 	root := mod.Path + "@" + mod.Version
+	if fi, err := s.fs.Stat(root); err != nil || !fi.IsDir() {
+		return nil, &modfetch.NotFoundError{Path: mod.Path, Query: mod.Version}
+	}
 	sub, err := s.fs.Chroot(root)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := sub.Stat("go.mod"); err != nil {
-		return nil, &modfetch.NotFoundError{Path: mod.Path, Query: mod.Version}
+	gomod := []byte(s.gomods[mod.Version])
+	if f, err := sub.Open("go.mod"); err == nil {
+		gomod, err = io.ReadAll(f)
+		f.Close()
+		if err != nil {
+			return nil, err
+		}
 	}
 	s.mu.Lock()
 	s.fetched = append(s.fetched, mod)
 	s.mu.Unlock()
-	return &modfetch.Module{Version: mod, Dir: vfs.SyntheticPrefix + "fetched/" + root, FS: &billyFS{fs: sub}}, nil
+	return &modfetch.Module{Version: mod, Dir: vfs.SyntheticPrefix + "fetched/" + root, FS: &billyFS{fs: sub}, GoMod: gomod}, nil
 }
 
 func TestFetchMissingModule(t *testing.T) {
@@ -826,6 +854,145 @@ func TestFetchMissingModule(t *testing.T) {
 	}
 	mustContain(t, r.err.Error(), `working tree: unresolvable import "example.org/absent" (required by example.com/m/a): example.org/absent@v1.5.0 not found`)
 	mustNotContain(t, r.err.Error(), "fsreadonly")
+}
+
+func TestModuleSides(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.useFakeModcache()
+	remote := memfs.New()
+	const tip = "v1.1.1-0.20260101000000-abcdef123456"
+	for v, body := range map[string]string{
+		"v1.0.0": "func A() {}\n",
+		"v1.1.0": "func A() {}\n\nfunc B() {}\n",
+		tip:      "func A() {}\n\nfunc B() {}\n\nfunc C() {}\n",
+	} {
+		writeFile(t, remote, "example.org/lib@"+v+"/lib.go", "package lib\n\n"+body)
+	}
+	// The tree of v1.0.0 has no go.mod; the source knows it anyway.
+	for _, v := range []string{"v1.1.0", tip} {
+		writeFile(t, remote, "example.org/lib@"+v+"/go.mod", "module example.org/lib\n\ngo 1.24\n\nreplace example.org/other => ../other\n")
+	}
+	src := &fakeSource{
+		fs:       remote,
+		versions: map[string]string{"latest": "v1.1.0", "HEAD": tip},
+		gomods:   map[string]string{"v1.0.0": "module example.org/lib\n\ngo 1.24\n"},
+	}
+	lib := func(q string) sideSpec { return sideSpec{mod: module.Version{Path: "example.org/lib", Version: q}} }
+
+	// Latest release against the default branch: the base version is the
+	// release, so the summary suggests the next one; replace directives
+	// in the fetched go.mod are ignored.
+	r := f.runSpecs(lib("latest"), lib("HEAD"), Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "+ func C()", "would require: MINOR (v1.1.0 → v1.2.0)")
+	mustNotContain(t, r.stdout, "func B()")
+	if r.res.Base != "example.org/lib@v1.1.0" || r.res.Head != "example.org/lib@"+tip {
+		t.Errorf("labels = %q, %q", r.res.Base, r.res.Head)
+	}
+
+	// Two releases, the older without a go.mod in its tree.
+	r = f.runSpecs(lib("v1.0.0"), lib("v1.1.0"), Options{Fetch: src, Positions: true})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "+ func B()", "example.org/lib@v1.1.0:lib.go:5")
+	mustNotContain(t, r.stdout, "func C()")
+
+	// A pseudo-version base is no release, so nothing is suggested.
+	r = f.runSpecs(lib(tip), lib("v1.1.0"), Options{Fetch: src})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	mustContain(t, r.stdout, "- func C()", "would require: MAJOR\n")
+	mustNotContain(t, r.stdout, "→")
+
+	// Without a source there is nothing to fetch a module version with.
+	r = f.runSpecs(lib("latest"), lib("HEAD"), Options{})
+	if r.err == nil || !strings.Contains(r.err.Error(), "example.org/lib@latest: diffing a module version needs the go command; remove --fsreadonly") {
+		t.Errorf("without a source: %v", r.err)
+	}
+}
+
+func TestParseTargets(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip(err)
+	}
+	for _, tc := range []struct {
+		base, head string
+		wantBase   target
+		wantHead   target
+	}{
+		{"", "", target{dir: ".", query: "HEAD"}, target{dir: "."}},
+		{"v1.4.0", "", target{dir: ".", query: "v1.4.0"}, target{dir: "."}},
+		{"v1.4.0", "@main", target{dir: ".", query: "v1.4.0"}, target{dir: ".", query: "main"}},
+		{"@latest", "HEAD", target{dir: ".", query: LatestRelease}, target{dir: ".", query: "HEAD"}},
+		{"origin/main", "", target{dir: ".", query: "origin/main"}, target{dir: "."}},
+		{"github.com/x/m@latest", "", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "HEAD"}},
+		{"github.com/x/m@latest", "@main", target{module: "github.com/x/m", query: "latest"}, target{module: "github.com/x/m", query: "main"}},
+		{"github.com/x/m@v1.0.0", "@v1.1.0", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/m", query: "v1.1.0"}},
+		{"github.com/x/m@v1.0.0", "@latest", target{module: "github.com/x/m", query: "v1.0.0"}, target{module: "github.com/x/m", query: "latest"}},
+		// A bare revision beside a module is one of the local repository.
+		{"github.com/x/m@v1.0.0", "HEAD", target{module: "github.com/x/m", query: "v1.0.0"}, target{dir: ".", query: "HEAD"}},
+		{dir + "@latest", "", target{dir: dir, query: LatestRelease}, target{dir: dir}},
+		{dir + "@v1.0.0", "@main", target{dir: dir, query: "v1.0.0"}, target{dir: dir, query: "main"}},
+		{dir, "", target{dir: dir, query: "HEAD"}, target{dir: dir}},
+		{"./sub@v1", "", target{dir: "./sub", query: "v1"}, target{dir: "./sub"}},
+		{"~/src/m@v1", "", target{dir: filepath.Join(home, "src", "m"), query: "v1"}, target{dir: filepath.Join(home, "src", "m")}},
+	} {
+		base, head, err := parseTargets(tc.base, tc.head, "")
+		if err != nil {
+			t.Errorf("parseTargets(%q, %q): %v", tc.base, tc.head, err)
+			continue
+		}
+		if base != tc.wantBase || head != tc.wantHead {
+			t.Errorf("parseTargets(%q, %q) = %+v, %+v; want %+v, %+v", tc.base, tc.head, base, head, tc.wantBase, tc.wantHead)
+		}
+	}
+	// The default directory stands in for ".".
+	base, head, err := parseTargets("v1", "@v2", "/repo")
+	if err != nil || base != (target{dir: "/repo", query: "v1"}) || head != (target{dir: "/repo", query: "v2"}) {
+		t.Errorf("with a default directory: %+v, %+v, %v", base, head, err)
+	}
+	for _, tc := range []struct{ base, head, want string }{
+		{"@", "", "missing a version"},
+		{"github.com/x/m@", "", "missing a version"},
+		{"github.com/x/m", "", "needs a version"},
+		{"v1", "@", "missing a version"},
+		{"v1", "@latest", "can only be the base"},
+		{"nota/module@v1", "", "neither a module path nor a directory"},
+	} {
+		_, _, err := parseTargets(tc.base, tc.head, "")
+		if err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("parseTargets(%q, %q) = %v, want %q", tc.base, tc.head, err, tc.want)
+		}
+	}
+}
+
+func TestDirectoryTargets(t *testing.T) {
+	t.Parallel()
+	dir, base, head := diskFixture(t)
+	// The tests run inside this project's repository; a directory target
+	// names another one, and "@rev" follows it.
+	var out, errb bytes.Buffer
+	code, err := Run(Options{Base: dir + "@" + base.String()[:7], Head: "@" + head.String(), Stdout: &out, Stderr: &errb})
+	if err != nil || code != ExitClean {
+		t.Fatalf("exit = %d, err = %v, stderr = %q", code, err, errb.String())
+	}
+	mustContain(t, out.String(), "example.com/m/a\n  + func B()\n")
+
+	// Alone, the head is that checkout's working tree.
+	out.Reset()
+	code, err = Run(Options{Base: dir + "@" + base.String(), Stdout: &out, Stderr: &errb})
+	if err != nil || code != ExitClean {
+		t.Fatalf("exit = %d, err = %v, stderr = %q", code, err, errb.String())
+	}
+	mustContain(t, out.String(), "  + func B()\n")
 }
 
 func TestDownloadHint(t *testing.T) {
@@ -956,7 +1123,7 @@ func TestReplaceDirectoryOutsideModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(t.Context(), f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := runRepo(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1036,7 +1203,7 @@ func TestSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(t.Context(), f.open, sideSpec{rev: "HEAD"}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := runRepo(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1601,7 +1768,7 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(t.Context(), f.open, sideSpec{rev: LatestRelease}, sideSpec{fs: &billyFS{fs: f.fs}}, "sub", f.env, opts)
+	res, err := runRepo(t.Context(), sideSpec{rev: LatestRelease, open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
