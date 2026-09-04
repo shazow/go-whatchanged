@@ -1,0 +1,35 @@
+name: Move the major tag
+
+# Keeps a major tag, v1, on the newest release of that major, so that
+# "uses: shazow/go-whatchanged@v1" follows releases. It is a plain tag,
+# never a release of its own, so that it stays movable. Run it by hand
+# with a release tag to create the major tag for the first time, or to
+# roll it back.
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+'] # releases: not pre-releases, not the major tag itself
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag the major tag will point to, such as v1.2.3
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - run: |
+          [[ $TAG =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::$TAG is not a release tag (want v1.2.3)"; exit 1; }
+          major=${TAG%%.*}
+          git tag -f "$major" HEAD
+          git push -f origin "$major"
+          echo "$major -> $TAG ($(git rev-parse --short HEAD))" >> "$GITHUB_STEP_SUMMARY"

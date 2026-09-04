@@ -355,12 +355,9 @@ names the bump:
 
 ## GitHub Action
 
-Add the action to a workflow to get the diff on every pull request. It
-builds the tool from the ref that pins it, appends the diff to the job
-summary under a heading whose glyph names the release the changes call
-for, 🟢 none, 🟡 minor, 🔴 major, and posts it as a pull request comment
-folded under its summary line. On a tag push, it lists what the tag
-ships in the job summary:
+Add the action to a workflow and every pull request that touches the API
+gets the diff as a comment, folded under its verdict and updated on every
+push, and in the job summary:
 
 ```yaml
 on: pull_request
@@ -379,71 +376,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: shazow/go-whatchanged@main
+      - uses: shazow/go-whatchanged@v1
 ```
 
-The comment is updated on every later push instead of adding another,
-and the first one waits until there is something to show, so a pull
-request that never touches the API gets none. It needs `pull-requests:
-write`, which the default token lacks on a pull request from a fork;
-there, the action says so in a notice and the job summary still has the
-diff. `comment: false` keeps the diff to the job summary:
-
-```yaml
-permissions:
-  contents: read
-
-    steps:
-      # ...
-      - uses: shazow/go-whatchanged@main
-        with:
-          comment: false
-```
-
-| Input | Default | Meaning |
-|---|---|---|
-| `base` | the pull request's merge-base, else `@latest` | The old side, `@rev` or `@latest`. |
-| `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree. |
-| `working-directory` | `.` | The module to diff, for repositories with several. |
-| `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
-| `filter` | `all` | `all`, or any of `public`, `internal` and `main` for the packages and `api` and `imports` for the kinds of change: `public,main`, `public,api`. |
-| `breaking` | `false` | Show only incompatible changes. |
-| `pos` | `false` | Annotate changes with source positions. |
-| `strict` | `false` | Treat type-check errors as fatal. |
-| `goos`, `goarch` | the runner's | Build target. |
-| `fail-on` | | `major`, `minor` or `patch`: fail the step at that level or above. |
-| `summary` | `true` | Append the diff to the job summary. |
-| `title` | `API changes` | Heading above the diff in the summary and the comment. Empty for none. |
-| `comment` | `true` | Post the diff as a pull request comment and keep it updated. `false` for the job summary alone. |
-| `token` | `github.token` | The token for the comment. |
-
-Outputs for later steps:
-
-| Output | Value |
-|---|---|
-| `release` | `major`, `minor` or `patch` (no changes) |
-| `packages-changed`, `incompatible`, `compatible` | the counts of the summary line |
-| `base`, `head` | the revisions as diffed; `base` is the tag `@latest` picked |
-| `base-version`, `next-version` | when the base is a release tag |
-| `summary` | the summary line(s) as plain text |
-| `markdown`, `json` | the whole report in either format |
-
-On another CI system, or without the action, the same job is a few plain
-steps:
-
-```yaml
-- uses: actions/checkout@v4
-  with:
-    fetch-depth: 0
-- uses: actions/setup-go@v5
-  with:
-    go-version-file: go.mod
-- run: go install github.com/shazow/go-whatchanged@latest
-- run: |
-    go-whatchanged --format=markdown @origin/${{ github.base_ref }} @HEAD \
-      >> "$GITHUB_STEP_SUMMARY"
-- run: go-whatchanged --exit-fail=major @origin/${{ github.base_ref }} @HEAD
-```
+See [docs/action.md](docs/action.md) for more details.
 
 ## Guarantees
 
