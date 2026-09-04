@@ -467,8 +467,28 @@ from `git worktree add`: nothing in the repository is changed.
 - **In-process type-checking.** Both sides are parsed and type-checked
   with `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
   `import "C"` are skipped, so an API declared only in them is not diffed.
-- **No repository mutation.** Only go-git's object store is used. The
-  worktree, index and refs are never touched.
+- **No repository mutation.** The repository is opened for reading only:
+  go-git sees `.git` through a filesystem that refuses every write, and is
+  given no worktree at all, so the worktree, index and refs cannot be
+  touched by construction, not just by care.
+
+These hold by design rather than by review, and the design is meant to keep
+them holding as the tool grows:
+
+- Everything that may run a command, reach the network or write to disk
+  lives behind one interface, `internal/modfetch.Source`, in one package.
+  A run without a `Source` cannot do any of the three, and `--fsreadonly`
+  is nothing more than leaving it out. What such a run cannot do fails
+  with an error wrapping `modfetch.ErrReadOnly`; the library never names
+  the flag, the command line adds the hint. A new feature that needs any
+  of the three belongs behind `Source`, so that the flag keeps covering it.
+- Every repository is opened through `internal/vfs.OpenRepository`, on a
+  read-only filesystem (`vfs.ReadOnly`) and without a worktree.
+- The tests hold the line. `TestWriteGuard` snapshots `GOROOT`, the module
+  cache, the build cache and the repository around a run on the tool's own
+  history; `TestRunLeavesRepositoryUntouched` does the same for `.git` of
+  a packed fixture, with and without a module source; and `vfs.ReadOnly`
+  has a test for every write it refuses.
 
 ## How it works
 
@@ -492,7 +512,9 @@ every requirement of its `go.mod` that the cache lacks is fetched as one
 batch, in parallel, and anything that still turns out to be missing is
 fetched on demand. The interface's only implementation runs the go
 command; a client for the module proxy protocol could replace it without
-the rest of the tool noticing, and `--fsreadonly` simply leaves it out.
+the rest of the tool noticing, and `--fsreadonly` simply leaves it out, so
+that a module version cannot be diffed and a missing module is an error
+wrapping `modfetch.ErrReadOnly`.
 
 ## Limitations
 

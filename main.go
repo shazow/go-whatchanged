@@ -122,6 +122,12 @@ func run(args []string) int {
 	opts.Stderr = os.Stderr
 	code, err := whatchanged.Run(opts)
 	if err != nil {
+		// The library never names the flag; it only ever reports what a
+		// run without a module source could not do, which the flag is the
+		// one way to ask for.
+		if errors.Is(err, modfetch.ErrReadOnly) {
+			err = fmt.Errorf("%w; remove --fsreadonly to let go-whatchanged run it", err)
+		}
 		fmt.Fprintf(os.Stderr, "go-whatchanged: %v\n", err)
 	}
 	return code

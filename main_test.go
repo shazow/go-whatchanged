@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"reflect"
 	"slices"
@@ -27,6 +28,43 @@ func TestPatterns(t *testing.T) {
 	}
 	if got, _ := p.MarshalFlag(); got != "store/...,util,a" {
 		t.Errorf("MarshalFlag() = %q, want %q", got, "store/...,util,a")
+	}
+}
+
+// TestReadOnlyHint checks that what a read-only run cannot do is reported
+// with the flag to drop, which only the command line knows about.
+func TestReadOnlyHint(t *testing.T) {
+	stderr := captureStderr(t)
+	code := run([]string{"--fsreadonly", "example.org/m@latest"})
+	got := stderr()
+	if code != whatchanged.ExitError {
+		t.Errorf("exit = %d, want %d", code, whatchanged.ExitError)
+	}
+	want := "go-whatchanged: example.org/m@latest: diffing a module version needs a download; the go command is off limits in a read-only run; remove --fsreadonly to let go-whatchanged run it\n"
+	if got != want {
+		t.Errorf("stderr = %q\nwant     %q", got, want)
+	}
+}
+
+// captureStderr redirects os.Stderr until the returned function is called,
+// which restores it and returns what was written.
+func captureStderr(t *testing.T) func() string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := os.Stderr
+	os.Stderr = w
+	done := make(chan string)
+	go func() {
+		b, _ := io.ReadAll(r)
+		done <- string(b)
+	}()
+	return func() string {
+		os.Stderr = saved
+		w.Close()
+		return <-done
 	}
 }
 

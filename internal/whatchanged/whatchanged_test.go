@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -596,6 +597,38 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 	}
 }
 
+// TestRunLeavesRepositoryUntouched checks, on a packed repository of its
+// own, that a run changes nothing under .git: whether it diffs two
+// revisions or a revision against a dirty working tree, and with or without
+// a module source. TestWriteGuard makes the same check against this
+// repository, sequentially; this one is hermetic and runs alongside the
+// rest. The repository is opened for reading only, so go-git could not
+// write even where it otherwise would.
+func TestRunLeavesRepositoryUntouched(t *testing.T) {
+	t.Parallel()
+	dir, base, head := diskFixture(t)
+	if err := os.WriteFile(filepath.Join(dir, "a", "a.go"), []byte("package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc Uncommitted() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotOf(t, filepath.Join(dir, ".git"))
+	for _, opts := range []Options{
+		{Base: dir + "@" + base.String(), Head: "@" + head.String()},
+		{Base: dir + "@HEAD"},
+		{Base: dir + "@HEAD~1", Head: "@HEAD", Fetch: &fakeSource{}},
+	} {
+		var out, errb bytes.Buffer
+		opts.Stdout, opts.Stderr = &out, &errb
+		code, err := Run(opts)
+		if err != nil || code != ExitClean {
+			t.Fatalf("Run(%s, %s): exit = %d, err = %v, stderr = %q", opts.Base, opts.Head, code, err, errb.String())
+		}
+		mustContain(t, out.String(), "  + func ")
+	}
+	if after := snapshotOf(t, filepath.Join(dir, ".git")); after != before {
+		t.Errorf(".git changed during the runs: %d files before, %d after", before.count, after.count)
+	}
+}
+
 func TestLinkedWorktree(t *testing.T) {
 	t.Parallel()
 	main, base, head := diskFixture(t)
@@ -754,15 +787,16 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	mustContain(t, r.err.Error(), `unresolvable import "example.org/nothere" (required by example.com/m/a)`)
 
 	// A module go.mod requires but the module cache lacks is fatal too when
-	// there is nothing to fetch it with, and the error names the flag.
+	// there is nothing to fetch it with, and the error says so in a way
+	// the command line can recognize to name the flag.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/nothere v1.2.3\n")
 	r = f.run("HEAD", "", Options{})
-	if r.code != ExitError || r.err == nil {
-		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	if r.code != ExitError || !errors.Is(r.err, modfetch.ErrReadOnly) {
+		t.Fatalf("exit = %d, err = %v; want ErrReadOnly", r.code, r.err)
 	}
 	mustContain(t, r.err.Error(),
-		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it")
-	mustNotContain(t, r.err.Error(), "go.work")
+		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; the go command is off limits in a read-only run")
+	mustNotContain(t, r.err.Error(), "go.work", "fsreadonly")
 
 	// In a workspace, the import of a sibling module resolves through
 	// go.work for the go command; the error says the file is not read.
@@ -771,7 +805,7 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), "not in module cache; remove --fsreadonly to let go-whatchanged download it; go.work is not consulted, so a workspace module must come from the module cache or a replace directive")
+	mustContain(t, r.err.Error(), "not in module cache; the go command is off limits in a read-only run; go.work is not consulted, so a workspace module must come from the module cache or a replace directive")
 }
 
 // fakeSource is a modfetch.Source serving module versions from an in-memory
@@ -852,13 +886,12 @@ func TestFetchMissingModule(t *testing.T) {
 		t.Errorf("prefetched = %v, want [%v] per side", src.prefetched, dep)
 	}
 
-	// Without one, the run is read-only and the error says which flag to
-	// drop.
+	// Without one, the run is read-only and the error says so.
 	r = f.run("HEAD", "", Options{})
-	if r.code != ExitError || r.err == nil {
-		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	if r.code != ExitError || !errors.Is(r.err, modfetch.ErrReadOnly) {
+		t.Fatalf("exit = %d, err = %v; want ErrReadOnly", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), "module example.org/dep@v1.0.0 not in module cache; remove --fsreadonly to let go-whatchanged download it")
+	mustContain(t, r.err.Error(), "module example.org/dep@v1.0.0 not in module cache; the go command is off limits in a read-only run")
 
 	// A module the Source cannot find is the Source's error, named once.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/dep v1.0.0\n\nrequire example.org/absent v1.5.0\n")
@@ -926,7 +959,7 @@ func TestModuleSides(t *testing.T) {
 
 	// Without a source there is nothing to fetch a module version with.
 	r = f.runSpecs(lib("latest"), lib("HEAD"), Options{})
-	if r.err == nil || !strings.Contains(r.err.Error(), "example.org/lib@latest: diffing a module version needs the go command; remove --fsreadonly") {
+	if !errors.Is(r.err, modfetch.ErrReadOnly) || !strings.Contains(r.err.Error(), "example.org/lib@latest: diffing a module version needs a download; the go command is off limits in a read-only run") {
 		t.Errorf("without a source: %v", r.err)
 	}
 }

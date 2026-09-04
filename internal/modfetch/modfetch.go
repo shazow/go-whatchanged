@@ -1,11 +1,18 @@
 // Package modfetch obtains module versions from outside the repository: a
 // Source decides the mechanism, the go command today, callers see versions
-// and trees. It is the one place go-whatchanged reaches the network or
-// writes to disk, and a run without a Source does neither.
+// and trees.
+//
+// It is the one place go-whatchanged runs a command, reaches the network or
+// writes to disk, and a run without a Source does none of the three: that
+// is the whole of --fsreadonly. Anything new that must do any of them
+// belongs behind Source, so that leaving the Source out keeps leaving it
+// out; what a Source-less run cannot do fails with an error wrapping
+// ErrReadOnly.
 package modfetch
 
 import (
 	"context"
+	"errors"
 
 	"golang.org/x/mod/module"
 
@@ -38,6 +45,12 @@ type Source interface {
 	// A Source with nothing to gain from batching may do nothing.
 	Prefetch(ctx context.Context, mods []module.Version) error
 }
+
+// ErrReadOnly is what a run without a Source cannot do: resolve or fetch a
+// module version, or download a module the cache lacks. The errors of such
+// a run wrap it and say what was needed; the command line recognizes it and
+// names the flag to drop, which no error message here does.
+var ErrReadOnly = errors.New("the go command is off limits in a read-only run")
 
 // Module is a fetched module version.
 type Module struct {
