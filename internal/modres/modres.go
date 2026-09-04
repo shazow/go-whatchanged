@@ -103,10 +103,11 @@ type Resolver struct {
 	// Missing, when set, is called for a module version that go.mod
 	// requires (or a replace directive names) but the module cache lacks,
 	// and returns the directory holding that version's tree, readable
-	// through the Resolver's FS: the caller may fetch it on demand. Its
-	// errors are returned as they are, so they should name the module. It
-	// must be set before the first Resolve. When nil, such a module is a
-	// MissingModuleError.
+	// through the Resolver's FS: the caller may fetch it on demand. It may
+	// be called more than once for a version, so it should be cheap the
+	// second time. Its errors are returned as they are, so they should
+	// name the module. It must be set before the first Resolve. When nil,
+	// such a module is a MissingModuleError.
 	Missing func(mod module.Version) (dir string, err error)
 
 	fs        FS
@@ -119,8 +120,7 @@ type Resolver struct {
 	stdGo     string
 
 	mu         sync.Mutex
-	goVersions map[string]string         // module root dir → go version
-	fetched    map[module.Version]string // module versions Missing provided → root dir
+	goVersions map[string]string // module root dir → go version
 }
 
 type replacement struct {
@@ -179,7 +179,6 @@ func parse(fs FS, root, gomod string, data []byte, env Env, replaces bool) (*Res
 		goVersion:  goVersion,
 		replaces:   map[module.Version]replacement{},
 		goVersions: map[string]string{},
-		fetched:    map[module.Version]string{},
 	}
 	for _, req := range mf.Require {
 		r.requires = append(r.requires, req.Mod)
@@ -351,17 +350,11 @@ func (r *Resolver) MissingModules() []module.Version {
 	return missing
 }
 
-// fetch obtains a module version the cache lacks through Missing, once per
-// version, or reports it missing when there is no hook.
+// fetch obtains a module version the cache lacks through Missing, or
+// reports it missing when there is no hook.
 func (r *Resolver) fetch(mod module.Version) (string, error) {
 	if r.Missing == nil {
 		return "", &MissingModuleError{Path: mod.Path, Version: mod.Version}
-	}
-	r.mu.Lock()
-	dir, ok := r.fetched[mod]
-	r.mu.Unlock()
-	if ok {
-		return dir, nil
 	}
 	dir, err := r.Missing(mod)
 	if err != nil {
@@ -370,9 +363,6 @@ func (r *Resolver) fetch(mod module.Version) (string, error) {
 	if !r.fs.IsDir(dir) {
 		return "", fmt.Errorf("module %s@%s: fetched to %s, which is not a directory", mod.Path, mod.Version, dir)
 	}
-	r.mu.Lock()
-	r.fetched[mod] = dir
-	r.mu.Unlock()
 	return dir, nil
 }
 

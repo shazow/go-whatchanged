@@ -2,7 +2,6 @@ package modfetch
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -24,7 +23,7 @@ for arg; do
 	case "$arg" in
 	example.com/m@latest) echo '{"Path":"example.com/m","Version":"v1.2.0"}' ;;
 	example.com/m@nope) echo '{"Path":"example.com/m","Error":{"Err":"no matching versions for query \"nope\""}}' ;;
-	example.com/m@v1.2.0) printf '{"Path":"example.com/m","Version":"v1.2.0","GoMod":"%s","Dir":"%s","Sum":"h1:abc"}\n' "$GOFAKE_GOMOD" "$GOFAKE_DIR" ;;
+	example.com/m@v1.2.0) printf '{"Path":"example.com/m","Version":"v1.2.0","GoMod":"%s","Dir":"%s"}\n' "$GOFAKE_GOMOD" "$GOFAKE_DIR" ;;
 	example.com/m@v9.9.9) echo '{"Path":"example.com/m","Version":"v9.9.9","Error":"example.com/m@v9.9.9: reading https://proxy/example.com/m/@v/v9.9.9.info: 404 Not Found"}'; rc=1 ;;
 	*@*) echo "go: cannot serve $arg" >&2; exit 1 ;;
 	esac
@@ -32,32 +31,32 @@ done
 exit $rc
 `
 
+// newFakeGo puts the fake go command first in PATH and returns a GoCommand,
+// a reader of the fake's invocation log, and the GoCommand's Stderr.
 func newFakeGo(t *testing.T) (g *GoCommand, log func() []string, stderr *bytes.Buffer) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("the fake go command is a shell script")
 	}
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "go")
-	if err := os.WriteFile(bin, []byte(fakeGo), 0o755); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "go"), []byte(fakeGo), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	logFile := filepath.Join(dir, "log")
 	gomod := filepath.Join(dir, "v1.2.0.mod")
 	if err := os.WriteFile(gomod, []byte("module example.com/m\n\ngo 1.24\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	logFile := filepath.Join(dir, "log")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("GOFAKE_LOG", logFile)
+	t.Setenv("GOFAKE_GOMOD", gomod)
+	t.Setenv("GOFAKE_DIR", filepath.Join(dir, "m@v1.2.0"))
 	stderr = &bytes.Buffer{}
-	g = &GoCommand{
-		Go:     bin,
-		Env:    []string{"GOFAKE_LOG=" + logFile, "GOFAKE_GOMOD=" + gomod, "GOFAKE_DIR=" + filepath.Join(dir, "m@v1.2.0")},
-		Stderr: stderr,
-	}
 	log = func() []string {
 		data, _ := os.ReadFile(logFile)
 		return strings.Split(strings.TrimSpace(string(data)), "\n")
 	}
-	return g, log, stderr
+	return &GoCommand{Stderr: stderr}, log, stderr
 }
 
 func TestGoCommandResolve(t *testing.T) {
@@ -77,18 +76,15 @@ func TestGoCommandResolve(t *testing.T) {
 	if err != nil || v != (module.Version{Path: "example.com/m", Version: "v1.2.0"}) {
 		t.Errorf("Resolve(latest) = %v, %v", v, err)
 	}
-	line := log()[0]
-	if !strings.HasPrefix(line, rootDir()+" GOWORK=off list -m -e -json example.com/m@latest") {
+	wd, _ := os.Getwd()
+	root := filepath.VolumeName(wd) + string(filepath.Separator)
+	if line := log()[0]; !strings.HasPrefix(line, root+" GOWORK=off list -m -e -json example.com/m@latest") {
 		t.Errorf("go ran as %q; want it at the filesystem root with GOWORK=off", line)
 	}
 
 	_, err = g.Resolve(ctx, "example.com/m", "nope")
-	var nf *NotFoundError
-	if !errors.As(err, &nf) || nf.Path != "example.com/m" || nf.Query != "nope" {
-		t.Errorf("Resolve(nope) = %v, want NotFoundError", err)
-	}
-	if !strings.Contains(err.Error(), `no matching versions for query "nope"`) {
-		t.Errorf("Resolve(nope) = %v; want the go command's account", err)
+	if err == nil || err.Error() != `go list -m example.com/m@nope: no matching versions for query "nope"` {
+		t.Errorf("Resolve(nope) = %v", err)
 	}
 }
 
@@ -116,7 +112,7 @@ func TestGoCommandFetch(t *testing.T) {
 		}
 	}
 	m := mods[0]
-	if m.Path != "example.com/m" || m.Version.Version != "v1.2.0" || m.Sum != "h1:abc" || m.FS != nil ||
+	if m.Path != "example.com/m" || m.Version.Version != "v1.2.0" || m.FS != nil ||
 		filepath.Base(m.Dir) != "m@v1.2.0" || string(m.GoMod) != "module example.com/m\n\ngo 1.24\n" {
 		t.Errorf("Fetch = %+v", m)
 	}
@@ -127,10 +123,11 @@ func TestGoCommandFetch(t *testing.T) {
 		t.Errorf("progress lines = %d, want 1:\n%s", got, stderr.String())
 	}
 
+	// A module the go command cannot get is reported in the go command's
+	// words.
 	_, err := g.Fetch(ctx, module.Version{Path: "example.com/m", Version: "v9.9.9"})
-	var nf *NotFoundError
-	if !errors.As(err, &nf) || nf.Query != "v9.9.9" {
-		t.Errorf("Fetch(v9.9.9) = %v, want NotFoundError", err)
+	if err == nil || !strings.HasPrefix(err.Error(), "go mod download example.com/m@v9.9.9: example.com/m@v9.9.9: reading ") {
+		t.Errorf("Fetch(v9.9.9) = %v", err)
 	}
 
 	// Anything else is the go command's stderr, which also reaches Stderr.
@@ -164,12 +161,11 @@ func TestGoCommandPrefetch(t *testing.T) {
 	// Fetch answers from the batch without running anything more, the
 	// failure included.
 	m, err := g.Fetch(ctx, good)
-	if err != nil || m.Sum != "h1:abc" {
+	if err != nil || filepath.Base(m.Dir) != "m@v1.2.0" {
 		t.Errorf("Fetch(good) = %+v, %v", m, err)
 	}
-	var nf *NotFoundError
-	if _, err := g.Fetch(ctx, bad); !errors.As(err, &nf) {
-		t.Errorf("Fetch(bad) = %v, want NotFoundError", err)
+	if _, err := g.Fetch(ctx, bad); err == nil || !strings.Contains(err.Error(), "404 Not Found") {
+		t.Errorf("Fetch(bad) = %v, want the go command's account", err)
 	}
 	// Nor does a second Prefetch of the same versions.
 	if err := g.Prefetch(ctx, []module.Version{good, bad}); err != nil {

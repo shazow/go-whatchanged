@@ -6,7 +6,6 @@ package modfetch
 
 import (
 	"context"
-	"fmt"
 
 	"golang.org/x/mod/module"
 
@@ -15,7 +14,7 @@ import (
 
 // Source obtains module versions. A nil Source keeps the tool in its
 // read-only mode: a module missing from the module cache is an error rather
-// than a download.
+// than a download, and a module version cannot be diffed.
 type Source interface {
 	// Resolve turns a query into the version it denotes: a semantic
 	// version, "latest", a branch or tag name, a commit prefix, or a
@@ -27,6 +26,17 @@ type Source interface {
 	// It is idempotent and safe for concurrent use: the two sides of a diff
 	// load in parallel and may ask for the same dependency at once.
 	Fetch(ctx context.Context, mod module.Version) (*Module, error)
+
+	// Prefetch obtains mods as a batch, ahead of need, so that Fetch then
+	// answers from it. A go.mod at go 1.17 or later names every module its
+	// packages and tests can import, so fetching its missing requirements
+	// together, before type-checking starts, replaces one download per
+	// import with one parallel download, at the price of the modules only
+	// tests need. A problem with one module is not an error here: it
+	// surfaces from Fetch, when and if that module is needed. The error is
+	// for the batch as a whole and advisory, since Fetch reports it again.
+	// A Source with nothing to gain from batching may do nothing.
+	Prefetch(ctx context.Context, mods []module.Version) error
 }
 
 // Module is a fetched module version.
@@ -41,27 +51,7 @@ type Module struct {
 
 	// GoMod is the module's go.mod as the Source knows it: the file from
 	// the tree, or the one the ecosystem synthesizes for versions that
-	// predate modules. Resolution should read this rather than Dir, so that
-	// a module without a go.mod of its own still resolves.
+	// predate modules. Resolution reads this rather than Dir, so that a
+	// module without a go.mod of its own still resolves.
 	GoMod []byte
-
-	// Sum is the h1: hash of the tree when the Source verified it, else "".
-	Sum string
 }
-
-// NotFoundError reports a module or version the Source cannot find, as
-// opposed to a transport or verification failure.
-type NotFoundError struct {
-	Path, Query string
-	Err         error // the Source's own account, if any
-}
-
-func (e *NotFoundError) Error() string {
-	msg := fmt.Sprintf("%s@%s not found", e.Path, e.Query)
-	if e.Err != nil {
-		msg += ": " + e.Err.Error()
-	}
-	return msg
-}
-
-func (e *NotFoundError) Unwrap() error { return e.Err }

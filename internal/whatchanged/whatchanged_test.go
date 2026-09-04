@@ -775,9 +775,9 @@ func (s *fakeSource) Resolve(_ context.Context, path, query string) (module.Vers
 }
 
 func (s *fakeSource) Fetch(_ context.Context, mod module.Version) (*modfetch.Module, error) {
-	root := mod.Path + "@" + mod.Version
+	root := mod.String()
 	if fi, err := s.fs.Stat(root); err != nil || !fi.IsDir() {
-		return nil, &modfetch.NotFoundError{Path: mod.Path, Query: mod.Version}
+		return nil, fmt.Errorf("%s: not found", mod)
 	}
 	sub, err := s.fs.Chroot(root)
 	if err != nil {
@@ -840,7 +840,7 @@ func TestFetchMissingModule(t *testing.T) {
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), `working tree: unresolvable import "example.org/absent" (required by example.com/m/a): example.org/absent@v1.5.0 not found`)
+	mustContain(t, r.err.Error(), `working tree: unresolvable import "example.org/absent" (required by example.com/m/a): example.org/absent@v1.5.0: not found`)
 	mustNotContain(t, r.err.Error(), "fsreadonly")
 }
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -17,30 +18,12 @@ import (
 	"golang.org/x/mod/module"
 )
 
-// Prefetcher is a Source that can obtain several module versions ahead of
-// need, together; Fetch then answers from what Prefetch got. A go.mod at
-// go 1.17 or later names every module its packages and tests can import, so
-// fetching its missing requirements as one batch, before type-checking
-// starts, replaces one download per import with one parallel download,
-// at the price of the modules only tests need.
-type Prefetcher interface {
-	// Prefetch obtains mods as a batch. A problem with one module is not an
-	// error here: it surfaces from Fetch, when and if that module is
-	// needed. The error is for the batch as a whole, such as a Source that
-	// cannot run at all, and is advisory, since Fetch reports it again.
-	Prefetch(ctx context.Context, mods []module.Version) error
-}
-
-// GoCommand is a Source that runs the go command, which handles GOPROXY,
-// GOPRIVATE, the checksum database and credentials on the tool's behalf. It
-// writes only under GOMODCACHE: every command runs outside any module, with
-// GOWORK=off, so the go.mod, go.sum and go.work of the repository are never
-// read, let alone written.
+// GoCommand is a Source that runs the go command from PATH, which handles
+// GOPROXY, GOPRIVATE, the checksum database and credentials on the tool's
+// behalf. It writes only under GOMODCACHE: every command runs outside any
+// module, with GOWORK=off, so the go.mod, go.sum and go.work of the
+// repository are never read, let alone written.
 type GoCommand struct {
-	// Go is the binary to run; "go" from PATH when empty.
-	Go string
-	// Env is appended to the environment the commands inherit.
-	Env []string
 	// Stderr receives a "downloading path version" line per download, since
 	// the go command prints no progress in JSON mode, and whatever the go
 	// command does print on its standard error; nil discards both. The go
@@ -65,16 +48,17 @@ func (g *GoCommand) Resolve(ctx context.Context, path, query string) (module.Ver
 	if module.CanonicalVersion(query) == query {
 		return module.Version{Path: path, Version: query}, nil
 	}
+	what := "go list -m " + path + "@" + query
 	out, stderr, err := g.run(ctx, "list", "-m", "-e", "-json", path+"@"+query)
 	var m struct {
 		Path, Version string
 		Error         *struct{ Err string }
 	}
 	if jerr := json.Unmarshal(out, &m); jerr != nil || m.Path == "" {
-		return module.Version{}, g.failure("go list -m", path, query, stderr, err)
+		return module.Version{}, failure(what, stderr, err)
 	}
 	if m.Error != nil {
-		return module.Version{}, g.failure("go list -m", path, query, m.Error.Err, nil)
+		return module.Version{}, failure(what, m.Error.Err, nil)
 	}
 	return module.Version{Path: m.Path, Version: m.Version}, nil
 }
@@ -99,18 +83,15 @@ func (g *GoCommand) Fetch(ctx context.Context, mod module.Version) (*Module, err
 	return f.mod, f.err
 }
 
-// Prefetch implements Prefetcher with one go mod download for every version
-// in mods that no Fetch or Prefetch has taken on yet.
+// Prefetch implements Source with one go mod download for every version in
+// mods that no Fetch or Prefetch has taken on yet.
 func (g *GoCommand) Prefetch(ctx context.Context, mods []module.Version) error {
 	owned := g.claim(mods)
 	if len(owned) == 0 {
 		return nil
 	}
-	list := slices.SortedFunc(keys(owned), func(a, b module.Version) int {
-		if c := strings.Compare(a.Path, b.Path); c != 0 {
-			return c
-		}
-		return strings.Compare(a.Version, b.Version)
+	list := slices.SortedFunc(maps.Keys(owned), func(a, b module.Version) int {
+		return strings.Compare(a.String(), b.String())
 	})
 	results, err := g.download(ctx, list)
 	for mod, f := range owned {
@@ -118,17 +99,6 @@ func (g *GoCommand) Prefetch(ctx context.Context, mods []module.Version) error {
 		close(f.done)
 	}
 	return err
-}
-
-// keys iterates over the keys of m.
-func keys[K comparable, V any](m map[K]V) func(func(K) bool) {
-	return func(yield func(K) bool) {
-		for k := range m {
-			if !yield(k) {
-				return
-			}
-		}
-	}
 }
 
 // claim registers the versions in mods that no Fetch or Prefetch has yet
@@ -177,18 +147,16 @@ func (r result) unpack(batchErr error) (*Module, error) {
 // reports the failure in that module's JSON object, so an error comes back
 // only when the command produced no report at all.
 func (g *GoCommand) download(ctx context.Context, mods []module.Version) (map[module.Version]result, error) {
-	what := "go mod download"
-	if len(mods) == 1 {
-		what += " " + mods[0].Path + "@" + mods[0].Version
-	} else {
-		what += fmt.Sprintf(" (%d modules)", len(mods))
+	what := "go mod download " + mods[0].String()
+	if len(mods) > 1 {
+		what = fmt.Sprintf("go mod download (%d modules)", len(mods))
 	}
 	args := []string{"mod", "download", "-json"}
 	for _, mod := range mods {
 		if g.Stderr != nil {
 			fmt.Fprintf(g.Stderr, "downloading %s %s\n", mod.Path, mod.Version)
 		}
-		args = append(args, mod.Path+"@"+mod.Version)
+		args = append(args, mod.String())
 	}
 	out, stderr, err := g.run(ctx, args...)
 
@@ -197,7 +165,7 @@ func (g *GoCommand) download(ctx context.Context, mods []module.Version) (map[mo
 	for {
 		var m struct {
 			Path, Version, Error string
-			GoMod, Dir, Sum      string
+			GoMod, Dir           string
 		}
 		if derr := dec.Decode(&m); derr != nil || m.Path == "" {
 			break
@@ -205,25 +173,20 @@ func (g *GoCommand) download(ctx context.Context, mods []module.Version) (map[mo
 		mod := module.Version{Path: m.Path, Version: m.Version}
 		switch {
 		case m.Error != "":
-			results[mod] = result{err: g.failure("go mod download", m.Path, m.Version, m.Error, nil)}
+			results[mod] = result{err: failure("go mod download "+mod.String(), m.Error, nil)}
 		case m.Dir == "" || m.GoMod == "":
-			results[mod] = result{err: fmt.Errorf("go mod download %s@%s: no directory in its report", m.Path, m.Version)}
+			results[mod] = result{err: fmt.Errorf("go mod download %s: no directory in its report", mod)}
 		default:
 			gomod, rerr := os.ReadFile(m.GoMod)
 			if rerr != nil {
-				results[mod] = result{err: fmt.Errorf("go mod download %s@%s: %w", m.Path, m.Version, rerr)}
+				results[mod] = result{err: fmt.Errorf("go mod download %s: %w", mod, rerr)}
 				continue
 			}
-			results[mod] = result{mod: &Module{Version: mod, Dir: m.Dir, GoMod: gomod, Sum: m.Sum}}
+			results[mod] = result{mod: &Module{Version: mod, Dir: m.Dir, GoMod: gomod}}
 		}
 	}
 	if len(results) == 0 {
-		if stderr = strings.TrimSpace(stderr); stderr != "" {
-			err = errors.New(stderr)
-		} else if err == nil {
-			err = errors.New("unexpected output")
-		}
-		return nil, fmt.Errorf("%s: %w", what, err)
+		return nil, failure(what, stderr, err)
 	}
 	return results, nil
 }
@@ -232,17 +195,13 @@ func (g *GoCommand) download(ctx context.Context, mods []module.Version) (map[mo
 // and error, and the error from running it. See GoCommand for the
 // environment it runs in.
 func (g *GoCommand) run(ctx context.Context, args ...string) (stdout []byte, stderr string, err error) {
-	bin := g.Go
-	if bin == "" {
-		bin = "go"
-	}
-	cmd := exec.CommandContext(ctx, bin, args...)
+	cmd := exec.CommandContext(ctx, "go", args...)
 	// The root of the filesystem is the one directory with no go.mod above
 	// it: from there the go command cannot find, and so cannot touch, the
 	// module the user is in.
-	cmd.Dir = rootDir()
+	wd, _ := os.Getwd()
+	cmd.Dir = filepath.VolumeName(wd) + string(filepath.Separator)
 	cmd.Env = append(os.Environ(), "GOWORK=off", "GO111MODULE=on")
-	cmd.Env = append(cmd.Env, g.Env...)
 	var out, errb bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &errb
@@ -253,29 +212,13 @@ func (g *GoCommand) run(ctx context.Context, args ...string) (stdout []byte, std
 	return out.Bytes(), errb.String(), err
 }
 
-// failure builds the error for a failed command: a NotFoundError when the
-// go command's message says the module or version does not exist, else the
-// message itself, or the process error when there is no message.
-func (g *GoCommand) failure(what, path, version, msg string, err error) error {
-	msg = strings.TrimSpace(msg)
-	if msg == "" {
-		if err == nil {
-			err = errors.New("unexpected output")
-		}
-		return fmt.Errorf("%s %s@%s: %w", what, path, version, err)
+// failure is the error for a failed command: its message when it gave one,
+// else the error from running it.
+func failure(what, msg string, err error) error {
+	if msg = strings.TrimSpace(msg); msg != "" {
+		err = errors.New(msg)
+	} else if err == nil {
+		err = errors.New("unexpected output")
 	}
-	reason := errors.New(msg)
-	for _, s := range []string{"not found", "unknown revision", "no matching versions", "404"} {
-		if strings.Contains(msg, s) {
-			return &NotFoundError{Path: path, Query: version, Err: reason}
-		}
-	}
-	return fmt.Errorf("%s %s@%s: %w", what, path, version, reason)
-}
-
-// rootDir is the root of the filesystem holding the working directory: "/"
-// on Unix, the current drive's root on Windows.
-func rootDir() string {
-	wd, _ := os.Getwd()
-	return filepath.VolumeName(wd) + string(filepath.Separator)
+	return fmt.Errorf("%s: %w", what, err)
 }

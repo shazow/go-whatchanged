@@ -454,7 +454,7 @@ func (spec sideSpec) mount(ctx context.Context, src modfetch.Source) (*side, err
 		if err != nil {
 			return nil, err
 		}
-		s.label = m.Path + "@" + m.Version.Version
+		s.label = m.Version.String()
 		s.rev = s.label // positions read "path@version:file.go:1"
 		s.gomod = m.GoMod
 		if m.FS != nil {
@@ -517,15 +517,25 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
 	if opts.Fetch != nil {
-		res.Missing = s.fetcher(ctx, opts.Fetch)
-		// Fetch the side's missing requirements together, ahead of the
-		// imports that need them, when the source can. Best effort: a
-		// module that is needed and still missing is fetched, and any
-		// problem with it reported, on demand.
-		if p, ok := opts.Fetch.(modfetch.Prefetcher); ok {
-			if missing := res.MissingModules(); len(missing) > 0 {
-				_ = p.Prefetch(ctx, missing)
+		// A missing module is fetched and, when its tree comes with a
+		// filesystem of its own, mounted into this side's overlay; a tree
+		// on disk is reachable already.
+		res.Missing = func(mod module.Version) (string, error) {
+			m, err := opts.Fetch.Fetch(ctx, mod)
+			if err != nil {
+				return "", err
 			}
+			if m.FS != nil {
+				s.overlay.Add(vfs.Mount{Path: m.Dir, FS: m.FS})
+			}
+			return m.Dir, nil
+		}
+		// The side's missing requirements are fetched together, ahead of
+		// the imports that need them. Best effort: a module that is needed
+		// and still missing is fetched, and any problem with it reported,
+		// on demand.
+		if missing := res.MissingModules(); len(missing) > 0 {
+			_ = opts.Fetch.Prefetch(ctx, missing)
 		}
 	}
 	s.res = res
@@ -569,37 +579,15 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		s.main[p] = found[p].Main
 	}
 	if err := s.ld.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w%s", s.label, err, readOnlyHint(err))
+		// A module the cache lacks is only ever missing without a source,
+		// that is under --fsreadonly.
+		var missing *modres.MissingModuleError
+		if errors.As(err, &missing) {
+			err = fmt.Errorf("%w; remove --fsreadonly to let go-whatchanged download it", err)
+		}
+		return nil, fmt.Errorf("%s: %w", s.label, err)
 	}
 	return s, nil
-}
-
-// fetcher returns the resolver hook that fetches a missing module through
-// src and makes its tree visible on this side: a tree served by its own
-// filesystem is mounted into the side's overlay, one on disk is reachable
-// already.
-func (s *side) fetcher(ctx context.Context, src modfetch.Source) func(module.Version) (string, error) {
-	return func(mod module.Version) (string, error) {
-		m, err := src.Fetch(ctx, mod)
-		if err != nil {
-			return "", err
-		}
-		if m.FS != nil {
-			s.overlay.Add(vfs.Mount{Path: m.Dir, FS: m.FS})
-		}
-		return m.Dir, nil
-	}
-}
-
-// readOnlyHint is the fix to append when err reports a module missing from
-// the module cache, which happens only when Options.Fetch is nil, that is
-// under --fsreadonly.
-func readOnlyHint(err error) string {
-	var missing *modres.MissingModuleError
-	if !errors.As(err, &missing) {
-		return ""
-	}
-	return "; remove --fsreadonly to let go-whatchanged download it"
 }
 
 func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {

@@ -438,12 +438,12 @@ side is ever linked against the other side's packages.
 
 A module the cache lacks is fetched through one small interface,
 `internal/modfetch.Source`: resolve a query to a version, fetch a version
-to a readable tree. Before a side is type-checked, every requirement of
-its `go.mod` that the cache lacks is fetched as one batch, in parallel, and
-anything that still turns out to be missing is fetched on demand. The
-interface's only implementation runs the go command; a client for the
-module proxy protocol could replace it without the rest of the tool
-noticing, and `--fsreadonly` simply leaves it out.
+to a readable tree, or several at once. Before a side is type-checked,
+every requirement of its `go.mod` that the cache lacks is fetched as one
+batch, in parallel, and anything that still turns out to be missing is
+fetched on demand. The interface's only implementation runs the go
+command; a client for the module proxy protocol could replace it without
+the rest of the tool noticing, and `--fsreadonly` simply leaves it out.
 
 ## Limitations
 
