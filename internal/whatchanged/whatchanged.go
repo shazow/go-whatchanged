@@ -26,6 +26,7 @@ import (
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"golang.org/x/exp/apidiff"
 	"golang.org/x/mod/module"
+	"golang.org/x/mod/semver"
 
 	"github.com/shazow/go-whatchanged/internal/discover"
 	"github.com/shazow/go-whatchanged/internal/loader"
@@ -212,6 +213,13 @@ func (t target) spec() (sideSpec, error) {
 	dir, err := filepath.Abs(t.dir)
 	if err != nil {
 		return sideSpec{}, err
+	}
+	// Walking up from a directory that does not exist would find the
+	// repository above it and silently diff that one.
+	if fi, err := os.Stat(dir); err != nil {
+		return sideSpec{}, fmt.Errorf("%s: no such directory", t.dir)
+	} else if !fi.IsDir() {
+		return sideSpec{}, fmt.Errorf("%s is not a directory", t.dir)
 	}
 	gitRoot, err := findGitRoot(dir)
 	if err != nil {
@@ -592,8 +600,11 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 
 func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {
 	hash, err := repo.ResolveRevision(plumbing.Revision(rev))
+	if errors.Is(err, plumbing.ErrReferenceNotFound) {
+		return nil, fmt.Errorf("@%s: no such tag, branch or commit%s; a revision is written @<tag>, @<branch>, @<commit> or @HEAD~2, and @latest is the newest release tag", rev, tagList(repo))
+	}
 	if err != nil {
-		return nil, fmt.Errorf("resolve %q: %w", rev, err)
+		return nil, fmt.Errorf("@%s: %w", rev, err)
 	}
 	commit, err := repo.CommitObject(*hash)
 	if err != nil {
@@ -604,6 +615,43 @@ func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {
 		return nil, fmt.Errorf("resolve %q: %s is not a commit: %w", rev, hash, err)
 	}
 	return commit.Tree()
+}
+
+// tagList describes the repository's tags for an error message: the newest
+// few by semantic version, or "" when there are none.
+func tagList(repo *git.Repository) string {
+	refs, err := repo.Tags()
+	if err != nil {
+		return ""
+	}
+	var tags []string
+	_ = refs.ForEach(func(ref *plumbing.Reference) error {
+		tags = append(tags, ref.Name().Short())
+		return nil
+	})
+	if len(tags) == 0 {
+		return ""
+	}
+	// Newest first: valid semantic versions by version, the rest by name
+	// after them.
+	slices.SortFunc(tags, func(a, b string) int {
+		if va, vb := semver.IsValid(a), semver.IsValid(b); va != vb {
+			if va {
+				return -1
+			}
+			return 1
+		} else if va {
+			return semver.Compare(b, a)
+		}
+		return strings.Compare(a, b)
+	})
+	const show = 6
+	more := ""
+	if len(tags) > show {
+		more = fmt.Sprintf(", and %d more", len(tags)-show)
+		tags = tags[:show]
+	}
+	return " (tags: " + strings.Join(tags, ", ") + more + ")"
 }
 
 func diffSides(base, head *side, fset *token.FileSet) *render.Result {

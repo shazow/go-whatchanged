@@ -708,7 +708,7 @@ func TestBadRevision(t *testing.T) {
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), `resolve "does-not-exist"`)
+	mustContain(t, r.err.Error(), "@does-not-exist: no such tag, branch or commit")
 }
 
 func TestMissingGoMod(t *testing.T) {
@@ -955,15 +955,53 @@ func TestParseTargets(t *testing.T) {
 		{"@v1", "@latest", "can only be the base"},
 		// Without an @, an argument is a location: a bare revision is not
 		// a module path, and a directory is spelled as a path.
-		{"v1.4.0", "", "did you mean @v1.4.0?"},
-		{"origin/main", "", "did you mean @origin/main?"},
-		{"sub@v1", "", "did you mean @sub@v1?"},
-		{"testdata@v1", "", "did you mean ./testdata@v1?"},
+		{"v1.4.0", "", "a tag, branch or commit of the current repository is written with an @: @v1.4.0"},
+		{"origin/main", "", "written with an @: @origin/main"},
+		{"sub@v1", "", "written with an @: @sub@v1"},
+		{"testdata@v1", "", "a directory is written as a path: ./testdata@v1"},
 	} {
 		_, _, err := parseTargets(tc.base, tc.head)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parseTargets(%q, %q) = %v, want %q", tc.base, tc.head, err, tc.want)
 		}
+	}
+}
+
+func TestUnknownRevision(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	h := f.commit("one")
+
+	// With no tags, the error names the forms a revision takes.
+	r := f.run("nope", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@nope: no such tag, branch or commit; a revision is written @<tag>, @<branch>, @<commit> or @HEAD~2, and @latest is the newest release tag")
+	mustNotContain(t, r.err.Error(), "tags:")
+
+	// With tags, it lists them, newest first, release versions before
+	// the rest, and stops after a few.
+	for _, name := range []string{"v1.10.0", "v1.9.0", "v1.8.0", "v1.7.0", "v1.6.0", "v1.5.0", "v1.4.0", "build-42"} {
+		f.tag(name, h)
+	}
+	r = f.run("HEAD", "v1.4", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@v1.4: no such tag, branch or commit (tags: v1.10.0, v1.9.0, v1.8.0, v1.7.0, v1.6.0, v1.5.0, and 2 more); a revision is written")
+}
+
+func TestMissingDirectory(t *testing.T) {
+	t.Parallel()
+	// A directory that does not exist must not fall through to the
+	// repository above it.
+	nope := filepath.Join(t.TempDir(), "nope")
+	var out, errb bytes.Buffer
+	_, err := Run(Options{Base: nope + "@HEAD", Stdout: &out, Stderr: &errb})
+	if err == nil || !strings.Contains(err.Error(), nope+": no such directory") {
+		t.Errorf("Run(%s@HEAD) = %v", nope, err)
 	}
 }
 

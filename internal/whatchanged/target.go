@@ -88,11 +88,11 @@ func parseTarget(arg string, inherit target) (target, error) {
 	default:
 		// A revision of the current repository lacks its @; a directory
 		// that exists lacks its ./ .
-		hint := "@" + arg
+		hint := fmt.Sprintf("a tag, branch or commit of the current repository is written with an @: @%s", arg)
 		if fi, err := os.Stat(loc); err == nil && fi.IsDir() {
-			hint = "./" + arg
+			hint = fmt.Sprintf("a directory is written as a path: ./%s", arg)
 		}
-		return target{}, fmt.Errorf("%q is neither a module path nor a directory (a directory starts with ./, ../, ~/ or /; a revision of the current repository with @); did you mean %s?", loc, hint)
+		return target{}, fmt.Errorf("%q is neither a module path nor a directory (paths start with ./, ../, ~/ or /); %s", loc, hint)
 	}
 }
 
