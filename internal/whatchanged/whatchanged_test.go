@@ -219,7 +219,10 @@ func (f *fixture) run(base, head string, opts Options) runResult {
 	if head != "" {
 		headSpec = sideSpec{rev: head}
 	}
-	return f.runSpecs(sideSpec{rev: opts.baseRev()}, headSpec, opts)
+	if base == "" {
+		base = DefaultBase
+	}
+	return f.runSpecs(sideSpec{rev: base}, headSpec, opts)
 }
 
 // runSpecs diffs two sides given as specs, filling in the fixture's
@@ -237,7 +240,7 @@ func (f *fixture) runSpecs(base, head sideSpec, opts Options) runResult {
 		s.open = f.open
 		s.mounts = mounts
 	}
-	res, err := runRepo(f.t.Context(), base, head, f.env, opts)
+	res, err := compare(f.t.Context(), base, head, f.env, opts)
 	if err != nil {
 		return runResult{stderr: errb.String(), code: ExitError, err: err}
 	}
@@ -577,8 +580,7 @@ func TestTwoRevisionsOnPackedRepository(t *testing.T) {
 	for i := range 10 {
 		var out, errb bytes.Buffer
 		code, err := Run(Options{
-			Repo:   dir,
-			Base:   "@" + base.String()[:7], // abbreviated, as typed from git log
+			Base:   dir + "@" + base.String()[:7], // abbreviated, as typed from git log
 			Head:   "@" + head.String(),
 			Stdout: &out,
 			Stderr: &errb,
@@ -622,7 +624,7 @@ func TestLinkedWorktree(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	code, err := Run(Options{Repo: linked, Base: "@HEAD~1", Stdout: &out, Stderr: &errb})
+	code, err := Run(Options{Base: linked + "@HEAD~1", Stdout: &out, Stderr: &errb})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -632,7 +634,7 @@ func TestLinkedWorktree(t *testing.T) {
 	mustContain(t, out.String(), "  + func B()\n", "  + func Uncommitted()\n")
 
 	out.Reset()
-	code, err = Run(Options{Repo: linked, Base: "@" + base.String(), Head: "@HEAD", Stdout: &out, Stderr: &errb})
+	code, err = Run(Options{Base: linked + "@" + base.String(), Head: "@HEAD", Stdout: &out, Stderr: &errb})
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -735,28 +737,14 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	mustContain(t, r.err.Error(), `unresolvable import "example.org/nothere" (required by example.com/m/a)`)
 
 	// A module go.mod requires but the module cache lacks is fatal too when
-	// there is nothing to fetch it with, and the error says how to get it.
+	// there is nothing to fetch it with, and the error names the flag.
 	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.org/nothere v1.2.3\n")
 	r = f.run("HEAD", "", Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
 	mustContain(t, r.err.Error(),
-		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it, or download the modules go.mod pins:\n\tgo mod download")
-
-	// For a revision, the fix downloads from a copy of that revision's
-	// go.mod, so that the checkout is not touched.
-	f.commit("dep")
-	f.write("go.mod", "module example.com/m\n\ngo 1.24\n")
-	f.write("a/a.go", "package a\n")
-	r = f.run("HEAD", "", Options{})
-	if r.code != ExitError || r.err == nil {
-		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
-	}
-	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
-	mustContain(t, r.err.Error(),
-		"HEAD: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it, or download the modules HEAD pins:\n\tmkdir -p "+
-			dir+" && git show HEAD:go.mod > "+filepath.Join(dir, "go.mod")+" && (cd "+dir+" && go mod download)")
+		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it")
 }
 
 // fakeSource is a modfetch.Source serving module versions from an in-memory
@@ -949,7 +937,7 @@ func TestParseTargets(t *testing.T) {
 		{"./sub@v1", "../other", target{dir: "./sub", query: "v1"}, target{dir: "../other"}},
 		{"~/src/m@v1", "", target{dir: filepath.Join(home, "src", "m"), query: "v1"}, target{dir: filepath.Join(home, "src", "m")}},
 	} {
-		base, head, err := parseTargets(tc.base, tc.head, "")
+		base, head, err := parseTargets(tc.base, tc.head)
 		if err != nil {
 			t.Errorf("parseTargets(%q, %q): %v", tc.base, tc.head, err)
 			continue
@@ -957,11 +945,6 @@ func TestParseTargets(t *testing.T) {
 		if base != tc.wantBase || head != tc.wantHead {
 			t.Errorf("parseTargets(%q, %q) = %+v, %+v; want %+v, %+v", tc.base, tc.head, base, head, tc.wantBase, tc.wantHead)
 		}
-	}
-	// The default directory stands in for ".".
-	base, head, err := parseTargets("@v1", "@v2", "/repo")
-	if err != nil || base != (target{dir: "/repo", query: "v1"}) || head != (target{dir: "/repo", query: "v2"}) {
-		t.Errorf("with a default directory: %+v, %+v, %v", base, head, err)
 	}
 	for _, tc := range []struct{ base, head, want string }{
 		{"@", "", "missing a version"},
@@ -977,7 +960,7 @@ func TestParseTargets(t *testing.T) {
 		{"sub@v1", "", "did you mean @sub@v1?"},
 		{"testdata@v1", "", "did you mean ./testdata@v1?"},
 	} {
-		_, _, err := parseTargets(tc.base, tc.head, "")
+		_, _, err := parseTargets(tc.base, tc.head)
 		if err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Errorf("parseTargets(%q, %q) = %v, want %q", tc.base, tc.head, err, tc.want)
 		}
@@ -1003,16 +986,6 @@ func TestDirectoryTargets(t *testing.T) {
 		t.Fatalf("exit = %d, err = %v, stderr = %q", code, err, errb.String())
 	}
 	mustContain(t, out.String(), "  + func B()\n")
-}
-
-func TestDownloadHint(t *testing.T) {
-	t.Parallel()
-	missing := fmt.Errorf("wrapped: %w", &modres.MissingModuleError{Path: "example.org/x", Version: "v1.0.0"})
-	// A module below the repository root names its go.mod by its path.
-	mustContain(t, (&side{rev: "v1.4.0"}).downloadHint(missing, "sub"), "git show v1.4.0:sub/go.mod > ")
-	if hint := (&side{rev: "v1.4.0"}).downloadHint(fmt.Errorf("something else"), ""); hint != "" {
-		t.Errorf("hint for an unrelated error = %q", hint)
-	}
 }
 
 // ownDeps reads this project's go.mod (two directories up from this
@@ -1133,7 +1106,7 @@ func TestReplaceDirectoryOutsideModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
+	res, err := compare(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1213,7 +1186,7 @@ func TestSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
+	res, err := compare(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1420,8 +1393,7 @@ func TestWriteGuard(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	code, err := Run(Options{
-		Repo:   repoDir,
-		Base:   "@HEAD",
+		Base:   repoDir + "@HEAD",
 		GOOS:   runtime.GOOS,
 		GOARCH: runtime.GOARCH,
 		Stdout: &out,
@@ -1778,7 +1750,7 @@ func TestLatestReleaseSubdirectoryModule(t *testing.T) {
 
 	var out, errb bytes.Buffer
 	opts := Options{Stdout: &out, Stderr: &errb}
-	res, err := runRepo(t.Context(), sideSpec{rev: LatestRelease, open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
+	res, err := compare(t.Context(), sideSpec{rev: LatestRelease, open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, opts)
 	if err != nil {
 		t.Fatal(err)
 	}

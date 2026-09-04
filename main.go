@@ -58,7 +58,7 @@ The modules that go.mod pins but the module cache lacks are downloaded
 with go mod download, run outside the repository so that nothing in it is
 read or written; the module cache is the only place the tool writes. With
 --fsreadonly it never writes anywhere and never runs the go command, and a
-missing module is an error that says how to fetch it.
+module the cache lacks is an error.
 
 Exit codes: 0 no incompatible changes · 1 incompatible changes · 2 error
 

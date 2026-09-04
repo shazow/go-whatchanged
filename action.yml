@@ -11,18 +11,18 @@ branding:
 inputs:
   base:
     description: >-
-      Commit-ish for the old side (hash, tag, branch, HEAD~2, ...) or @latest
-      for the newest release tag among the ancestors of head. Default: on a
-      pull_request event, the merge-base of head and the base branch;
-      otherwise @latest.
+      The old side, as go-whatchanged names one: @rev for a revision of the
+      checkout (a hash, tag, branch, HEAD~2, ...) or @latest for the newest
+      release tag among the ancestors of head. Default: on a pull_request
+      event, the merge-base of head and the base branch; otherwise @latest.
     required: false
     default: ""
   head:
     description: >-
-      Commit-ish for the new side. Empty means the working tree, including
+      The new side, @rev. Empty means the working tree, including
       uncommitted files.
     required: false
-    default: HEAD
+    default: "@HEAD"
   working-directory:
     description: Directory of the module to diff, inside the checkout.
     required: false

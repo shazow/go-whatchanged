@@ -38,15 +38,12 @@ import (
 
 // Options configures a run.
 type Options struct {
-	// Repo is the directory a bare revision refers to: a path inside a git
-	// repository, whose .git is found by walking upward. Empty means the
-	// current directory.
-	Repo string
-	// Base names the old side: a revision in Repo (a commit-ish, or
-	// LatestRelease), a directory with a version suffix such as
-	// "~/src/m@v1.2.0", or a module version such as
-	// "github.com/x/m@v1.2.0" or "@latest". Empty means HEAD, so the zero
-	// value diffs the last commit against the working tree.
+	// Base names the old side as location@version: "@v1.2.0" for a
+	// revision (a commit-ish, or LatestRelease) of the repository of the
+	// current directory, "~/src/m@v1.2.0" for one of another checkout, or
+	// "github.com/x/m@v1.2.0" or "github.com/x/m@latest" for a module
+	// version. Empty means "@HEAD", so the zero value diffs the last
+	// commit against the working tree.
 	Base string
 	// Head names the new side in the same forms; "@query" alone applies
 	// the query to the base's repository or module. Empty means the
@@ -183,7 +180,7 @@ func Run(opts Options) (int, error) {
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
 	}
-	base, head, err := parseTargets(opts.Base, opts.Head, opts.Repo)
+	base, head, err := parseTargets(opts.Base, opts.Head)
 	if err != nil {
 		return ExitError, err
 	}
@@ -198,7 +195,7 @@ func Run(opts Options) (int, error) {
 	if err != nil {
 		return ExitError, err
 	}
-	res, err := runRepo(context.Background(), specs[0], specs[1], env, opts)
+	res, err := compare(context.Background(), specs[0], specs[1], env, opts)
 	if err != nil {
 		return ExitError, err
 	}
@@ -207,7 +204,7 @@ func Run(opts Options) (int, error) {
 
 // spec opens what the target needs: the repository of a git or working-tree
 // target, checked up front so that a broken one is reported once rather
-// than from inside a side. A module target is resolved later, in runRepo.
+// than from inside a side. A module target is resolved later, in compare.
 func (t target) spec() (sideSpec, error) {
 	if t.module != "" {
 		return sideSpec{mod: module.Version{Path: t.module, Version: t.query}}, nil
@@ -256,14 +253,6 @@ func (t target) spec() (sideSpec, error) {
 
 // DefaultBase is the revision used for the old side when none is given.
 const DefaultBase = "HEAD"
-
-// baseRev returns the old-side revision, applying DefaultBase.
-func (o Options) baseRev() string {
-	if o.Base == "" {
-		return DefaultBase
-	}
-	return o.Base
-}
 
 // finish prints warnings and the diff, and derives the exit code.
 func finish(res *render.Result, opts Options) (int, error) {
@@ -378,14 +367,14 @@ func (s *side) position(p token.Position) render.Position {
 // openFunc returns a fresh handle on the repository.
 type openFunc func() (*git.Repository, error)
 
-// runRepo diffs base against head.
+// compare diffs base against head.
 //
 // The two sides load concurrently and each opens its own repository handle:
 // go-git's filesystem storage builds its packfile index lazily without
 // locking, so a handle shared between the two goroutines races and makes
 // revisions spuriously unresolvable ("reference not found"). The first side
 // to fail cancels the other's context, which stops its fetches.
-func runRepo(ctx context.Context, base, head sideSpec, env modres.Env, opts Options) (*render.Result, error) {
+func compare(ctx context.Context, base, head sideSpec, env modres.Env, opts Options) (*render.Result, error) {
 	if head.rev == LatestRelease {
 		return nil, fmt.Errorf("%s can only be the base revision", LatestRelease)
 	}
@@ -580,7 +569,7 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		s.main[p] = found[p].Main
 	}
 	if err := s.ld.Err(); err != nil {
-		return nil, fmt.Errorf("%s: %w%s", s.label, err, s.downloadHint(err, spec.rel))
+		return nil, fmt.Errorf("%s: %w%s", s.label, err, readOnlyHint(err))
 	}
 	return s, nil
 }
@@ -602,23 +591,15 @@ func (s *side) fetcher(ctx context.Context, src modfetch.Source) func(module.Ver
 	}
 }
 
-// downloadHint is the fix to append when err reports a module missing from
+// readOnlyHint is the fix to append when err reports a module missing from
 // the module cache, which happens only when Options.Fetch is nil, that is
-// under --fsreadonly: drop the flag, or run go mod download in the module
-// for the working tree and, for a revision, the same from a copy of its
-// go.mod in a temporary directory, so that the checkout is not touched. rel
-// is the module root relative to the repository root.
-func (s *side) downloadHint(err error, rel string) string {
+// under --fsreadonly.
+func readOnlyHint(err error) string {
 	var missing *modres.MissingModuleError
 	if !errors.As(err, &missing) {
 		return ""
 	}
-	if s.rev == "" {
-		return "; remove --fsreadonly to let go-whatchanged download it, or download the modules go.mod pins:\n\tgo mod download"
-	}
-	dir := filepath.Join(os.TempDir(), "go-whatchanged-base")
-	return fmt.Sprintf("; remove --fsreadonly to let go-whatchanged download it, or download the modules %s pins:\n\tmkdir -p %s && git show %s:%s > %s && (cd %s && go mod download)",
-		s.rev, dir, s.rev, path.Join(rel, "go.mod"), filepath.Join(dir, "go.mod"), dir)
+	return "; remove --fsreadonly to let go-whatchanged download it"
 }
 
 func resolveTree(repo *git.Repository, rev string) (*object.Tree, error) {

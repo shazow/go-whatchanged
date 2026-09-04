@@ -352,8 +352,8 @@ permissions:
 
 | Input | Default | Meaning |
 |---|---|---|
-| `base` | the pull request's merge-base, else `@latest` | Commit-ish or `@latest` for the old side. |
-| `head` | `HEAD` | Commit-ish for the new side. Empty means the working tree. |
+| `base` | the pull request's merge-base, else `@latest` | The old side, `@rev` or `@latest`. |
+| `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
 | `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
@@ -389,7 +389,6 @@ steps:
 - uses: actions/setup-go@v5
   with:
     go-version-file: go.mod
-- run: go mod download
 - run: go install github.com/shazow/go-whatchanged@latest
 - run: |
     go-whatchanged --format=markdown @origin/${{ github.base_ref }} @HEAD \
@@ -414,8 +413,8 @@ from `git worktree add`: nothing in the repository is changed.
   runs the go command or reaches the network, through the usual `GOPROXY`,
   `GOPRIVATE` and `GONOSUMDB`.
 - **`--fsreadonly` removes the exception.** With it the tool never writes
-  anywhere and never runs the go command; a missing module is an error
-  that says how to download it, and that dropping the flag would.
+  anywhere and never runs the go command; a module the cache lacks is an
+  error that says to drop the flag.
 - **In-process type-checking.** Both sides are parsed and type-checked
   with `go/build`, `go/parser` and `go/types`. Cgo is disabled: files that
   `import "C"` are skipped, so an API declared only in them is not diffed.

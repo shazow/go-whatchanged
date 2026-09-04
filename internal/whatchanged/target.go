@@ -27,17 +27,14 @@ type target struct {
 	query  string // revision, version or query; "" is the working tree
 }
 
-// parseTargets parses the two positional arguments. dir is the directory an
-// empty location refers to, "" for the current one. An empty base is HEAD;
-// an empty head is the working tree of the base's repository, or @HEAD, the
-// default branch, for a module base.
-func parseTargets(baseArg, headArg, dir string) (base, head target, err error) {
-	if dir == "" {
-		dir = "."
-	}
-	base = target{dir: dir, query: DefaultBase}
+// parseTargets parses the two positional arguments. An empty location in
+// the base is the current directory. An empty base is HEAD; an empty head is
+// the working tree of the base's repository, or @HEAD, the default branch,
+// for a module base.
+func parseTargets(baseArg, headArg string) (base, head target, err error) {
+	base = target{dir: ".", query: DefaultBase}
 	if baseArg != "" {
-		if base, err = parseTarget(baseArg, target{dir: dir}); err != nil {
+		if base, err = parseTarget(baseArg, target{dir: "."}); err != nil {
 			return base, head, fmt.Errorf("base %q: %w", baseArg, err)
 		}
 	}
