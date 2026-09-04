@@ -111,11 +111,12 @@ func (c Change) Kind() string {
 	return "changed"
 }
 
-// Import is a change to the imports of a package: an import path the
-// package started importing, or with Removed set, stopped importing. An
-// import is not part of the API and never counts towards the summary or
-// the required release; the layouts list it before the package's changes,
-// as a compatible addition or removal of "import \"path\"".
+// Import is a change to the imports of a package: a package of another
+// module that the package started importing, or with Removed set, stopped
+// importing. An import is not part of the API and never counts towards the
+// summary or the required release; the layouts list it before the
+// package's changes, as a compatible addition or removal of "import
+// \"path\"".
 type Import struct {
 	Path    string
 	Removed bool
@@ -132,8 +133,8 @@ func (i Import) Kind() string {
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
 // of the public API's counts and required release level. Imports are the
-// changes to what the package imports, when they were asked for; a package
-// with import changes alone is listed but does not count as changed.
+// changes to the packages of other modules it imports; a package with
+// import changes alone is listed but does not count as changed.
 type Package struct {
 	Path     string
 	Status   Status
@@ -272,11 +273,52 @@ func (v Visibility) Includes(internal, main bool) bool {
 	return v.Has(Package{Internal: internal, Main: main}.part())
 }
 
+// Kinds is the set of kinds of change that take part in a diff: API
+// changes, import changes or both, combined with |. The zero value selects
+// AllKinds.
+type Kinds int
+
+const (
+	// API selects the changes to the exported API: the symbols apidiff
+	// reports on, and packages added or removed.
+	API Kinds = 1 << iota
+	// Imports selects the changes to the imports of other modules.
+	Imports
+
+	// AllKinds selects both.
+	AllKinds = API | Imports
+)
+
+// ParseKinds parses one --filter term: "api" or "imports".
+func ParseKinds(s string) (Kinds, error) {
+	switch strings.ToLower(s) {
+	case "api":
+		return API, nil
+	case "imports":
+		return Imports, nil
+	}
+	return 0, fmt.Errorf("invalid filter %q (want api or imports)", s)
+}
+
+// Has reports whether k selects every kind in kinds. The zero value
+// selects everything.
+func (k Kinds) Has(kinds Kinds) bool {
+	if k == 0 {
+		k = AllKinds
+	}
+	return k&kinds == kinds
+}
+
 // Options controls rendering.
 type Options struct {
-	Color        bool
+	Color bool
+	// BreakingOnly hides compatible changes, import changes among them.
 	BreakingOnly bool
-	Format       Format
+	// Kinds says which kinds of change are shown: the API changes, the
+	// import changes or, the default, both. The summary always counts the
+	// API changes of the full diff.
+	Kinds  Kinds
+	Format Format
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Width is the number of columns the text layout may use, 0 for no
@@ -507,21 +549,24 @@ func describeImport(i Import) line {
 	return line{glyph: "+", kind: "added", head: decl, to: decl, decls: true, compatible: true}
 }
 
-// lines reduces the changes of p to show to lines, honoring BreakingOnly,
-// which hides the import changes along with every other compatible one:
-// the imports first, removed before added, then the changes in order.
+// lines reduces the changes of p to show to lines, honoring Kinds and
+// BreakingOnly, which hides the import changes along with every other
+// compatible one: the imports first, removed before added, then the
+// changes in order.
 func (p Package) lines(opts Options) []line {
 	var lines []line
-	if !opts.BreakingOnly {
+	if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
 		for _, i := range p.Imports {
 			lines = append(lines, describeImport(i))
 		}
 	}
-	for _, c := range p.Changes {
-		if opts.BreakingOnly && c.Compatible {
-			continue
+	if opts.Kinds.Has(API) {
+		for _, c := range p.Changes {
+			if opts.BreakingOnly && c.Compatible {
+				continue
+			}
+			lines = append(lines, describe(c, opts))
 		}
-		lines = append(lines, describe(c, opts))
 	}
 	return lines
 }
@@ -1177,9 +1222,9 @@ type jsonCounts struct {
 }
 
 // writeJSON renders the result as one indented JSON document. Only packages
-// with changes to show are listed (BreakingOnly filters the changes, the
-// import changes among them, and a package left without any is dropped);
-// the summary always counts the full diff, as in the other layouts.
+// with changes to show are listed (Kinds and BreakingOnly filter the
+// changes, and a package left without any is dropped); the summary always
+// counts the full diff, as in the other layouts.
 func writeJSON(w io.Writer, res Result, opts Options) error {
 	sum := Summarize(res)
 	rep := jsonReport{
@@ -1209,13 +1254,13 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			continue
 		}
 		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Main: p.Main, Changes: []jsonChange{}}
-		if !opts.BreakingOnly {
+		if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
 			for _, i := range p.Imports {
 				jp.Imports = append(jp.Imports, jsonImport{Path: i.Path, Kind: i.Kind()})
 			}
 		}
 		for _, c := range p.Changes {
-			if opts.BreakingOnly && c.Compatible {
+			if !opts.Kinds.Has(API) || opts.BreakingOnly && c.Compatible {
 				continue
 			}
 			l := describe(c, opts)

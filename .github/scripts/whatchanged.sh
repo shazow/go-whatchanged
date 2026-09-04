@@ -84,7 +84,6 @@ flags=(--filter "$INPUT_FILTER")
 [ "$INPUT_BREAKING" != true ] || flags+=(--filter breaking)
 # shellcheck disable=SC2153 # INPUT_POS is an input, not a typo of INPUT_GOOS
 [ "$INPUT_POS" != true ] || flags+=(--pos)
-[ "$INPUT_IMPORTS" != true ] || flags+=(--imports)
 [ "$INPUT_STRICT" != true ] || flags+=(--strict)
 # The build target is taken from the environment, as by the go command.
 [ -z "$INPUT_GOOS" ] || export GOOS="$INPUT_GOOS"

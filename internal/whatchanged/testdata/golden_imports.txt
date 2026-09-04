@@ -1,39 +1,8 @@
 # stdout
-example.com/m/fresh (new)
-  + func Hello()
-
-example.com/m/gone (removed)
-  - func Gone()
-
-example.com/m/store
-  - func (c *Client) Close() error
-  ~ type Config struct {
-  -     Timeout int
-  +     Timeout int64
-        // ...
-    }
-  - func Open(path string) (*Client, error)
-  + func Open(path string, o Options) (*Client, error)
-  - const Version = "1"
-  + const Version = 1
-  + func (c *Client) Ping() error
-  + type Options struct{ Timeout int }
-  ~ type Point struct {
-  +     Z int
-        // ...
-    }
-
-example.com/m/util
-  + import "fmt"
-  + func (Sizer) Size() int
-  - type Stringer interface{ String() string }
-  + type Stringer = fmt.Stringer
+example.com/m/deps
+  + import "example.com/dep"
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
-
-example.com/m/internal/hidden (internal)
-  - func Hidden()
-  + func Added()
 
 internal: 1 package changed · 1 incompatible · 1 compatible
 # stderr

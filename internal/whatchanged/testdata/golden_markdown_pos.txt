@@ -1,4 +1,11 @@
 # stdout
+**example.com/m/deps**
+
+```go
+// Added
+import "example.com/dep"
+```
+
 **example.com/m/fresh (new)**
 
 ```go

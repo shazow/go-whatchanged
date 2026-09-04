@@ -56,7 +56,7 @@ func TestParseArgs(t *testing.T) {
 		t.Errorf("--fsreadonly: Fetch = %T, want nil", opts.Fetch)
 	}
 
-	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--exit-fail=minor", "--filter", "breaking", "--pos", "--imports", "--color=never", "v1.4.0", "HEAD"})
+	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--exit-fail=minor", "--filter", "breaking", "--pos", "--filter=api", "--color=never", "v1.4.0", "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestParseArgs(t *testing.T) {
 		Base: "v1.4.0", Head: "HEAD",
 		Packages: []string{"store/...", "util", "a"}, Exclude: []string{"b"},
 		Filter: render.Internal, Format: render.Markdown,
-		ExitFail: whatchanged.FailMinor, Breaking: true, Positions: true, Imports: true,
+		ExitFail: whatchanged.FailMinor, Breaking: true, Positions: true, Kinds: render.API,
 		Fetch: &modfetch.GoCommand{Stderr: os.Stderr},
 	}
 	if !reflect.DeepEqual(opts, want) {
@@ -80,26 +80,35 @@ func TestParseArgs(t *testing.T) {
 	for _, tc := range []struct {
 		args     []string
 		packages render.Visibility
+		kinds    render.Kinds
 		breaking bool
 	}{
-		{nil, render.All, false},
-		{[]string{"--filter=public"}, render.Public, false},
-		{[]string{"--filter=breaking"}, render.All, true},
-		{[]string{"--filter=public,breaking"}, render.Public, true},
-		{[]string{"--filter", "internal", "--filter", "breaking"}, render.Internal, true},
-		{[]string{"--filter=public,internal"}, render.Public | render.Internal, false},
-		{[]string{"--filter=public,internal,main"}, render.All, false},
-		{[]string{"--filter=main"}, render.Main, false},
-		{[]string{"--filter=public,main,breaking"}, render.Public | render.Main, true},
-		{[]string{"--filter=public", "--filter=all"}, render.All, false},
+		{nil, render.All, render.AllKinds, false},
+		{[]string{"--filter=public"}, render.Public, render.AllKinds, false},
+		{[]string{"--filter=breaking"}, render.All, render.AllKinds, true},
+		{[]string{"--filter=public,breaking"}, render.Public, render.AllKinds, true},
+		{[]string{"--filter", "internal", "--filter", "breaking"}, render.Internal, render.AllKinds, true},
+		{[]string{"--filter=public,internal"}, render.Public | render.Internal, render.AllKinds, false},
+		{[]string{"--filter=public,internal,main"}, render.All, render.AllKinds, false},
+		{[]string{"--filter=main"}, render.Main, render.AllKinds, false},
+		{[]string{"--filter=public,main,breaking"}, render.Public | render.Main, render.AllKinds, true},
+		{[]string{"--filter=public", "--filter=all"}, render.All, render.AllKinds, false},
+		// The kinds of change are a dimension of their own: naming one
+		// leaves the packages alone, and both add up to all of them.
+		{[]string{"--filter=imports"}, render.All, render.Imports, false},
+		{[]string{"--filter=api"}, render.All, render.API, false},
+		{[]string{"--filter=public,imports"}, render.Public, render.Imports, false},
+		{[]string{"--filter=api,imports"}, render.All, render.AllKinds, false},
+		{[]string{"--filter", "api", "--filter", "breaking"}, render.All, render.API, true},
+		{[]string{"--filter=imports", "--filter=all"}, render.All, render.AllKinds, false},
 	} {
 		o, err := parseArgs(tc.args)
 		if err != nil {
 			t.Errorf("parseArgs(%q): %v", tc.args, err)
 			continue
 		}
-		if o.Filter.visibility() != tc.packages || o.Filter.breaking() != tc.breaking {
-			t.Errorf("parseArgs(%q): filter = %v, breaking = %v; want %v, %v", tc.args, o.Filter.visibility(), o.Filter.breaking(), tc.packages, tc.breaking)
+		if o.Filter.visibility() != tc.packages || o.Filter.kinds() != tc.kinds || o.Filter.breaking() != tc.breaking {
+			t.Errorf("parseArgs(%q): filter = %v, kinds = %v, breaking = %v; want %v, %v, %v", tc.args, o.Filter.visibility(), o.Filter.kinds(), o.Filter.breaking(), tc.packages, tc.kinds, tc.breaking)
 		}
 	}
 
