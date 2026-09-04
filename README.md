@@ -376,7 +376,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
 ```
 
 See [docs/action.md](docs/action.md) for more details.

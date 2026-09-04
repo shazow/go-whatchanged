@@ -60,7 +60,7 @@ jobs:
       - uses: actions/setup-go@v5 # optional; its cache makes the build instant
         with:
           go-version-file: go.mod
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
 ```
 
 That is all of it. The diff is of the pull request's merge-base against
@@ -81,7 +81,7 @@ from forks](#pull-requests-from-forks)). `comment: false` keeps the diff
 to the job summary and needs no permission beyond `contents: read`:
 
 ```yaml
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
         with:
           comment: false
 ```
@@ -94,7 +94,7 @@ code the command line would use (100 for a major, 101 for a minor, 102
 for a patch):
 
 ```yaml
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
         with:
           fail-on: major
 ```
@@ -102,7 +102,7 @@ for a patch):
 The verdict is also an output, for a step that decides for itself:
 
 ```yaml
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
         id: api
       - if: steps.api.outputs.release == 'major'
         run: echo "::warning::this pull request calls for a ${{ steps.api.outputs.release }} release"
@@ -112,7 +112,7 @@ The verdict is also an output, for a step that decides for itself:
 the default lists after it, or only the incompatible changes:
 
 ```yaml
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
         with:
           filter: public
           breaking: true
@@ -135,7 +135,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: ${{ matrix.module }}/go.mod
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
         with:
           working-directory: ${{ matrix.module }}
 ```
@@ -165,7 +165,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
 ```
 
 **Another platform.** The API is diffed as built for the runner's
@@ -173,7 +173,7 @@ platform; `goos` and `goarch` pick another, and a matrix over them diffs
 each:
 
 ```yaml
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
         with:
           goos: windows
 ```
@@ -208,7 +208,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      - uses: shazow/go-whatchanged@v1
+      - uses: shazow/go-whatchanged@main
 ```
 
 ## Inputs and outputs
