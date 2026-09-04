@@ -18,9 +18,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
-      # Dogfood: the action from this very checkout, on this module. All of
-      # its packages are internal or main, which the default filter, all,
-      # includes.
+      # Dogfood: the action from this very checkout, on this module, with
+      # its defaults: the comment, and the filter all, which includes this
+      # module's packages, every one of them internal or main.
       - uses: ./
-        with:
-          comment: true

@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # The second step of the composite action in action.yml: resolves the two
 # revisions, runs go-whatchanged and turns the result into a job summary,
-# step outputs, annotations and, when asked, a pull request comment.
+# step outputs, annotations and a pull request comment.
 #
 # The action's inputs arrive as INPUT_* variables. PR_BASE_SHA is the tip of
-# the base branch of the pull request being built and PR_NUMBER its number,
-# both empty on other events; GH_TOKEN is the token for the comment. The
-# binary comes from the action's first step.
+# the base branch of the pull request being built, PR_NUMBER its number and
+# PR_HEAD_REPO the repository its head branch lives in, all empty on other
+# events; GH_TOKEN is the token for the comment. The binary comes from the
+# action's first step.
 set -euo pipefail
 
 work="$RUNNER_TEMP/go-whatchanged"
@@ -232,7 +233,7 @@ upsert_comment() {
   dir=$(pwd -P | sed "s#^$GITHUB_WORKSPACE/\{0,1\}##")
   marker="<!-- go-whatchanged: ${dir:-.} -->"
   if ! id=$(find_comment "$marker"); then
-    annotate warning "could not list the pull request's comments (HTTP $(cat "$work/http")); the token needs pull-requests: read."
+    annotate warning "could not list the pull request's comments (HTTP $(cat "$work/http")). The comment needs pull-requests: write under the workflow's permissions; set comment: false for the job summary alone."
     return
   fi
   if [ -z "$id" ] && [ "$(jq '.packages | length' "$json")" -eq 0 ]; then
@@ -246,7 +247,13 @@ upsert_comment() {
   else
     api POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" "$request" && log "posted comment $(jq .id "$work/response.json")" && return
   fi
-  annotate warning "could not post the pull request comment (HTTP $http). The token needs pull-requests: write, which a pull request from a fork does not get."
+  # A pull request from a fork gets a read-only token, so its comment is
+  # never posted: a notice, since there is nothing the workflow can change.
+  if [ -n "$PR_HEAD_REPO" ] && [ "$PR_HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+    annotate notice "no comment on a pull request from a fork, whose token cannot post one (HTTP $http); the job summary has the diff."
+    return
+  fi
+  annotate warning "could not post the pull request comment (HTTP $http). The comment needs pull-requests: write under the workflow's permissions; set comment: false for the job summary alone."
 }
 
 if [ "$INPUT_COMMENT" = true ]; then

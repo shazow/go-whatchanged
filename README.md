@@ -306,16 +306,18 @@ names the bump:
 ## GitHub Action
 
 Add the action to a workflow to get the diff on every pull request. It
-builds the tool from the ref that pins it and appends the diff to the job
-summary, under a heading whose glyph names the release the changes call
-for: 🟢 none, 🟡 minor, 🔴 major. On a tag push, it lists what the tag
-ships:
+builds the tool from the ref that pins it, appends the diff to the job
+summary under a heading whose glyph names the release the changes call
+for, 🟢 none, 🟡 minor, 🔴 major, and posts it as a pull request comment
+folded under its summary line. On a tag push, it lists what the tag
+ships in the job summary:
 
 ```yaml
 on: pull_request
 
 permissions:
   contents: read
+  pull-requests: write # for the comment
 
 jobs:
   api:
@@ -330,24 +332,22 @@ jobs:
       - uses: shazow/go-whatchanged@main
 ```
 
-With `comment: true` it also posts the diff as a pull request comment,
-folded under its summary line, and updates that same comment on every
-later push instead of adding another. The first comment waits until
-there is something to show, so a pull request that never touches the API
-gets none. The comment needs `pull-requests: write`, which the default
-token lacks on a pull request from a fork; there, the action warns and
-the job summary still has the diff.
+The comment is updated on every later push instead of adding another,
+and the first one waits until there is something to show, so a pull
+request that never touches the API gets none. It needs `pull-requests:
+write`, which the default token lacks on a pull request from a fork;
+there, the action says so in a notice and the job summary still has the
+diff. `comment: false` keeps the diff to the job summary:
 
 ```yaml
 permissions:
   contents: read
-  pull-requests: write
 
     steps:
       # ...
       - uses: shazow/go-whatchanged@main
         with:
-          comment: true
+          comment: false
 ```
 
 | Input | Default | Meaning |
@@ -365,7 +365,7 @@ permissions:
 | `fail-on` | | `major`, `minor` or `patch`: fail the step at that level or above. |
 | `summary` | `true` | Append the diff to the job summary. |
 | `title` | `API changes` | Heading above the diff in the summary and the comment. Empty for none. |
-| `comment` | `false` | Post the diff as a pull request comment and keep it updated. |
+| `comment` | `true` | Post the diff as a pull request comment and keep it updated. `false` for the job summary alone. |
 | `token` | `github.token` | The token for the comment. |
 
 Outputs for later steps:
