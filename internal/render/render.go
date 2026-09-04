@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -110,15 +111,36 @@ func (c Change) Kind() string {
 	return "changed"
 }
 
+// Import is a change to the imports of a package: an import path the
+// package started importing, or with Removed set, stopped importing. An
+// import is not part of the API and never counts towards the summary or
+// the required release; the layouts list it before the package's changes,
+// as a compatible addition or removal of "import \"path\"".
+type Import struct {
+	Path    string
+	Removed bool
+}
+
+// Kind classifies the import change as "added" or "removed".
+func (i Import) Kind() string {
+	if i.Removed {
+		return "removed"
+	}
+	return "added"
+}
+
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
-// of the public API's counts and required release level.
+// of the public API's counts and required release level. Imports are the
+// changes to what the package imports, when they were asked for; a package
+// with import changes alone is listed but does not count as changed.
 type Package struct {
 	Path     string
 	Status   Status
 	Internal bool
 	Main     bool
 	Changes  []Change
+	Imports  []Import
 }
 
 // part returns the part of the module the package belongs to: Main for a
@@ -475,6 +497,35 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
+// describeImport reduces an import change to a line: the declaration
+// "import \"path\"" on a "-" or a "+" line, compatible either way.
+func describeImport(i Import) line {
+	decl := "import " + strconv.Quote(i.Path)
+	if i.Removed {
+		return line{glyph: "-", kind: "removed", head: decl, from: decl, decls: true, compatible: true}
+	}
+	return line{glyph: "+", kind: "added", head: decl, to: decl, decls: true, compatible: true}
+}
+
+// lines reduces the changes of p to show to lines, honoring BreakingOnly,
+// which hides the import changes along with every other compatible one:
+// the imports first, removed before added, then the changes in order.
+func (p Package) lines(opts Options) []line {
+	var lines []line
+	if !opts.BreakingOnly {
+		for _, i := range p.Imports {
+			lines = append(lines, describeImport(i))
+		}
+	}
+	for _, c := range p.Changes {
+		if opts.BreakingOnly && c.Compatible {
+			continue
+		}
+		lines = append(lines, describe(c, opts))
+	}
+	return lines
+}
+
 // role says what a row shows, which decides its color in the text layout.
 type role int
 
@@ -591,14 +642,7 @@ func (it item) rows() []row {
 // with indent columns before the label and two between it and the
 // position; those rows print their position unaligned instead.
 func packageRows(p Package, opts Options, limit, indent int) (rows []row, width int) {
-	var lines []line
-	for _, c := range p.Changes {
-		if opts.BreakingOnly && c.Compatible {
-			continue
-		}
-		lines = append(lines, describe(c, opts))
-	}
-	for _, it := range items(lines) {
+	for _, it := range items(p.lines(opts)) {
 		rows = append(rows, it.rows()...)
 	}
 	return rows, column(rows, limit, indent)
@@ -945,11 +989,7 @@ type goItem []goLine
 func goBlock(b *strings.Builder, p Package, opts Options) {
 	kinds := []string{"removed", "changed", "added"}
 	lines := map[string][]line{}
-	for _, c := range p.Changes {
-		if opts.BreakingOnly && c.Compatible {
-			continue
-		}
-		l := describe(c, opts)
+	for _, l := range p.lines(opts) {
 		lines[l.kind] = append(lines[l.kind], l)
 	}
 	groups := make([][]goItem, len(kinds))
@@ -1102,6 +1142,12 @@ type jsonPackage struct {
 	Internal bool         `json:"internal,omitempty"`
 	Main     bool         `json:"main,omitempty"`
 	Changes  []jsonChange `json:"changes"`
+	Imports  []jsonImport `json:"imports,omitempty"`
+}
+
+type jsonImport struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 type jsonChange struct {
@@ -1131,9 +1177,9 @@ type jsonCounts struct {
 }
 
 // writeJSON renders the result as one indented JSON document. Only packages
-// with changes to show are listed (BreakingOnly filters the changes, and a
-// package left without any is dropped); the summary always counts the full
-// diff, as in the other layouts.
+// with changes to show are listed (BreakingOnly filters the changes, the
+// import changes among them, and a package left without any is dropped);
+// the summary always counts the full diff, as in the other layouts.
 func writeJSON(w io.Writer, res Result, opts Options) error {
 	sum := Summarize(res)
 	rep := jsonReport{
@@ -1159,10 +1205,15 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 		rep.Summary.Main = &jsonCounts{PackagesChanged: msum.PackagesChanged, Incompatible: msum.Incompatible, Compatible: msum.Compatible}
 	}
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 {
+		if len(p.Changes) == 0 && len(p.Imports) == 0 {
 			continue
 		}
 		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Main: p.Main, Changes: []jsonChange{}}
+		if !opts.BreakingOnly {
+			for _, i := range p.Imports {
+				jp.Imports = append(jp.Imports, jsonImport{Path: i.Path, Kind: i.Kind()})
+			}
+		}
 		for _, c := range p.Changes {
 			if opts.BreakingOnly && c.Compatible {
 				continue
@@ -1183,7 +1234,7 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			}
 			jp.Changes = append(jp.Changes, jc)
 		}
-		if len(jp.Changes) == 0 {
+		if len(jp.Changes) == 0 && len(jp.Imports) == 0 {
 			continue
 		}
 		rep.Packages = append(rep.Packages, jp)

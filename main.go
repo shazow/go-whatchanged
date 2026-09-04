@@ -51,6 +51,11 @@ the parts to show, and add up: --filter=public,main. --filter=breaking
 narrows the diff to incompatible changes and combines with any of them:
 --filter=public,breaking.
 
+--imports lists, above each package's changes, the import paths it started
+or stopped importing, so that a new dependency is as visible as a new
+function. Import changes are not API changes: they never count towards the
+summary, the required release or the exit code.
+
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
 
@@ -73,6 +78,7 @@ type options struct {
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
 	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, or any of public, internal and main; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
+	Imports    bool     `long:"imports" description:"list the import paths each package started or stopped importing; import changes never count towards the summary or the exit code"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
 	Strict     bool     `long:"strict" description:"treat type-check errors as fatal"`
@@ -149,6 +155,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Filter:    o.Filter.visibility(),
 		Breaking:  o.Filter.breaking(),
 		Positions: o.Pos,
+		Imports:   o.Imports,
 		Width:     terminalWidth(),
 		Strict:    o.Strict,
 		Base:      o.Args.Base,

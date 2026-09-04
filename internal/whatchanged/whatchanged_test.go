@@ -1310,6 +1310,9 @@ func TestGolden(t *testing.T) {
 		{"internal", Options{Filter: render.Internal}, ExitClean},
 		{"pos", Options{Positions: true}, ExitIncompatible},
 		{"json_pos", Options{Format: render.JSON, Positions: true}, ExitIncompatible},
+		{"imports", Options{Imports: true}, ExitIncompatible},
+		{"imports_markdown", Options{Imports: true, Format: render.Markdown}, ExitIncompatible},
+		{"imports_json", Options{Imports: true, Format: render.JSON}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2384,4 +2387,121 @@ func TestFilterMainPackages(t *testing.T) {
 	mustNotContain(t, r.stdout, `"internal": true`, "\"internal\": {\n")
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Format: render.JSON})
 	mustNotContain(t, r.stdout, `"main"`)
+}
+
+// TestImports covers --imports: the import paths a package started or
+// stopped importing are listed before its changes, in every layout, and
+// never count. A new package brings all of its imports, a removed one
+// loses them, and a package whose imports alone changed is listed without
+// counting as changed. Without the option, imports are not tracked; with
+// Breaking, they are hidden along with every other compatible change.
+func TestImports(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc Open() error { _, err := os.Open(\"\"); return fmt.Errorf(\"%w\", err) }\n")
+	f.write("util/util.go", "package util\n\nimport \"strings\"\n\nfunc Up(s string) string { return strings.ToUpper(s) }\n")
+	f.write("gone/gone.go", "package gone\n\nimport \"example.com/m/util\"\n\nfunc Gone() string { return util.Up(\"\") }\n")
+	f.commit("base")
+
+	// store: drops os, keeps fmt, gains strings and a sibling package, and
+	// removes a function; util: only its imports change; gone is removed
+	// and fresh added, each with imports.
+	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n\n\t\"example.com/m/util\"\n)\n\nfunc Name() string { return fmt.Sprint(strings.ToUpper(util.Up(\"\"))) }\n")
+	f.write("util/util.go", "package util\n\nimport \"bytes\"\n\nfunc Up(s string) string { return string(bytes.ToUpper([]byte(s))) }\n")
+	f.remove("gone/gone.go")
+	f.write("fresh/fresh.go", "package fresh\n\nimport \"example.com/m/util\"\n\nfunc Hello() string { return util.Up(\"\") }\n")
+
+	r := f.mustRun("HEAD", "", Options{Imports: true})
+	want := "example.com/m/fresh (new)\n" +
+		"  + import \"example.com/m/util\"\n" +
+		"  + func Hello() string\n\n" +
+		"example.com/m/gone (removed)\n" +
+		"  - import \"example.com/m/util\"\n" +
+		"  - func Gone() string\n\n" +
+		"example.com/m/store\n" +
+		"  - import \"os\"\n" +
+		"  + import \"example.com/m/util\"\n" +
+		"  + import \"strings\"\n" +
+		"  - func Open() error\n" +
+		"  + func Name() string\n\n" +
+		"example.com/m/util\n" +
+		"  - import \"strings\"\n" +
+		"  + import \"bytes\"\n\n" +
+		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitIncompatible {
+		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
+	}
+
+	// Without the option nothing is tracked, and util is not listed.
+	r = f.mustRun("HEAD", "", Options{})
+	mustNotContain(t, r.stdout, "import", "example.com/m/util\n")
+	mustContain(t, r.stdout, "3 packages changed · 2 incompatible · 2 compatible")
+
+	// Breaking hides the imports, as compatible changes.
+	r = f.mustRun("HEAD", "", Options{Imports: true, Breaking: true})
+	mustNotContain(t, r.stdout, "import", "example.com/m/util\n", "example.com/m/fresh")
+	mustContain(t, r.stdout, "example.com/m/store\n  - func Open() error\n\n")
+
+	r = f.mustRun("HEAD", "", Options{Imports: true, Format: render.Markdown})
+	mustContain(t, r.stdout,
+		"**example.com/m/store**\n\n```go\n// Removed\nimport \"os\"\nfunc Open() error\n\n// Added\nimport \"example.com/m/util\"\nimport \"strings\"\nfunc Name() string\n```\n",
+		"**example.com/m/util**\n\n```go\n// Removed\nimport \"strings\"\n\n// Added\nimport \"bytes\"\n```\n")
+
+	r = f.mustRun("HEAD", "", Options{Imports: true, Format: render.JSON})
+	var rep struct {
+		Packages []struct {
+			Path    string            `json:"path"`
+			Status  string            `json:"status"`
+			Changes []json.RawMessage `json:"changes"`
+			Imports []struct {
+				Path string `json:"path"`
+				Kind string `json:"kind"`
+			} `json:"imports"`
+		} `json:"packages"`
+		Summary struct {
+			PackagesChanged int `json:"packages_changed"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, r.stdout)
+	}
+	if rep.Summary.PackagesChanged != 3 {
+		t.Errorf("packages_changed = %d, want 3", rep.Summary.PackagesChanged)
+	}
+	got := map[string]string{}
+	for _, p := range rep.Packages {
+		var imports []string
+		for _, i := range p.Imports {
+			imports = append(imports, i.Kind+" "+i.Path)
+		}
+		got[p.Path] = fmt.Sprintf("%s changes=%d %s", p.Status, len(p.Changes), strings.Join(imports, ", "))
+	}
+	wantJSON := map[string]string{
+		"example.com/m/fresh": "new changes=1 added example.com/m/util",
+		"example.com/m/gone":  "removed changes=1 removed example.com/m/util",
+		"example.com/m/store": "changed changes=2 removed os, added example.com/m/util, added strings",
+		"example.com/m/util":  "changed changes=0 removed strings, added bytes",
+	}
+	if !maps.Equal(got, wantJSON) {
+		t.Errorf("json packages = %v\nwant %v", got, wantJSON)
+	}
+
+	// A package whose imports alone changed, with no API change anywhere,
+	// is listed above the no-changes summary and exits clean.
+	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"os\"\n)\n\nfunc Open() error { _, err := os.Open(\"\"); return fmt.Errorf(\"%w\", err) }\n")
+	f.remove("fresh/fresh.go")
+	f.write("gone/gone.go", "package gone\n\nimport \"example.com/m/util\"\n\nfunc Gone() string { return util.Up(\"\") }\n")
+	r = f.mustRun("HEAD", "", Options{Imports: true})
+	want = "example.com/m/util\n  - import \"strings\"\n  + import \"bytes\"\n\nno exported API changes\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+	r = f.mustRun("HEAD", "", Options{Imports: true, Format: render.JSON})
+	mustContain(t, r.stdout, "\"path\": \"example.com/m/util\",\n      \"status\": \"changed\",\n      \"changes\": [],\n      \"imports\": [\n")
 }

@@ -56,6 +56,13 @@ inputs:
     description: Annotate each change with the source position of its declaration.
     required: false
     default: "false"
+  imports:
+    description: >-
+      List the import paths each package started or stopped importing, above
+      its changes. Import changes never count towards the summary, the
+      outputs or fail-on.
+    required: false
+    default: "false"
   strict:
     description: Treat type-check errors as fatal instead of warnings.
     required: false
@@ -158,6 +165,7 @@ runs:
         INPUT_FILTER: ${{ inputs.filter }}
         INPUT_BREAKING: ${{ inputs.breaking }}
         INPUT_POS: ${{ inputs.pos }}
+        INPUT_IMPORTS: ${{ inputs.imports }}
         INPUT_STRICT: ${{ inputs.strict }}
         INPUT_GOOS: ${{ inputs.goos }}
         INPUT_GOARCH: ${{ inputs.goarch }}

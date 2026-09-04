@@ -56,7 +56,7 @@ func TestParseArgs(t *testing.T) {
 		t.Errorf("--fsreadonly: Fetch = %T, want nil", opts.Fetch)
 	}
 
-	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--exit-fail=minor", "--filter", "breaking", "--pos", "--color=never", "v1.4.0", "HEAD"})
+	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--exit-fail=minor", "--filter", "breaking", "--pos", "--imports", "--color=never", "v1.4.0", "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestParseArgs(t *testing.T) {
 		Base: "v1.4.0", Head: "HEAD",
 		Packages: []string{"store/...", "util", "a"}, Exclude: []string{"b"},
 		Filter: render.Internal, Format: render.Markdown,
-		ExitFail: whatchanged.FailMinor, Breaking: true, Positions: true,
+		ExitFail: whatchanged.FailMinor, Breaking: true, Positions: true, Imports: true,
 		Fetch: &modfetch.GoCommand{Stderr: os.Stderr},
 	}
 	if !reflect.DeepEqual(opts, want) {

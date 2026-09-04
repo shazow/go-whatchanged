@@ -55,6 +55,7 @@ go install github.com/shazow/go-whatchanged@latest
 | What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
+| Which packages picked up or dropped a dependency? | `go-whatchanged --imports @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
 
 ```
@@ -76,6 +77,8 @@ Options:
                      packages take part; breaking: only incompatible
                      changes (default all)
   --pos              annotate changes with source positions
+  --imports          list the imports each package started or stopped
+                     importing; never counted
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
   --strict           type-check errors are fatal (default: warn)
@@ -213,6 +216,34 @@ behind a glyph:
 | `!` | incompatible addition |
 | `~` | changed (bold when incompatible) |
 
+### Import changes
+
+`--imports` lists, above each package's changes, the import paths it
+started or stopped importing, as `import "path"` lines on `+` and `-`
+rows: a new dependency becomes as visible as a new function. A package
+that appears brings all of its imports, one that disappears loses them.
+Import changes are not API changes: they never count towards the summary,
+the required release or the exit code, and a package whose imports alone
+changed is listed without counting as changed. They are compatible, so
+`--filter=breaking` hides them.
+
+```
+$ go-whatchanged --imports @latest
+example.com/m/store
+  - import "os"
+  + import "golang.org/x/sys/unix"
+  + func (c *Client) Ping() error
+
+example.com/m/util
+  + import "strings"
+
+1 package changed · 0 incompatible · 1 compatible · would require: MINOR (v1.4.0 → v1.5.0)
+```
+
+The imports are those of the package's non-test files for the build
+target, as the `go` command sees them; `import "C"` is never among them,
+since cgo is disabled.
+
 ## Output formats
 
 `--format=markdown` renders each package as a `go` block, which GitHub
@@ -256,7 +287,9 @@ func (Sizer) Size() int // incompatible
 are part of the tool's interface. `base_version` and `next_version` are
 present when the base is a release tag, `pos` with `--pos`, and `struct`
 on a struct field's change, whose `before` and `after` are the field's
-declaration inside it.
+declaration inside it. With `--imports`, a package with import changes
+carries them in `imports`, each a `path` and a `kind` of `added` or
+`removed`; a package with import changes alone has an empty `changes`.
 
 ```json
 {
@@ -367,6 +400,7 @@ permissions:
 | `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
 | `breaking` | `false` | Show only incompatible changes. |
 | `pos` | `false` | Annotate changes with source positions. |
+| `imports` | `false` | List the imports each package started or stopped importing. Never counted. |
 | `strict` | `false` | Treat type-check errors as fatal. |
 | `goos`, `goarch` | the runner's | Build target. |
 | `fail-on` | | `major`, `minor` or `patch`: fail the step at that level or above. |
