@@ -24,12 +24,13 @@ func declString(obj types.Object, pkg *types.Package) string {
 		}
 		return p.Name()
 	}
+	decl := types.ObjectString(obj, qual)
 	switch o := obj.(type) {
 	case *types.Const:
 		if b, ok := o.Type().(*types.Basic); ok && b.Info()&types.IsUntyped != 0 {
-			return gofmt("const " + o.Name() + " = " + o.Val().String())
+			decl = "const " + o.Name()
 		}
-		return gofmt(types.ObjectString(obj, qual) + " = " + o.Val().String())
+		decl += " = " + o.Val().String()
 	case *types.Var:
 		if o.IsField() {
 			t := strings.TrimPrefix(gofmt("var _ "+types.TypeString(o.Type(), qual)), "var _ ")
@@ -45,11 +46,11 @@ func declString(obj types.Object, pkg *types.Package) string {
 			if recv.Name() != "" && recv.Name() != "_" {
 				name = recv.Name() + " "
 			}
-			return gofmt("func (" + name + types.TypeString(recv.Type(), qual) + ") " + o.Name() +
-				strings.TrimPrefix(types.TypeString(sig, qual), "func"))
+			decl = "func (" + name + types.TypeString(recv.Type(), qual) + ") " + o.Name() +
+				strings.TrimPrefix(types.TypeString(sig, qual), "func")
 		}
 	}
-	return gofmt(types.ObjectString(obj, qual))
+	return gofmt(decl)
 }
 
 // gofmt formats a declaration as gofmt would: "struct{ Timeout int }"
@@ -70,11 +71,11 @@ func gofmt(decl string) string {
 // comes without its type parameters, as lookupSymbol takes it.
 func structOf(obj types.Object, sym string) string {
 	v, ok := obj.(*types.Var)
-	if !ok || !v.IsField() {
+	i := strings.LastIndex(sym, ".")
+	if !ok || !v.IsField() || i < 0 {
 		return ""
 	}
-	recv := sym[:strings.LastIndex(sym, ".")]
-	recv, _, _ = strings.Cut(recv, "[")
+	recv, _, _ := strings.Cut(sym[:i], "[")
 	return recv
 }
 

@@ -938,7 +938,7 @@ type goItem []goLine
 // column that lines up across the block. A declaration on several lines
 // has its comment on the first.
 func goBlock(b *strings.Builder, p Package, opts Options) {
-	groups := map[string][]goItem{}
+	kinds := []string{"removed", "changed", "added"}
 	lines := map[string][]line{}
 	for _, c := range p.Changes {
 		if opts.BreakingOnly && c.Compatible {
@@ -947,9 +947,10 @@ func goBlock(b *strings.Builder, p Package, opts Options) {
 		l := describe(c, opts)
 		lines[l.kind] = append(lines[l.kind], l)
 	}
-	for kind, ls := range lines {
-		for _, it := range items(ls) {
-			groups[kind] = append(groups[kind], it.goItem(kind == "changed"))
+	groups := make([][]goItem, len(kinds))
+	for i, kind := range kinds {
+		for _, it := range items(lines[kind]) {
+			groups[i] = append(groups[i], it.goItem(kind == "changed"))
 		}
 	}
 	// The column at which trailing comments line up, per indentation as
@@ -962,7 +963,7 @@ func goBlock(b *strings.Builder, p Package, opts Options) {
 			for _, item := range items {
 				for _, gl := range item {
 					if gl.code != "" && gl.comment != "" {
-						indent, code := splitIndent(firstLine(gl.code))
+						indent, code := splitIndent(gl.code)
 						width[indent] = max(width[indent], utf8.RuneCountInString(code))
 					}
 				}
@@ -971,8 +972,8 @@ func goBlock(b *strings.Builder, p Package, opts Options) {
 	}
 	b.WriteString("```go\n")
 	first := true
-	for _, kind := range []string{"removed", "changed", "added"} {
-		items := groups[kind]
+	for i, kind := range kinds {
+		items := groups[i]
 		if len(items) == 0 {
 			continue
 		}
@@ -995,8 +996,8 @@ func goBlock(b *strings.Builder, p Package, opts Options) {
 					b.WriteString(gl.code)
 				default:
 					head, rest, _ := strings.Cut(gl.code, "\n")
-					_, code := splitIndent(head)
-					b.WriteString(head + padding(code, width[head[:len(head)-len(code)]]) + " // " + gl.comment)
+					indent, code := splitIndent(head)
+					b.WriteString(head + padding(code, width[indent]) + " // " + gl.comment)
 					if rest != "" {
 						b.WriteString("\n" + rest)
 					}
@@ -1008,14 +1009,10 @@ func goBlock(b *strings.Builder, p Package, opts Options) {
 	b.WriteString("```\n")
 }
 
-// firstLine returns s up to its first newline.
-func firstLine(s string) string {
-	head, _, _ := strings.Cut(s, "\n")
-	return head
-}
-
-// splitIndent splits s into the tabs that indent it and the rest.
+// splitIndent splits the first line of s into the tabs that indent it and
+// the rest.
 func splitIndent(s string) (indent, rest string) {
+	s, _, _ = strings.Cut(s, "\n")
 	rest = strings.TrimLeft(s, "\t")
 	return s[:len(s)-len(rest)], rest
 }
