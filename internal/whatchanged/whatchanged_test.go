@@ -748,9 +748,18 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 // filesystem, each at a synthetic directory of its own, the way an
 // in-process Source would: nothing it serves is in the module cache.
 type fakeSource struct {
-	fs      billy.Filesystem
-	mu      sync.Mutex
-	fetched []module.Version
+	fs         billy.Filesystem
+	mu         sync.Mutex
+	fetched    []module.Version
+	prefetched [][]module.Version
+}
+
+// Prefetch records the batch; the modules are served by Fetch as usual.
+func (s *fakeSource) Prefetch(_ context.Context, mods []module.Version) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prefetched = append(s.prefetched, mods)
+	return nil
 }
 
 func (s *fakeSource) Resolve(_ context.Context, path, query string) (module.Version, error) {
@@ -787,14 +796,17 @@ func TestFetchMissingModule(t *testing.T) {
 	f.write("a/a.go", "package a\n\nimport \"example.org/dep\"\n\nfunc A() dep.T { return dep.T{} }\n\nfunc B() dep.T { return dep.T{} }\n")
 
 	// With a Source, the missing module is fetched and mounted where the
-	// Source says, on both sides.
+	// Source says, on both sides, after each side asked for its missing
+	// requirements as a batch.
 	r := f.mustRun("HEAD", "", Options{Fetch: src, Color: false})
 	mustContain(t, r.stdout, "+ func B() dep.T")
 	mustNotContain(t, r.stdout, "func A()")
-	if len(src.fetched) == 0 || slices.ContainsFunc(src.fetched, func(m module.Version) bool {
-		return m != (module.Version{Path: "example.org/dep", Version: "v1.0.0"})
-	}) {
+	dep := module.Version{Path: "example.org/dep", Version: "v1.0.0"}
+	if len(src.fetched) == 0 || slices.ContainsFunc(src.fetched, func(m module.Version) bool { return m != dep }) {
 		t.Errorf("fetched = %v", src.fetched)
+	}
+	if len(src.prefetched) != 2 || !slices.Equal(src.prefetched[0], []module.Version{dep}) || !slices.Equal(src.prefetched[1], []module.Version{dep}) {
+		t.Errorf("prefetched = %v, want [%v] per side", src.prefetched, dep)
 	}
 
 	// Without one, the run is read-only and the error says which flag to

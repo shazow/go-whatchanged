@@ -476,6 +476,15 @@ func loadSide(ctx context.Context, open openFunc, spec sideSpec, rel string, env
 	}
 	if opts.Fetch != nil {
 		res.Missing = s.fetcher(ctx, opts.Fetch)
+		// Fetch the side's missing requirements together, ahead of the
+		// imports that need them, when the source can. Best effort: a
+		// module that is needed and still missing is fetched, and any
+		// problem with it reported, on demand.
+		if p, ok := opts.Fetch.(modfetch.Prefetcher); ok {
+			if missing := res.MissingModules(); len(missing) > 0 {
+				_ = p.Prefetch(ctx, missing)
+			}
+		}
 	}
 	s.res = res
 	s.ld = loader.New(ctxt, fset, res, shared)

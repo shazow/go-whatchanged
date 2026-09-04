@@ -43,9 +43,9 @@ narrows the diff to incompatible changes and combines with any of them:
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
 
-A module that go.mod pins but the module cache lacks is downloaded with
-go mod download, run outside the repository so that nothing in it is read
-or written; the module cache is the only place the tool writes. With
+The modules that go.mod pins but the module cache lacks are downloaded
+with go mod download, run outside the repository so that nothing in it is
+read or written; the module cache is the only place the tool writes. With
 --fsreadonly it never writes anywhere and never runs the go command, and a
 missing module is an error that says how to fetch it.
 

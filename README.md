@@ -332,12 +332,13 @@ from `git worktree add`: nothing in the repository is changed.
   build cache, no `go.sum` edits. It reads the repository, `.git`,
   `$GOROOT/src`, `$GOMODCACHE` and the directories that `replace`
   directives point at.
-- **The module cache is the one exception.** A module that a side's
-  `go.mod` pins but the cache lacks is fetched with `go mod download`, run
-  from outside any module with `GOWORK=off`, so that the go command never
-  sees, let alone edits, the checkout's `go.mod`, `go.sum` or `go.work`.
-  That download is the only time the tool runs the go command or reaches
-  the network, through the usual `GOPROXY`, `GOPRIVATE` and `GONOSUMDB`.
+- **The module cache is the one exception.** The modules that a side's
+  `go.mod` pins and the cache lacks are fetched together with one
+  `go mod download`, run from outside any module with `GOWORK=off`, so
+  that the go command never sees, let alone edits, the checkout's
+  `go.mod`, `go.sum` or `go.work`. That download is the only time the tool
+  runs the go command or reaches the network, through the usual `GOPROXY`,
+  `GOPRIVATE` and `GONOSUMDB`.
 - **`--fsreadonly` removes the exception.** With it the tool never writes
   anywhere and never runs the go command; a missing module is an error
   that says how to download it, and that dropping the flag would.
@@ -362,11 +363,14 @@ their imports resolve identically on both; otherwise, as when a dependency
 imports the main module, they are checked once per side, so that neither
 side is ever linked against the other side's packages.
 
-A module the cache lacks is fetched on demand through one small interface,
+A module the cache lacks is fetched through one small interface,
 `internal/modfetch.Source`: resolve a query to a version, fetch a version
-to a readable tree. Its only implementation runs the go command; a client
-for the module proxy protocol could replace it without the rest of the
-tool noticing, and `--fsreadonly` simply leaves it out.
+to a readable tree. Before a side is type-checked, every requirement of
+its `go.mod` that the cache lacks is fetched as one batch, in parallel, and
+anything that still turns out to be missing is fetched on demand. The
+interface's only implementation runs the go command; a client for the
+module proxy protocol could replace it without the rest of the tool
+noticing, and `--fsreadonly` simply leaves it out.
 
 ## Limitations
 

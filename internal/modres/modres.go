@@ -254,31 +254,17 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 	}
 	rest := strings.TrimPrefix(strings.TrimPrefix(importPath, best.Path), "/")
 
-	// Apply replace directives: exact version first, then wildcard.
-	rep, ok := r.replaces[best]
-	if !ok {
-		rep, ok = r.replaces[module.Version{Path: best.Path}]
-	}
 	var modRoot string
-	if ok && rep.dir != "" {
-		modRoot = rep.dir
+	if dir, mod := r.replaced(best); dir != "" {
+		modRoot = dir
 		if !r.fs.IsDir(modRoot) {
 			return Location{}, fmt.Errorf("replacement directory %s for module %s does not exist", modRoot, best.Path)
 		}
 	} else {
-		mod := best
-		if ok {
-			mod = rep.mod
-		}
-		escPath, err := module.EscapePath(mod.Path)
-		if err != nil {
+		var err error
+		if modRoot, err = r.cacheDir(mod); err != nil {
 			return Location{}, err
 		}
-		escVer, err := module.EscapeVersion(mod.Version)
-		if err != nil {
-			return Location{}, err
-		}
-		modRoot = filepath.Join(r.env.GOMODCACHE, filepath.FromSlash(escPath)+"@"+escVer)
 		if !r.fs.IsDir(modRoot) {
 			if modRoot, err = r.fetch(mod); err != nil {
 				return Location{}, err
@@ -290,6 +276,60 @@ func (r *Resolver) Resolve(importPath, fromDir string) (Location, error) {
 		dir = joinPath(modRoot, rest)
 	}
 	return Location{Dir: dir, Kind: Dep, GoVersion: r.moduleGoVersion(modRoot)}, nil
+}
+
+// replaced applies the replace directives to mod: exact version first, then
+// wildcard. It returns the directory of a directory replacement, or else
+// the module version to look up in the module cache, mod itself when
+// nothing replaces it.
+func (r *Resolver) replaced(mod module.Version) (dir string, cached module.Version) {
+	rep, ok := r.replaces[mod]
+	if !ok {
+		rep, ok = r.replaces[module.Version{Path: mod.Path}]
+	}
+	switch {
+	case !ok:
+		return "", mod
+	case rep.dir != "":
+		return rep.dir, module.Version{}
+	default:
+		return "", rep.mod
+	}
+}
+
+// cacheDir is the directory the module cache keeps mod in, whether or not
+// it is there.
+func (r *Resolver) cacheDir(mod module.Version) (string, error) {
+	escPath, err := module.EscapePath(mod.Path)
+	if err != nil {
+		return "", err
+	}
+	escVer, err := module.EscapeVersion(mod.Version)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(r.env.GOMODCACHE, filepath.FromSlash(escPath)+"@"+escVer), nil
+}
+
+// MissingModules lists the module versions that go.mod requires, after
+// replace directives, and the module cache lacks: what a caller may want to
+// fetch ahead of resolution, as one batch. Directory replacements are never
+// missing, and a version that cannot be named in the cache is left out,
+// for Resolve to report if an import needs it.
+func (r *Resolver) MissingModules() []module.Version {
+	var missing []module.Version
+	for _, req := range r.requires {
+		dir, mod := r.replaced(req)
+		if dir != "" {
+			continue
+		}
+		cacheDir, err := r.cacheDir(mod)
+		if err != nil || r.fs.IsDir(cacheDir) {
+			continue
+		}
+		missing = append(missing, mod)
+	}
+	return missing
 }
 
 // fetch obtains a module version the cache lacks through Missing, once per

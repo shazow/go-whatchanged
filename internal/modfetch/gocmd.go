@@ -10,11 +10,26 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
 	"golang.org/x/mod/module"
 )
+
+// Prefetcher is a Source that can obtain several module versions ahead of
+// need, together; Fetch then answers from what Prefetch got. A go.mod at
+// go 1.17 or later names every module its packages and tests can import, so
+// fetching its missing requirements as one batch, before type-checking
+// starts, replaces one download per import with one parallel download,
+// at the price of the modules only tests need.
+type Prefetcher interface {
+	// Prefetch obtains mods as a batch. A problem with one module is not an
+	// error here: it surfaces from Fetch, when and if that module is
+	// needed. The error is for the batch as a whole, such as a Source that
+	// cannot run at all, and is advisory, since Fetch reports it again.
+	Prefetch(ctx context.Context, mods []module.Version) error
+}
 
 // GoCommand is a Source that runs the go command, which handles GOPROXY,
 // GOPRIVATE, the checksum database and credentials on the tool's behalf. It
@@ -36,8 +51,8 @@ type GoCommand struct {
 	fetches map[module.Version]*fetch
 }
 
-// fetch is one Fetch in flight or done, so that concurrent callers share a
-// single go mod download per module version.
+// fetch is one module version being, or done being, downloaded, so that
+// concurrent callers share a single go mod download per version.
 type fetch struct {
 	done chan struct{}
 	mod  *Module
@@ -66,59 +81,151 @@ func (g *GoCommand) Resolve(ctx context.Context, path, query string) (module.Ver
 
 // Fetch implements Source with go mod download.
 func (g *GoCommand) Fetch(ctx context.Context, mod module.Version) (*Module, error) {
-	g.mu.Lock()
-	if g.fetches == nil {
-		g.fetches = map[module.Version]*fetch{}
-	}
-	f, ok := g.fetches[mod]
-	if !ok {
-		f = &fetch{done: make(chan struct{})}
-		g.fetches[mod] = f
-	}
-	g.mu.Unlock()
-	if ok {
-		select {
-		case <-f.done:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
+	owned := g.claim([]module.Version{mod})
+	if f, ok := owned[mod]; ok {
+		results, err := g.download(ctx, []module.Version{mod})
+		f.mod, f.err = results[mod].unpack(err)
+		close(f.done)
 		return f.mod, f.err
 	}
-	f.mod, f.err = g.download(ctx, mod)
-	close(f.done)
+	g.mu.Lock()
+	f := g.fetches[mod]
+	g.mu.Unlock()
+	select {
+	case <-f.done:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 	return f.mod, f.err
 }
 
-func (g *GoCommand) download(ctx context.Context, mod module.Version) (*Module, error) {
-	if g.Stderr != nil {
-		fmt.Fprintf(g.Stderr, "downloading %s %s\n", mod.Path, mod.Version)
+// Prefetch implements Prefetcher with one go mod download for every version
+// in mods that no Fetch or Prefetch has taken on yet.
+func (g *GoCommand) Prefetch(ctx context.Context, mods []module.Version) error {
+	owned := g.claim(mods)
+	if len(owned) == 0 {
+		return nil
 	}
-	out, stderr, err := g.run(ctx, "mod", "download", "-json", mod.Path+"@"+mod.Version)
-	var m struct {
-		Path, Version, Error string
-		GoMod, Dir, Sum      string
+	list := slices.SortedFunc(keys(owned), func(a, b module.Version) int {
+		if c := strings.Compare(a.Path, b.Path); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Version, b.Version)
+	})
+	results, err := g.download(ctx, list)
+	for mod, f := range owned {
+		f.mod, f.err = results[mod].unpack(err)
+		close(f.done)
 	}
-	// go mod download reports a failed download in the JSON itself and
-	// exits non-zero; the JSON is the better account when it is there.
-	if jerr := json.Unmarshal(out, &m); jerr != nil || m.Path == "" {
-		return nil, g.failure("go mod download", mod.Path, mod.Version, stderr, err)
+	return err
+}
+
+// keys iterates over the keys of m.
+func keys[K comparable, V any](m map[K]V) func(func(K) bool) {
+	return func(yield func(K) bool) {
+		for k := range m {
+			if !yield(k) {
+				return
+			}
+		}
 	}
-	if m.Error != "" {
-		return nil, g.failure("go mod download", mod.Path, mod.Version, m.Error, nil)
+}
+
+// claim registers the versions in mods that no Fetch or Prefetch has yet
+// taken on and returns their entries; the caller must fill and close every
+// one it gets back.
+func (g *GoCommand) claim(mods []module.Version) map[module.Version]*fetch {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.fetches == nil {
+		g.fetches = map[module.Version]*fetch{}
 	}
-	if m.Dir == "" || m.GoMod == "" {
-		return nil, fmt.Errorf("go mod download %s@%s: no directory in its report", mod.Path, mod.Version)
+	owned := map[module.Version]*fetch{}
+	for _, mod := range mods {
+		if _, ok := g.fetches[mod]; ok {
+			continue
+		}
+		f := &fetch{done: make(chan struct{})}
+		g.fetches[mod] = f
+		owned[mod] = f
 	}
-	gomod, err := os.ReadFile(m.GoMod)
-	if err != nil {
-		return nil, fmt.Errorf("go mod download %s@%s: %w", mod.Path, mod.Version, err)
+	return owned
+}
+
+// result is one module's outcome in a download.
+type result struct {
+	mod *Module
+	err error
+}
+
+// unpack returns the result, or the download's own error for a module it
+// did not report on: a command that could not run at all, or one whose
+// output stopped short.
+func (r result) unpack(batchErr error) (*Module, error) {
+	switch {
+	case r.mod != nil || r.err != nil:
+		return r.mod, r.err
+	case batchErr != nil:
+		return nil, batchErr
+	default:
+		return nil, errors.New("go mod download: no report for the module in its output")
 	}
-	return &Module{
-		Version: module.Version{Path: m.Path, Version: m.Version},
-		Dir:     m.Dir,
-		GoMod:   gomod,
-		Sum:     m.Sum,
-	}, nil
+}
+
+// download runs one go mod download for mods and returns what it reported
+// about each. go mod download carries on past a module it cannot get and
+// reports the failure in that module's JSON object, so an error comes back
+// only when the command produced no report at all.
+func (g *GoCommand) download(ctx context.Context, mods []module.Version) (map[module.Version]result, error) {
+	what := "go mod download"
+	if len(mods) == 1 {
+		what += " " + mods[0].Path + "@" + mods[0].Version
+	} else {
+		what += fmt.Sprintf(" (%d modules)", len(mods))
+	}
+	args := []string{"mod", "download", "-json"}
+	for _, mod := range mods {
+		if g.Stderr != nil {
+			fmt.Fprintf(g.Stderr, "downloading %s %s\n", mod.Path, mod.Version)
+		}
+		args = append(args, mod.Path+"@"+mod.Version)
+	}
+	out, stderr, err := g.run(ctx, args...)
+
+	results := map[module.Version]result{}
+	dec := json.NewDecoder(bytes.NewReader(out))
+	for {
+		var m struct {
+			Path, Version, Error string
+			GoMod, Dir, Sum      string
+		}
+		if derr := dec.Decode(&m); derr != nil || m.Path == "" {
+			break
+		}
+		mod := module.Version{Path: m.Path, Version: m.Version}
+		switch {
+		case m.Error != "":
+			results[mod] = result{err: g.failure("go mod download", m.Path, m.Version, m.Error, nil)}
+		case m.Dir == "" || m.GoMod == "":
+			results[mod] = result{err: fmt.Errorf("go mod download %s@%s: no directory in its report", m.Path, m.Version)}
+		default:
+			gomod, rerr := os.ReadFile(m.GoMod)
+			if rerr != nil {
+				results[mod] = result{err: fmt.Errorf("go mod download %s@%s: %w", m.Path, m.Version, rerr)}
+				continue
+			}
+			results[mod] = result{mod: &Module{Version: mod, Dir: m.Dir, GoMod: gomod, Sum: m.Sum}}
+		}
+	}
+	if len(results) == 0 {
+		if stderr = strings.TrimSpace(stderr); stderr != "" {
+			err = errors.New(stderr)
+		} else if err == nil {
+			err = errors.New("unexpected output")
+		}
+		return nil, fmt.Errorf("%s: %w", what, err)
+	}
+	return results, nil
 }
 
 // run executes the go command with args and returns its standard output

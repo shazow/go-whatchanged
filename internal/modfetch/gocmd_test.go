@@ -14,18 +14,22 @@ import (
 )
 
 // fakeGo is a shell script standing in for the go command: it logs each
-// invocation with its working directory and GOWORK, and answers the queries
-// the tests make with the JSON the real command would print.
+// invocation with its working directory and GOWORK, and answers each
+// module argument with the JSON the real command would print, carrying on
+// past a failure as go mod download does.
 const fakeGo = `#!/bin/sh
 printf '%s\n' "$PWD GOWORK=$GOWORK $*" >>"$GOFAKE_LOG"
-for last; do :; done
-case "$last" in
-example.com/m@latest) echo '{"Path":"example.com/m","Version":"v1.2.0"}' ;;
-example.com/m@nope) echo '{"Path":"example.com/m","Error":{"Err":"no matching versions for query \"nope\""}}' ;;
-example.com/m@v1.2.0) printf '{"Path":"example.com/m","Version":"v1.2.0","GoMod":"%s","Dir":"%s","Sum":"h1:abc"}\n' "$GOFAKE_GOMOD" "$GOFAKE_DIR" ;;
-example.com/m@v9.9.9) echo '{"Path":"example.com/m","Version":"v9.9.9","Error":"example.com/m@v9.9.9: reading https://proxy/example.com/m/@v/v9.9.9.info: 404 Not Found"}'; exit 1 ;;
-*) echo "go: cannot serve $*" >&2; exit 1 ;;
-esac
+rc=0
+for arg; do
+	case "$arg" in
+	example.com/m@latest) echo '{"Path":"example.com/m","Version":"v1.2.0"}' ;;
+	example.com/m@nope) echo '{"Path":"example.com/m","Error":{"Err":"no matching versions for query \"nope\""}}' ;;
+	example.com/m@v1.2.0) printf '{"Path":"example.com/m","Version":"v1.2.0","GoMod":"%s","Dir":"%s","Sum":"h1:abc"}\n' "$GOFAKE_GOMOD" "$GOFAKE_DIR" ;;
+	example.com/m@v9.9.9) echo '{"Path":"example.com/m","Version":"v9.9.9","Error":"example.com/m@v9.9.9: reading https://proxy/example.com/m/@v/v9.9.9.info: 404 Not Found"}'; rc=1 ;;
+	*@*) echo "go: cannot serve $arg" >&2; exit 1 ;;
+	esac
+done
+exit $rc
 `
 
 func newFakeGo(t *testing.T) (g *GoCommand, log func() []string, stderr *bytes.Buffer) {
@@ -136,5 +140,53 @@ func TestGoCommandFetch(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "cannot serve") {
 		t.Errorf("stderr = %q; want the go command's output", stderr.String())
+	}
+}
+
+func TestGoCommandPrefetch(t *testing.T) {
+	g, log, stderr := newFakeGo(t)
+	ctx := t.Context()
+	good := module.Version{Path: "example.com/m", Version: "v1.2.0"}
+	bad := module.Version{Path: "example.com/m", Version: "v9.9.9"}
+
+	// One command for the batch; a module it cannot get is not the batch's
+	// error.
+	if err := g.Prefetch(ctx, []module.Version{bad, good}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := log(); len(lines) != 1 || !strings.HasSuffix(lines[0], "mod download -json example.com/m@v1.2.0 example.com/m@v9.9.9") {
+		t.Errorf("commands = %q, want one for both modules", lines)
+	}
+	if got := strings.Count(stderr.String(), "downloading example.com/m "); got != 2 {
+		t.Errorf("progress lines = %d, want 2:\n%s", got, stderr.String())
+	}
+
+	// Fetch answers from the batch without running anything more, the
+	// failure included.
+	m, err := g.Fetch(ctx, good)
+	if err != nil || m.Sum != "h1:abc" {
+		t.Errorf("Fetch(good) = %+v, %v", m, err)
+	}
+	var nf *NotFoundError
+	if _, err := g.Fetch(ctx, bad); !errors.As(err, &nf) {
+		t.Errorf("Fetch(bad) = %v, want NotFoundError", err)
+	}
+	// Nor does a second Prefetch of the same versions.
+	if err := g.Prefetch(ctx, []module.Version{good, bad}); err != nil {
+		t.Fatal(err)
+	}
+	if lines := log(); len(lines) != 1 {
+		t.Errorf("commands after the batch = %q, want no more", lines)
+	}
+
+	// A batch that produces no report at all is the batch's error, and
+	// each module's.
+	other := module.Version{Path: "example.com/other", Version: "v1.0.0"}
+	err = g.Prefetch(ctx, []module.Version{other})
+	if err == nil || !strings.Contains(err.Error(), "go mod download example.com/other@v1.0.0: go: cannot serve") {
+		t.Errorf("Prefetch(other) = %v", err)
+	}
+	if _, ferr := g.Fetch(ctx, other); ferr == nil || ferr.Error() != err.Error() {
+		t.Errorf("Fetch(other) = %v, want the batch's error", ferr)
 	}
 }
