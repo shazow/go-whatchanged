@@ -203,7 +203,7 @@ find_comment() {
 # paragraph boundary and points at the job summary, which has no limit.
 comment_body() {
   local out=$1 marker=$2 limit=65536 report=$work/comment-report.md room footer
-  footer="<sub>$compared · <a href=\"https://github.com/shazow/go-whatchanged\">powered by go-whatchanged</a></sub>"
+  footer="<sub>$compared · powered by <a href=\"https://github.com/shazow/go-whatchanged\">go-whatchanged</a></sub>"
   {
     echo "$marker"
     echo "<details>"
