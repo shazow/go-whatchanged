@@ -2,7 +2,9 @@ package whatchanged
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/go-git/go-git/v5"
@@ -79,9 +81,24 @@ func resolveBase(ctx context.Context, base, head sideSpec, env modres.Env, src m
 		}
 		return base.rev, tags.Version(tagName(base.rev)), nil
 	}
-	if err == nil {
-		rev, version, err = latestTag(base.open, tags, head.rev, modPath)
+	// Problems with the head side name it themselves; only the search for
+	// the tag is reported as @latest's.
+	if err != nil {
+		return "", "", err
 	}
+	repo, err := base.open()
+	if err != nil {
+		return "", "", err
+	}
+	headRev := head.rev
+	if headRev == "" {
+		headRev = "HEAD"
+	}
+	headHash, err := resolveCommit(repo, headRev)
+	if err != nil {
+		return "", "", err
+	}
+	rev, version, err = latestTag(repo, tags, headHash, headRev, modPath)
 	if err != nil {
 		return "", "", fmt.Errorf("%s: %w", LatestRelease, err)
 	}
@@ -102,7 +119,7 @@ func headModulePath(ctx context.Context, head sideSpec, env modres.Env, src modf
 	}
 	res, err := s.resolver(env)
 	if err != nil {
-		return "", fmt.Errorf("%s: %w", s.label, err)
+		return "", err
 	}
 	return res.ModPath(), nil
 }
@@ -113,25 +130,9 @@ type candidate struct {
 }
 
 // latestTag returns the highest release tag among the proper ancestors of
-// headRev, "" for the working tree, whose commit is HEAD. Annotated tags are
-// followed to the commit they point at; tags on anything but a commit are
-// ignored.
-func latestTag(open openFunc, tags release.Tags, headRev, modPath string) (tag, version string, err error) {
-	repo, err := open()
-	if err != nil {
-		return "", "", err
-	}
-	if headRev == "" {
-		headRev = "HEAD"
-	}
-	hash, err := repo.ResolveRevision(plumbing.Revision(headRev))
-	if err != nil {
-		return "", "", fmt.Errorf("resolve %q: %w", headRev, err)
-	}
-	if _, err := repo.CommitObject(*hash); err != nil {
-		return "", "", fmt.Errorf("%q is not a commit", headRev)
-	}
-	head := *hash
+// head, the commit headRev names. Annotated tags are followed to the commit
+// they point at; tags on anything but a commit are ignored.
+func latestTag(repo *git.Repository, tags release.Tags, head plumbing.Hash, headRev, modPath string) (tag, version string, err error) {
 	byCommit := map[plumbing.Hash][]candidate{}
 	refs, err := repo.Tags()
 	if err != nil {
@@ -160,7 +161,16 @@ func latestTag(open openFunc, tags release.Tags, headRev, modPath string) (tag, 
 		return "", "", err
 	}
 	if total == 0 {
-		return "", "", fmt.Errorf("no release tags for %s (looking for tags like %q)", modPath, tags.Example())
+		switch {
+		case shallowHint(repo) != "":
+			return "", "", fmt.Errorf("no release tags for %s (looking for tags like %q)%s", modPath, tags.Example(), shallowHint(repo))
+		case !hasTags(repo):
+			return "", "", fmt.Errorf("no release tags for %s (looking for tags like %q); the clone has no tags at all: git fetch --tags brings them, if the repository has any", modPath, tags.Example())
+		default:
+			// The tags there are do not fit the module: a nested module
+			// tagged without its directory prefix, or the other way around.
+			return "", "", fmt.Errorf("no release tags for %s (looking for tags like %q; tags: %s)", modPath, tags.Example(), fewOf(tagNames(repo)))
+		}
 	}
 
 	// Walk the ancestors of head, stopping once every tagged commit has been
@@ -190,11 +200,26 @@ func latestTag(open openFunc, tags release.Tags, headRev, modPath string) (tag, 
 		}
 		return nil
 	})
-	if err != nil {
+	// A shallow clone ends without the parents of its oldest commits:
+	// the history reachable from head simply stops there.
+	if err != nil && !errors.Is(err, plumbing.ErrObjectNotFound) {
 		return "", "", err
 	}
 	if best.version == "" {
-		return "", "", fmt.Errorf("none of the %d release tag(s) for %s is an ancestor of %s", total, modPath, headRev)
+		// The tag on the head commit itself is the usual case: a freshly
+		// tagged release, whose diff against itself would be empty.
+		if onHead := byCommit[head]; len(onHead) > 0 {
+			newest := slices.MaxFunc(onHead, func(a, b candidate) int { return semver.Compare(a.version, b.version) })
+			return "", "", fmt.Errorf("%s is the newest release tag reachable from %s, but it is on %s itself, which @latest skips; name it instead: @%s", newest.tag, headRev, headRev, newest.tag)
+		}
+		var names []string
+		for _, cands := range byCommit {
+			for _, c := range cands {
+				names = append(names, c.tag)
+			}
+		}
+		slices.SortFunc(names, func(a, b string) int { return semver.Compare(tags.Version(b), tags.Version(a)) })
+		return "", "", fmt.Errorf("none of the %d release tag(s) for %s (%s) is an ancestor of %s%s", total, modPath, fewOf(names), headRev, shallowHint(repo))
 	}
 	return best.tag, best.version, nil
 }

@@ -140,6 +140,21 @@ func TestGoCommandFetch(t *testing.T) {
 	}
 }
 
+// TestGoCommandNotOnPATH checks that a missing go command is reported as
+// such, with what it is needed for, rather than as an exec failure.
+func TestGoCommandNotOnPATH(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	g := &GoCommand{}
+	_, err := g.Fetch(t.Context(), module.Version{Path: "example.com/m", Version: "v1.2.0"})
+	if err == nil || err.Error() != "go mod download example.com/m@v1.2.0: the go command is not on PATH; go-whatchanged runs it to download modules" {
+		t.Errorf("Fetch = %v", err)
+	}
+	_, err = g.Resolve(t.Context(), "example.com/m", "latest")
+	if err == nil || err.Error() != "go list -m example.com/m@latest: the go command is not on PATH; go-whatchanged runs it to download modules" {
+		t.Errorf("Resolve = %v", err)
+	}
+}
+
 func TestGoCommandPrefetch(t *testing.T) {
 	g, log, stderr := newFakeGo(t)
 	ctx := t.Context()

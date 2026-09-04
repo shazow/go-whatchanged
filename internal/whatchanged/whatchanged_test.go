@@ -24,6 +24,7 @@ import (
 	"github.com/go-git/go-billy/v5"
 	"github.com/go-git/go-billy/v5/memfs"
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/config"
 	"github.com/go-git/go-git/v5/plumbing"
 	"github.com/go-git/go-git/v5/plumbing/object"
 	"github.com/go-git/go-git/v5/storage/memory"
@@ -721,7 +722,23 @@ func TestMissingGoMod(t *testing.T) {
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), "go.mod", "GOPATH mode is not supported")
+	// Whichever side reports first names itself and says where it looked,
+	// in the user's terms rather than at the synthetic mount path.
+	if msg := r.err.Error(); msg != "@HEAD: no go.mod at this revision (GOPATH mode is not supported)" &&
+		msg != "working tree: no go.mod in the working tree (GOPATH mode is not supported)" {
+		t.Errorf("err = %q", msg)
+	}
+	mustNotContain(t, r.err.Error(), vfs.SyntheticPrefix)
+
+	// A module in a subdirectory, at a revision where the directory did
+	// not exist yet: the file is named relative to the repository.
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n")
+	f.write("sub/go.mod", "module example.com/m/sub\n\ngo 1.24\n")
+	f.write("sub/sub.go", "package sub\n")
+	_, err := compare(t.Context(), sideSpec{rev: "HEAD", open: f.open, rel: "sub"}, sideSpec{fs: &billyFS{fs: f.fs}, open: f.open, rel: "sub"}, f.env, Options{})
+	if err == nil || err.Error() != "@HEAD: no sub/go.mod at this revision" {
+		t.Errorf("err = %v", err)
+	}
 }
 
 func TestUnresolvableImportIsFatal(t *testing.T) {
@@ -745,6 +762,16 @@ func TestUnresolvableImportIsFatal(t *testing.T) {
 	}
 	mustContain(t, r.err.Error(),
 		"working tree: unresolvable import \"example.org/nothere\" (required by example.com/m/a): module example.org/nothere@v1.2.3 not in module cache; remove --fsreadonly to let go-whatchanged download it")
+	mustNotContain(t, r.err.Error(), "go.work")
+
+	// In a workspace, the import of a sibling module resolves through
+	// go.work for the go command; the error says the file is not read.
+	f.write("go.work", "go 1.24\n\nuse (\n\t.\n\t../nothere\n)\n")
+	r = f.run("HEAD", "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "not in module cache; remove --fsreadonly to let go-whatchanged download it; go.work is not consulted, so a workspace module must come from the module cache or a replace directive")
 }
 
 // fakeSource is a modfetch.Source serving module versions from an in-memory
@@ -973,13 +1000,30 @@ func TestUnknownRevision(t *testing.T) {
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	h := f.commit("one")
 
-	// With no tags, the error names the forms a revision takes.
+	// With no tags, the error names the branches there are and the forms
+	// a revision takes.
 	r := f.run("nope", "", Options{})
 	if r.err == nil {
 		t.Fatal("no error for an unknown revision")
 	}
-	mustContain(t, r.err.Error(), "@nope: no such tag, branch or commit; a revision is written @<tag>, @<branch>, @<commit> or @HEAD~2, and @latest is the newest release tag")
+	mustContain(t, r.err.Error(), "@nope: no such tag, branch or commit (branches: master); a revision is written @<tag>, @<branch>, @<commit> or @HEAD~2, and @latest is the newest release tag")
 	mustNotContain(t, r.err.Error(), "tags:")
+
+	// Something spelled like a release tag, in a clone with no tags at
+	// all, was probably cloned without them.
+	r = f.run("v1.4.0", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@v1.4.0: no such tag, branch or commit (branches: master); the clone has no tags at all: git fetch --tags brings them")
+
+	// Walking past the root commit is not a missing revision.
+	r = f.run("HEAD~5", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for a revision past the root")
+	}
+	mustContain(t, r.err.Error(), "@HEAD~5: the history does not reach back that far")
+	mustNotContain(t, r.err.Error(), "shallow")
 
 	// With tags, it lists them, newest first, release versions before
 	// the rest, and stops after a few.
@@ -990,7 +1034,116 @@ func TestUnknownRevision(t *testing.T) {
 	if r.err == nil {
 		t.Fatal("no error for an unknown revision")
 	}
-	mustContain(t, r.err.Error(), "@v1.4: no such tag, branch or commit (tags: v1.10.0, v1.9.0, v1.8.0, v1.7.0, v1.6.0, v1.5.0, and 2 more); a revision is written")
+	mustContain(t, r.err.Error(), "@v1.4: no such tag, branch or commit (branches: master; tags: v1.10.0, v1.9.0, v1.8.0, v1.7.0, v1.6.0, v1.5.0, and 2 more); a revision is written")
+
+	// A branch only a remote has, as after a clone or a CI checkout, and
+	// a remote-tracking branch the remote has not delivered.
+	if _, err := f.repo.CreateRemote(&config.RemoteConfig{Name: "origin", URLs: []string{"https://example.com/m.git"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.repo.Storer.SetReference(plumbing.NewHashReference(plumbing.NewRemoteReferenceName("origin", "main"), h)); err != nil {
+		t.Fatal(err)
+	}
+	r = f.run("main", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@main: no such tag, branch or commit (branches: master; tags: v1.10.0, ", "); did you mean @origin/main?")
+	r = f.run("origin/dev", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@origin/dev: no such tag, branch or commit (branches: master; tags: v1.10.0, ", "); fetch it first: git fetch origin dev")
+	mustNotContain(t, r.err.Error(), "a revision is written")
+}
+
+// TestShallowClone checks that a shallow clone, whose missing history and
+// tags are the usual reason a revision or a release cannot be found, is
+// named as the reason, with the fix for the environment. It sets an
+// environment variable, so it does not run in parallel.
+func TestShallowClone(t *testing.T) {
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	one := f.commit("one")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
+	two := f.commit("two")
+	if err := f.repo.Storer.SetShallow([]plumbing.Hash{one}); err != nil {
+		t.Fatal(err)
+	}
+
+	const hint = "; the clone is shallow: git fetch --unshallow --tags brings the whole history and its tags"
+	r := f.run("v1.0.0", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@v1.0.0: no such tag, branch or commit (branches: master)"+hint)
+	mustNotContain(t, r.err.Error(), "a revision is written")
+
+	r = f.run("HEAD~2", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for a revision past the shallow boundary")
+	}
+	mustContain(t, r.err.Error(), "@HEAD~2: the history does not reach back that far"+hint)
+
+	r = f.run(LatestRelease, "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for @latest without tags")
+	}
+	mustContain(t, r.err.Error(), `@latest: no release tags for example.com/m (looking for tags like "v1.2.3")`+hint)
+
+	// Tags on commits the clone does not reach, fetch-tags without the
+	// history in CI terms: the walk from HEAD ends at the shallow
+	// boundary, whose parent is not in the clone, without an error of its
+	// own.
+	f.tag("v1.0.0", one)
+	f.tag("v0.1.0", plumbing.NewHash("0123456789abcdef0123456789abcdef01234567"))
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n\nfunc C() {}\n")
+	f.commit("three")
+	if err := f.repo.Storer.SetShallow([]plumbing.Hash{two}); err != nil {
+		t.Fatal(err)
+	}
+	mem := f.repo.Storer.(*memory.Storage)
+	delete(mem.Objects, one)
+	delete(mem.Commits, one)
+	r = f.run(LatestRelease, "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for @latest without a reachable tag")
+	}
+	mustContain(t, r.err.Error(), "@latest: none of the 2 release tag(s) for example.com/m (v1.0.0, v0.1.0) is an ancestor of HEAD"+hint)
+
+	// The tag on the reachable side of the boundary is still found.
+	f.tag("v1.1.0", two)
+	r = f.mustRun(LatestRelease, "", Options{})
+	mustContain(t, r.stdout, "+ func C()", "would require: MINOR (v1.1.0 → v1.2.0)")
+
+	// In GitHub Actions, the fix is a checkout option.
+	t.Setenv("GITHUB_ACTIONS", "true")
+	r = f.run("v2.0.0", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "; the checkout is shallow: check out with fetch-depth: 0 to have the whole history and its tags")
+}
+
+// TestEmptyRepository checks the messages for a repository with no
+// commits, where HEAD names a branch that does not exist yet.
+func TestEmptyRepository(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for _, base := range []string{"HEAD", LatestRelease} {
+		r := f.run(base, "", Options{})
+		if r.code != ExitError || r.err == nil {
+			t.Fatalf("run(%s): exit = %d, err = %v; want error", base, r.code, r.err)
+		}
+		if r.err.Error() != "@HEAD: the repository has no commits yet (master is an unborn branch)" {
+			t.Errorf("run(%s): err = %q", base, r.err)
+		}
+	}
+	r := f.run("main", "", Options{})
+	if r.err == nil {
+		t.Fatal("no error for an unknown revision")
+	}
+	mustContain(t, r.err.Error(), "@main: no such tag, branch or commit; a revision is written")
 }
 
 func TestMissingDirectory(t *testing.T) {
@@ -1811,21 +1964,41 @@ func TestLatestReleaseErrors(t *testing.T) {
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), `@latest: no release tags for example.com/m (looking for tags like "v1.2.3")`)
+	mustContain(t, r.err.Error(), `@latest: no release tags for example.com/m (looking for tags like "v1.2.3"); the clone has no tags at all: git fetch --tags brings them, if the repository has any`)
 
-	// Tags exist, but none among the ancestors of HEAD: the release on a
-	// side branch, and the tag on HEAD itself.
+	// Tags exist, but none fits the module: the wrong layout for a
+	// nested module, say. The message shows them.
+	f.tag("build-42", one)
+	f.tag("v1.0", one)
+	r = f.run(LatestRelease, "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), `@latest: no release tags for example.com/m (looking for tags like "v1.2.3"; tags: v1.0, build-42)`)
+
+	// A release tag exists, but on a side branch, not among the
+	// ancestors of HEAD.
 	f.checkout("side", true, one)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc Side() {}\n")
 	f.tag("v0.1.0", f.commit("side"))
 	f.checkout("master", false, plumbing.ZeroHash)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n\nfunc B() {}\n")
-	f.tag("v0.2.0", f.commit("two"))
+	two := f.commit("two")
 	r = f.run(LatestRelease, "", Options{})
 	if r.code != ExitError || r.err == nil {
 		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
 	}
-	mustContain(t, r.err.Error(), "@latest: none of the 2 release tag(s) for example.com/m is an ancestor of HEAD")
+	mustContain(t, r.err.Error(), "@latest: none of the 1 release tag(s) for example.com/m (v0.1.0) is an ancestor of HEAD")
+	mustNotContain(t, r.err.Error(), "shallow")
+
+	// The tag on HEAD itself, which @latest skips: the usual case right
+	// after tagging a release, and the fix is to name the tag.
+	f.tag("v0.2.0", two)
+	r = f.run(LatestRelease, "", Options{})
+	if r.code != ExitError || r.err == nil {
+		t.Fatalf("exit = %d, err = %v; want error", r.code, r.err)
+	}
+	mustContain(t, r.err.Error(), "@latest: v0.2.0 is the newest release tag reachable from HEAD, but it is on HEAD itself, which @latest skips; name it instead: @v0.2.0")
 }
 
 func TestJSON(t *testing.T) {

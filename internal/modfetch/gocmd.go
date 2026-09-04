@@ -209,6 +209,9 @@ func (g *GoCommand) run(ctx context.Context, args ...string) (stdout []byte, std
 		cmd.Stderr = io.MultiWriter(&errb, g.Stderr)
 	}
 	err = cmd.Run()
+	if errors.Is(err, exec.ErrNotFound) {
+		err = errors.New("the go command is not on PATH; go-whatchanged runs it to download modules")
+	}
 	return out.Bytes(), errb.String(), err
 }
 

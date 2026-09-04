@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"go/version"
+	"io/fs"
 	"os"
 	"path"
 	"path/filepath"
@@ -46,7 +47,7 @@ func DefaultEnv() (Env, error) {
 		return Env{}, errors.New("cannot locate GOROOT: set the GOROOT environment variable")
 	}
 	if fi, err := os.Stat(filepath.Join(goroot, "src", "fmt")); err != nil || !fi.IsDir() {
-		return Env{}, fmt.Errorf("GOROOT %q does not contain a Go source tree", goroot)
+		return Env{}, fmt.Errorf("GOROOT %q has no Go source tree (no src/fmt in it); set GOROOT to the root of the Go installation to type-check against", goroot)
 	}
 
 	modcache := os.Getenv("GOMODCACHE")
@@ -91,6 +92,16 @@ func (e *MissingModuleError) Error() string {
 	return fmt.Sprintf("module %s@%s not in module cache", e.Path, e.Version)
 }
 
+// NoGoModError reports a module root without a go.mod: a revision that
+// predates the module, or a directory the module did not live in yet.
+type NoGoModError struct {
+	Dir string
+}
+
+func (e *NoGoModError) Error() string {
+	return fmt.Sprintf("no go.mod in %s (GOPATH mode is not supported)", e.Dir)
+}
+
 // Location is a resolved import path.
 type Location struct {
 	Dir       string // directory holding the package's source files
@@ -129,13 +140,16 @@ type replacement struct {
 }
 
 // New reads <root>/go.mod through fs and returns a resolver for that module.
-func New(fs FS, root string, env Env) (*Resolver, error) {
+func New(fsys FS, root string, env Env) (*Resolver, error) {
 	gomod := joinPath(root, "go.mod")
-	data, err := fs.ReadFile(gomod)
-	if err != nil {
-		return nil, fmt.Errorf("cannot read %s: %w (GOPATH mode is not supported)", gomod, err)
+	data, err := fsys.ReadFile(gomod)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, &NoGoModError{Dir: root}
 	}
-	return parse(fs, root, gomod, data, env, true)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read %s: %w", gomod, err)
+	}
+	return parse(fsys, root, gomod, data, env, true)
 }
 
 // NewModule returns a resolver for a module version fetched from outside any
