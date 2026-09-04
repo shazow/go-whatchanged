@@ -1,7 +1,13 @@
 # Proposal: Go-highlighted Markdown output
 
-`--format=markdown`, and so the job summary and the pull request comment,
-renders each package as a `diff` block. GitHub colors its lines by their
+> **Decision:** variant 1, with the group headers capitalized and both
+> sides of a changed symbol as live Go, the old declaration first with
+> `// ->` trailing and the new one below it. Implemented in the commit
+> that carries this note; the README's "Output formats" section documents
+> the layout. The rest of this document is the proposal as it was made.
+
+Until now `--format=markdown`, and so the job summary and the pull
+request comment, rendered each package as a `diff` block. GitHub colors its lines by their
 first character, red, green and orange, and that is all the highlighting a
 `diff` block gets: a signature is a wall of one color, and the reader has
 to parse `func (c *Client) Close() error` themselves.

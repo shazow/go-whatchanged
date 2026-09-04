@@ -156,7 +156,7 @@ type Format int
 const (
 	// Text is the colorized terminal layout.
 	Text Format = iota
-	// Markdown renders each package as a fenced diff block, for pull request
+	// Markdown renders each package as a fenced Go block, for pull request
 	// comments and GitHub job summaries.
 	Markdown
 	// JSON renders the whole result as one JSON document.
@@ -415,6 +415,7 @@ func Write(w io.Writer, res Result, opts Options) error {
 // not be looked up on both sides, which do not name the symbol.
 type line struct {
 	glyph      string // "-", "!", "~" or "+"
+	kind       string // "added", "removed" or "changed"
 	head       string
 	from, to   string // the old and new declarations; either may be empty
 	decls      bool
@@ -430,6 +431,7 @@ type line struct {
 func describe(c Change, opts Options) line {
 	l := line{glyph: "~", head: c.Message, compatible: c.Compatible}
 	kind := c.Kind()
+	l.kind = kind
 	switch kind {
 	case "removed":
 		l.glyph = "-"
@@ -489,8 +491,8 @@ type row struct {
 	// on both sides.
 	nested bool
 	// bold marks the row of an incompatible change that the text layout
-	// emphasizes and the Markdown layout, which has no bold inside a code
-	// block, marks with "!" instead.
+	// emphasizes and the Markdown layout's diff block, which has no bold
+	// inside a code block, marks with "!" instead.
 	bold bool
 }
 
@@ -826,12 +828,12 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss changed", n, noun)
 }
 
-// writeMarkdown renders the same rows as the text layout, each package as
-// a bold path followed by a fenced diff block, which GitHub colors: "-"
-// lines red, "+" lines green and "!" lines orange. Where the text layout
-// uses bold for an incompatible change, the row's "+" or "~" becomes "!"
-// (a removal keeps its "-"), so that a breaking change stands out in a
-// pull request comment too.
+// writeMarkdown renders each package as a bold path followed by a fenced
+// Go block, which GitHub highlights as Go: keywords, types, strings and
+// comments each in their own color. A code block cannot color a whole
+// line, so the diff's own signal lives in comments; see goBlock. With
+// MinimalSignatures there are no declarations to highlight, and each
+// package is a diff block of apidiff's messages instead; see diffBlock.
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	var b strings.Builder
 	for i, s := range sections(res, opts) {
@@ -839,23 +841,13 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		for _, p := range s.packages {
-			rows, width := packageRows(p, opts, 0, 0)
-			fmt.Fprintf(&b, "**%s**\n\n```diff\n", header(p))
-			for _, r := range rows {
-				glyph, sep := r.glyph, " "
-				if r.bold && glyph != "-" {
-					glyph = "!"
-				}
-				if r.nested {
-					sep = "   "
-				}
-				b.WriteString(glyph + sep + r.text)
-				if r.pos != "" {
-					b.WriteString(padding(r.label(), width) + "  " + r.pos)
-				}
-				b.WriteString("\n")
+			fmt.Fprintf(&b, "**%s**\n\n", header(p))
+			if opts.Signatures == MinimalSignatures {
+				diffBlock(&b, p, opts)
+			} else {
+				goBlock(&b, p, opts)
 			}
-			b.WriteString("```\n\n")
+			b.WriteString("\n")
 		}
 		switch {
 		case s.part != Public && s.secondary, s.part == Public && s.summary != "":
@@ -870,6 +862,145 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// goLine is one line of a Go block: a declaration and the comment that
+// trails it, or a comment line alone when code is empty.
+type goLine struct {
+	code    string
+	comment string // without the "//"
+}
+
+// goItem is one change as the Go block prints it: one line for a removal
+// or an addition, two for a changed symbol, its old declaration on the
+// first with "->" trailing and its new one on the second, so that both
+// sides are highlighted and read as one edit. A change without
+// declarations to show is its message as a comment line.
+type goItem []goLine
+
+// goBlock writes the changes of p as a fenced Go block, grouped under
+// "// Removed", "// Changed" and "// Added" headers in that order, from
+// what breaks to what is merely new. A change whose compatibility is not
+// what its group implies says so in a trailing comment: an incompatible
+// addition (a method added to an interface), or a compatible change (a
+// func that became a var). The items of the Changed group, two lines
+// each, are set apart by blank lines. Positions, when wanted, trail each
+// line that locates a change, in a column that lines up across the block.
+func goBlock(b *strings.Builder, p Package, opts Options) {
+	groups := map[string][]goItem{}
+	for _, c := range p.Changes {
+		if opts.BreakingOnly && c.Compatible {
+			continue
+		}
+		l := describe(c, opts)
+		groups[l.kind] = append(groups[l.kind], l.goItem())
+	}
+	// The column at which trailing comments line up: only with positions,
+	// which are long enough to want one; otherwise a single space.
+	width := 0
+	if opts.Positions {
+		for _, items := range groups {
+			for _, item := range items {
+				for _, gl := range item {
+					if gl.code != "" && gl.comment != "" {
+						width = max(width, utf8.RuneCountInString(gl.code))
+					}
+				}
+			}
+		}
+	}
+	b.WriteString("```go\n")
+	first := true
+	for _, kind := range []string{"removed", "changed", "added"} {
+		items := groups[kind]
+		if len(items) == 0 {
+			continue
+		}
+		if !first {
+			b.WriteString("\n")
+		}
+		first = false
+		b.WriteString("// " + strings.ToUpper(kind[:1]) + kind[1:] + "\n")
+		for i, item := range items {
+			if i > 0 && kind == "changed" {
+				b.WriteString("\n")
+			}
+			for _, gl := range item {
+				switch {
+				case gl.code == "":
+					b.WriteString("// " + gl.comment)
+				case gl.comment == "":
+					b.WriteString(gl.code)
+				default:
+					b.WriteString(gl.code + padding(gl.code, width) + " // " + gl.comment)
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
+	b.WriteString("```\n")
+}
+
+// goItem lays l out for the Go block; see goItem.
+func (l line) goItem() goItem {
+	// The note on the line that locates the change: its compatibility when
+	// that is not what its kind implies, then its position.
+	var notes []string
+	switch {
+	case l.kind == "added" && !l.compatible:
+		notes = append(notes, "incompatible")
+	case l.kind == "changed" && l.compatible:
+		notes = append(notes, "compatible")
+	}
+	if l.pos != "" {
+		notes = append(notes, l.pos)
+	}
+	note := strings.Join(notes, " · ")
+	if l.decls {
+		switch {
+		case l.from != "" && l.to != "":
+			return goItem{{code: l.from, comment: "->"}, {code: l.to, comment: note}}
+		case l.from != "":
+			return goItem{{code: l.from, comment: note}}
+		default:
+			return goItem{{code: l.to, comment: note}}
+		}
+	}
+	// A message, "package added" or "T: changed from X to Y" with the bare
+	// types X and Y the message quoted, as one comment line.
+	msg := l.head
+	if l.from != "" && l.to != "" {
+		msg += " from " + l.from + " to " + l.to
+	}
+	if note != "" {
+		msg += " · " + note
+	}
+	return goItem{{comment: msg}}
+}
+
+// diffBlock writes the rows of p as a fenced diff block, which GitHub
+// colors: "-" lines red, "+" lines green and "!" lines orange. Where the
+// text layout uses bold for an incompatible change, the row's "+" or "~"
+// becomes "!" (a removal keeps its "-"), so that a breaking change stands
+// out in a pull request comment too.
+func diffBlock(b *strings.Builder, p Package, opts Options) {
+	rows, width := packageRows(p, opts, 0, 0)
+	b.WriteString("```diff\n")
+	for _, r := range rows {
+		glyph, sep := r.glyph, " "
+		if r.bold && glyph != "-" {
+			glyph = "!"
+		}
+		if r.nested {
+			sep = "   "
+		}
+		b.WriteString(glyph + sep + r.text)
+		if r.pos != "" {
+			b.WriteString(padding(r.label(), width) + "  " + r.pos)
+		}
+		b.WriteString("\n")
+	}
+	b.WriteString("```\n")
 }
 
 // JSON layout. Field names are part of the tool's interface.

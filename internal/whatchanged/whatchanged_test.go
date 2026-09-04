@@ -1303,6 +1303,7 @@ func TestGolden(t *testing.T) {
 		{"color", Options{Color: true}, ExitIncompatible},
 		{"breaking", Options{Breaking: true}, ExitIncompatible},
 		{"markdown", Options{Format: render.Markdown}, ExitIncompatible},
+		{"markdown_pos", Options{Format: render.Markdown, Positions: true}, ExitIncompatible},
 		{"json", Options{Format: render.JSON}, ExitIncompatible},
 		{"public", Options{Filter: render.Public}, ExitIncompatible},
 		// Internal packages alone: no public API in the selection.
@@ -2216,7 +2217,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON, Filter: render.Public})
 	mustNotContain(t, r.stdout, `"internal"`)
 	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
-	if want := "_no exported API changes_\n\n**example.com/m/internal/hidden (internal)**\n\n```diff\n+ func More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
+	if want := "_no exported API changes_\n\n**example.com/m/internal/hidden (internal)**\n\n```go\n// Added\nfunc More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
 		t.Errorf("markdown: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
@@ -2367,7 +2368,7 @@ func TestFilterMainPackages(t *testing.T) {
 	// internal one; JSON marks the packages and counts them under
 	// summary.main, which appears when main packages took part.
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.Markdown})
-	mustContain(t, r.stdout, "**example.com/m/cmd/m (main)**\n\n```diff\n- func Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
+	mustContain(t, r.stdout, "**example.com/m/cmd/m (main)**\n\n```go\n// Removed\nfunc Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
 	mustNotContain(t, r.stdout, "internal:")
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.JSON})
 	mustContain(t, r.stdout, `"main": true`, `"path": "example.com/m/cmd/m"`,

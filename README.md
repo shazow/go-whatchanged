@@ -221,26 +221,41 @@ a glyph:
 
 ## Output formats
 
-`--format=markdown` renders each package as a `diff` block for a pull
-request comment or a job summary, with `!` marking the incompatible lines
-that the terminal shows in bold:
+`--format=markdown` renders each package as a `go` block, which GitHub
+highlights as Go, for a pull request comment or a job summary. The
+changes are grouped under `// Removed`, `// Changed` and `// Added`, from
+what breaks to what is merely new; a changed symbol shows its old
+declaration with `// ->` trailing and its new one below it, so that both
+sides are highlighted and read as one edit. A change whose compatibility
+is not what its group implies says so in a trailing comment, such as a
+method added to an interface, and `--pos` positions trail each line in a
+column. With `--signatures=minimal` there are no declarations to
+highlight, and each package is a `diff` block of apidiff's messages
+instead, `!` marking the incompatible lines that the terminal shows in
+bold.
 
 ````
 $ go-whatchanged --format=markdown @latest
 **example.com/m/store**
 
-```diff
-- func (c *Client) Close() error
-- func Open(path string) (*Client, error)
-! func Open(path string, o Options) (*Client, error)
-+ func (c *Client) Ping() error
-+ type Options struct{Timeout int}
+```go
+// Removed
+func (c *Client) Close() error
+
+// Changed
+func Open(path string) (*Client, error) // ->
+func Open(path string, o Options) (*Client, error)
+
+// Added
+func (c *Client) Ping() error
+type Options struct{Timeout int}
 ```
 
 **example.com/m/util**
 
-```diff
-! func (Sizer) Size() int
+```go
+// Added
+func (Sizer) Size() int // incompatible
 ```
 
 2 packages changed · 3 incompatible · 2 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
