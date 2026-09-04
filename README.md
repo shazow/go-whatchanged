@@ -207,7 +207,8 @@ the summary still describe the full diff.
 
 Each change shows the declaration of its symbol, formatted as gofmt
 formats it; the fields of a struct are shown together, as a fragment of
-the struct with the changed fields alone inside. Bold marks an
+the struct with the changed fields alone inside and `// ...` for the
+rest. Bold marks an
 incompatible change: a removal, a changed signature, a method added to an
 interface. A line with no declaration to show carries apidiff's message
 behind a glyph:

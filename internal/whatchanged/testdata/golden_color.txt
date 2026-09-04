@@ -10,6 +10,7 @@
   [2m~ type Config struct {[0m
   [38;5;242m-     Timeout int[0m
   [1;38;5;208m+     Timeout int64[0m
+  [2m      // ...[0m
   [2m  }[0m
   [38;5;242m- func Open(path string) (*Client, error)[0m
   [1;38;5;208m+ func Open(path string, o Options) (*Client, error)[0m
@@ -19,6 +20,7 @@
   [32m+ type Options struct{ Timeout int }[0m
   [2m~ type Point struct {[0m
   [32m+     Z int[0m
+  [2m      // ...[0m
   [2m  }[0m
 
 [1mexample.com/m/util[0m

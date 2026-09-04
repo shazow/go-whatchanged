@@ -23,6 +23,7 @@ func (c *Client) Close() error
 type Config struct {
 	Timeout int // ->
 	Timeout int64
+	// ...
 }
 
 func Open(path string) (*Client, error) // ->
@@ -36,6 +37,7 @@ func (c *Client) Ping() error
 type Options struct{ Timeout int }
 type Point struct {
 	Z int
+	// ...
 }
 ```
 

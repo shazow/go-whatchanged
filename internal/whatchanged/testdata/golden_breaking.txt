@@ -7,6 +7,7 @@ example.com/m/store
   ~ type Config struct {
   -     Timeout int
   +     Timeout int64
+        // ...
     }
   - func Open(path string) (*Client, error)
   + func Open(path string, o Options) (*Client, error)

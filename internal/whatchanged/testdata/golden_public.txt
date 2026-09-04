@@ -10,6 +10,7 @@ example.com/m/store
   ~ type Config struct {
   -     Timeout int
   +     Timeout int64
+        // ...
     }
   - func Open(path string) (*Client, error)
   + func Open(path string, o Options) (*Client, error)
@@ -19,6 +20,7 @@ example.com/m/store
   + type Options struct{ Timeout int }
   ~ type Point struct {
   +     Z int
+        // ...
     }
 
 example.com/m/util

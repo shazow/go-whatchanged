@@ -75,8 +75,9 @@ func TestGoBlock(t *testing.T) {
 }
 
 // TestStructFragment covers the fields of one struct across groups: the
-// Go block shows one fragment per group, the text layout one for the
-// struct, and the comment column of a fragment is its own.
+// Go block shows one fragment per group, each closed by an elision, with a
+// removed field pointing at itself, the text layout one for the struct,
+// and the comment column of a fragment is its own.
 func TestStructFragment(t *testing.T) {
 	t.Parallel()
 	pkg := Package{Path: "example.com/m/p", Changes: []Change{
@@ -97,7 +98,8 @@ func TestStructFragment(t *testing.T) {
 		{"markdown", Options{Format: Markdown, Positions: true}, "```go\n" +
 			"// Removed\n" +
 			"type Config struct {\n" +
-			"\tName string\n" +
+			"\tName string   // <-\n" +
+			"\t// ...\n" +
 			"}\n" +
 			"\n// Changed\n" +
 			"type Config struct {\n" +
@@ -106,10 +108,12 @@ func TestStructFragment(t *testing.T) {
 			"\n" +
 			"\tRetries int   // ->\n" +
 			"\tRetries uint\n" +
+			"\t// ...\n" +
 			"}\n" +
 			"\n// Added\n" +
 			"type Config struct {\n" +
 			"\t*log.Logger   // p/p.go:8:2\n" +
+			"\t// ...\n" +
 			"}\n" +
 			"func F(a, b, c, d, e int) (err error)\n" +
 			"```\n"},
@@ -121,6 +125,7 @@ func TestStructFragment(t *testing.T) {
 			"  +     Retries uint\n" +
 			"  -     Name string\n" +
 			"  +     *log.Logger    p/p.go:8:2\n" +
+			"        // ...\n" +
 			"    }\n" +
 			"  + func F(a, b, c, d, e int) (err error)\n" +
 			"\n1 package changed · 3 incompatible · 2 compatible · would require: MAJOR\n"},

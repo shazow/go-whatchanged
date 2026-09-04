@@ -345,7 +345,7 @@ func TestAddedStructFieldIsCompatible(t *testing.T) {
 	f.commit("base")
 	f.write("a/a.go", "package a\n\ntype Point struct{ X, Y, Z int }\n")
 	r := f.mustRun("HEAD", "", Options{})
-	mustContain(t, r.stdout, "  ~ type Point struct {\n  +     Z int\n    }\n", "would require: MINOR")
+	mustContain(t, r.stdout, "  ~ type Point struct {\n  +     Z int\n        // ...\n    }\n", "would require: MINOR")
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d (compatible change)", r.code, ExitClean)
 	}
@@ -1968,6 +1968,7 @@ func TestPositions(t *testing.T) {
 		"  -     X int\n" +
 		"  +     X int64            a/a.go:6:2\n" +
 		"  +     Y int              a/a.go:7:2\n" +
+		"        // ...\n" +
 		"    }\n" +
 		"  + func Added()           a/a.go:12:6\n" +
 		"\n" +
@@ -2005,6 +2006,7 @@ func TestPositions(t *testing.T) {
 		"  -     X int\n" +
 		"  +     X int64            a/a.go:6:2\n" +
 		"  +     Y int              a/a.go:7:2\n" +
+		"        // ...\n" +
 		"    }\n" +
 		"  + func Added()           a/a.go:12:6\n" +
 		"  + func AddedWithAVeryLongSignature(first string, second string, third string) (fourth int, fifth int, sixth int)  a/a.go:14:6\n"
@@ -2045,7 +2047,7 @@ func TestPromotedMembersFromDependency(t *testing.T) {
 		"  ~ example.com/dep.(*Base).M: changed\n" +
 		"      - func(func(from string, to string))\n" +
 		"      + func(func(from string, to string)) error\n" +
-		"  ~ type T struct {\n  +     Y int\n    }\n" +
+		"  ~ type T struct {\n  +     Y int\n        // ...\n    }\n" +
 		"\n1 package changed · 1 incompatible · 1 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)

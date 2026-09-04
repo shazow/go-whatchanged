@@ -561,9 +561,14 @@ func (l line) rows() []row {
 	return out
 }
 
+// elision is the last line of a struct fragment, which says that the
+// struct has fields the fragment leaves out, as gopls elides them.
+const elision = "// ..."
+
 // rows lays it out as the text layout prints it: the rows of its lines,
 // wrapped for a struct fragment in the struct's declaration, "~ type T
-// struct {" above the fields, indented one tab, and "}" below them.
+// struct {" above the fields, indented one tab, and the elision and "}"
+// below them.
 func (it item) rows() []row {
 	if it.strct == "" {
 		return it.lines[0].rows()
@@ -575,7 +580,7 @@ func (it item) rows() []row {
 			out = append(out, r)
 		}
 	}
-	return append(out, row{text: "}", role: roleFrame})
+	return append(out, row{text: tab + elision, role: roleFrame}, row{text: "}", role: roleFrame})
 }
 
 // packageRows returns the rows of the changes of p to show, honoring
@@ -1019,7 +1024,9 @@ func splitIndent(s string) (indent, rest string) {
 
 // goItem lays it out for the Go block: the goItem of its line, or for a
 // struct fragment the goItems of its fields, indented, between "type T
-// struct {" and "}". With spaced set, the fields are set apart by blank
+// struct {" and the elision and "}". A removed field points at itself
+// with "<-", since the fragment is otherwise a struct declaration under
+// a Removed header. With spaced set, the fields are set apart by blank
 // lines, as the items of the Changed group are.
 func (it item) goItem(spaced bool) goItem {
 	if it.strct == "" {
@@ -1031,15 +1038,14 @@ func (it item) goItem(spaced bool) goItem {
 			out = append(out, goLine{})
 		}
 		for _, gl := range l.goItem() {
-			if gl.code != "" {
-				gl.code = "\t" + strings.ReplaceAll(gl.code, "\n", "\n\t")
-			} else {
-				gl.comment = "\t" + gl.comment
+			gl.code = "\t" + strings.ReplaceAll(gl.code, "\n", "\n\t")
+			if l.kind == "removed" {
+				gl.comment = strings.TrimSuffix("<- · "+gl.comment, " · ")
 			}
 			out = append(out, gl)
 		}
 	}
-	return append(out, goLine{code: "}"})
+	return append(out, goLine{code: "\t" + elision}, goLine{code: "}"})
 }
 
 // goItem lays l out for the Go block; see goItem.

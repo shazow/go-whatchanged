@@ -23,6 +23,7 @@ func (c *Client) Close() error                     // v1.0.0:store/store.go:7:18
 type Config struct {
 	Timeout int   // ->
 	Timeout int64 // store/store.go:17:21
+	// ...
 }
 
 func Open(path string) (*Client, error)            // ->
@@ -36,6 +37,7 @@ func (c *Client) Ping() error                      // store/store.go:7:18
 type Options struct{ Timeout int }                 // store/store.go:9:6
 type Point struct {
 	Z int         // store/store.go:15:26
+	// ...
 }
 ```
 
