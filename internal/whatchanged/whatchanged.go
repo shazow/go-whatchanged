@@ -90,9 +90,10 @@ type Options struct {
 	// text layout.
 	Format render.Format
 	// Fetch obtains modules that go.mod requires but the module cache
-	// lacks, and the module versions Base and Head may name. Nil keeps the
-	// run read-only: a missing module is an error whose message says how
-	// to get it, and a module version cannot be diffed.
+	// lacks, and the module versions Base and Head may name. It is the one
+	// thing in a run that may write to disk or run a command. Nil keeps
+	// the run read-only: a missing module is an error and a module version
+	// cannot be diffed, both wrapping modfetch.ErrReadOnly.
 	Fetch modfetch.Source
 
 	// Stdout receives the diff; Stderr receives warnings.
@@ -144,17 +145,6 @@ func ParseFailOn(s string) (FailOn, error) {
 	default:
 		return FailPatch, nil
 	}
-}
-
-// ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
-func ParseFormat(s string) (render.Format, error) {
-	return render.ParseFormat(s)
-}
-
-// ParseFilter parses one --filter term: "public", "internal", "main" or
-// "all".
-func ParseFilter(s string) (render.Visibility, error) {
-	return render.ParseVisibility(s)
 }
 
 // threshold is the lowest level that fails, or ok=false for FailNever.
@@ -237,10 +227,9 @@ func (t target) spec() (sideSpec, error) {
 		rel = ""
 	}
 	open := func() (*git.Repository, error) {
-		// EnableDotGitCommonDir makes linked worktrees (git worktree add)
-		// work: their .git file points at a per-worktree directory whose
-		// objects and refs live in the main repository.
-		repo, err := git.PlainOpenWithOptions(gitRoot, &git.PlainOpenOptions{EnableDotGitCommonDir: true})
+		// The repository is opened for reading only, with no worktree:
+		// nothing on it can write to the checkout, the index or .git.
+		repo, err := vfs.OpenRepository(gitRoot)
 		if err != nil {
 			return nil, fmt.Errorf("open repository %s: %w", gitRoot, err)
 		}
@@ -459,7 +448,7 @@ func (spec sideSpec) mount(ctx context.Context, src modfetch.Source) (*side, err
 	switch {
 	case spec.mod.Path != "":
 		if src == nil {
-			return nil, fmt.Errorf("%s@%s: diffing a module version needs the go command; remove --fsreadonly", spec.mod.Path, spec.mod.Version)
+			return nil, readOnlyError(spec.mod)
 		}
 		m, err := src.Fetch(ctx, spec.mod)
 		if err != nil {
@@ -662,11 +651,11 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		}
 	}
 	if err := s.ld.Err(); err != nil {
-		// A module the cache lacks is only ever missing without a source,
-		// that is under --fsreadonly.
+		// A module the cache lacks is only ever missing without a source:
+		// with one, it would have been fetched.
 		var missing *modres.MissingModuleError
 		if errors.As(err, &missing) {
-			err = fmt.Errorf("%w; remove --fsreadonly to let go-whatchanged download it", err)
+			err = fmt.Errorf("%w; %w", err, modfetch.ErrReadOnly)
 		}
 		// In a workspace, the import of a sibling module resolves through
 		// go.work for the go command and not at all here.
@@ -676,6 +665,12 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		return nil, fmt.Errorf("%s: %w", s.name, err)
 	}
 	return s, nil
+}
+
+// readOnlyError is the error for a module version that a run without a
+// Source would have to fetch.
+func readOnlyError(mod module.Version) error {
+	return fmt.Errorf("%s@%s: diffing a module version needs a download; %w", mod.Path, mod.Version, modfetch.ErrReadOnly)
 }
 
 // resolveTree returns the tree of the commit rev names. go-git resolves

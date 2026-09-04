@@ -224,22 +224,6 @@ const (
 	All = Public | Internal | Main
 )
 
-// ParseVisibility parses one --filter term: "all", "public", "internal" or
-// "main".
-func ParseVisibility(s string) (Visibility, error) {
-	switch strings.ToLower(s) {
-	case "all":
-		return All, nil
-	case "public":
-		return Public, nil
-	case "internal":
-		return Internal, nil
-	case "main":
-		return Main, nil
-	}
-	return 0, fmt.Errorf("invalid filter %q (want all, public, internal or main)", s)
-}
-
 // String returns the terms of v, comma-separated, as --filter takes them.
 func (v Visibility) String() string {
 	if v.Has(All) {
@@ -288,17 +272,6 @@ const (
 	// AllKinds selects both.
 	AllKinds = API | Imports
 )
-
-// ParseKinds parses one --filter term: "api" or "imports".
-func ParseKinds(s string) (Kinds, error) {
-	switch strings.ToLower(s) {
-	case "api":
-		return API, nil
-	case "imports":
-		return Imports, nil
-	}
-	return 0, fmt.Errorf("invalid filter %q (want api or imports)", s)
-}
 
 // Has reports whether k selects every kind in kinds. The zero value
 // selects everything.

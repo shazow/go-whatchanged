@@ -39,7 +39,7 @@ func resolveSides(ctx context.Context, base, head sideSpec, env modres.Env, src 
 			continue
 		}
 		if src == nil {
-			return base, head, "", fmt.Errorf("%s@%s: diffing a module version needs the go command; remove --fsreadonly", spec.mod.Path, spec.mod.Version)
+			return base, head, "", readOnlyError(spec.mod)
 		}
 		v, err := src.Resolve(ctx, spec.mod.Path, spec.mod.Version)
 		if err != nil {
