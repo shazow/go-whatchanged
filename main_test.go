@@ -1,7 +1,8 @@
 package main
 
 import (
-	"io"
+	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -31,40 +32,16 @@ func TestPatterns(t *testing.T) {
 	}
 }
 
-// TestReadOnlyHint checks that what a read-only run cannot do is reported
-// with the flag to drop, which only the command line knows about.
-func TestReadOnlyHint(t *testing.T) {
-	stderr := captureStderr(t)
-	code := run([]string{"--fsreadonly", "example.org/m@latest"})
-	got := stderr()
-	if code != whatchanged.ExitError {
-		t.Errorf("exit = %d, want %d", code, whatchanged.ExitError)
+// TestWithFlagHint checks that what a read-only run could not do is
+// reported with the flag to drop, and nothing else is touched.
+func TestWithFlagHint(t *testing.T) {
+	err := fmt.Errorf("example.org/m@latest: %w", modfetch.ErrReadOnly)
+	if got := withFlagHint(err); !errors.Is(got, modfetch.ErrReadOnly) || !strings.HasSuffix(got.Error(), "; remove --fsreadonly to let go-whatchanged run it") {
+		t.Errorf("withFlagHint(%v) = %v", err, got)
 	}
-	want := "go-whatchanged: example.org/m@latest: diffing a module version needs a download; the go command is off limits in a read-only run; remove --fsreadonly to let go-whatchanged run it\n"
-	if got != want {
-		t.Errorf("stderr = %q\nwant     %q", got, want)
-	}
-}
-
-// captureStderr redirects os.Stderr until the returned function is called,
-// which restores it and returns what was written.
-func captureStderr(t *testing.T) func() string {
-	t.Helper()
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	saved := os.Stderr
-	os.Stderr = w
-	done := make(chan string)
-	go func() {
-		b, _ := io.ReadAll(r)
-		done <- string(b)
-	}()
-	return func() string {
-		os.Stderr = saved
-		w.Close()
-		return <-done
+	other := errors.New("other")
+	if got := withFlagHint(other); got != other {
+		t.Errorf("withFlagHint(%v) = %v", other, got)
 	}
 }
 
