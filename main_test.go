@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"reflect"
 	"slices"
@@ -27,6 +29,19 @@ func TestPatterns(t *testing.T) {
 	}
 	if got, _ := p.MarshalFlag(); got != "store/...,util,a" {
 		t.Errorf("MarshalFlag() = %q, want %q", got, "store/...,util,a")
+	}
+}
+
+// TestWithFlagHint checks that what a read-only run could not do is
+// reported with the flag to drop, and nothing else is touched.
+func TestWithFlagHint(t *testing.T) {
+	err := fmt.Errorf("example.org/m@latest: %w", modfetch.ErrReadOnly)
+	if got := withFlagHint(err); !errors.Is(got, modfetch.ErrReadOnly) || !strings.HasSuffix(got.Error(), "; remove --fsreadonly to let go-whatchanged run it") {
+		t.Errorf("withFlagHint(%v) = %v", err, got)
+	}
+	other := errors.New("other")
+	if got := withFlagHint(other); got != other {
+		t.Errorf("withFlagHint(%v) = %v", other, got)
 	}
 }
 

@@ -122,9 +122,20 @@ func run(args []string) int {
 	opts.Stderr = os.Stderr
 	code, err := whatchanged.Run(opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "go-whatchanged: %v\n", err)
+		fmt.Fprintf(os.Stderr, "go-whatchanged: %v\n", withFlagHint(err))
 	}
 	return code
+}
+
+// withFlagHint names the flag to drop after an error that a read-only run
+// caused. The library never names the flag; it only ever reports what a
+// run without a module source could not do, and --fsreadonly is the one
+// way to ask for such a run.
+func withFlagHint(err error) error {
+	if errors.Is(err, modfetch.ErrReadOnly) {
+		return fmt.Errorf("%w; remove --fsreadonly to let go-whatchanged run it", err)
+	}
+	return err
 }
 
 // parseArgs parses the command line. A --help request comes back as a
@@ -182,7 +193,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		opts.ExitFail = fail
 	}
 	var err error
-	if opts.Format, err = whatchanged.ParseFormat(o.Format); err != nil {
+	if opts.Format, err = render.ParseFormat(o.Format); err != nil {
 		return opts, fmt.Errorf("--format: %w", err)
 	}
 	return opts, nil
