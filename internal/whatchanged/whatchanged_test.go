@@ -1062,6 +1062,9 @@ func TestUnknownRevision(t *testing.T) {
 // named as the reason, with the fix for the environment. It sets an
 // environment variable, so it does not run in parallel.
 func TestShallowClone(t *testing.T) {
+	// The test suite itself may run in GitHub Actions; the plain form of
+	// the hint is checked first.
+	t.Setenv("GITHUB_ACTIONS", "")
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc A() {}\n")
 	one := f.commit("one")
