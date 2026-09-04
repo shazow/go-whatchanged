@@ -7,19 +7,25 @@
 
 [1mexample.com/m/store[0m
   [1;31m- func (c *Client) Close() error[0m
-  [38;5;242m- field Config.Timeout int[0m
-  [1;38;5;208m+ field Config.Timeout int64[0m
+  [2m~ type Config struct {[0m
+  [38;5;242m-     Timeout int[0m
+  [1;38;5;208m+     Timeout int64[0m
+  [2m      // ...[0m
+  [2m  }[0m
   [38;5;242m- func Open(path string) (*Client, error)[0m
   [1;38;5;208m+ func Open(path string, o Options) (*Client, error)[0m
-  [38;5;242m- const Version untyped string = "1"[0m
-  [1;38;5;208m+ const Version untyped int = 1[0m
+  [38;5;242m- const Version = "1"[0m
+  [1;38;5;208m+ const Version = 1[0m
   [32m+ func (c *Client) Ping() error[0m
-  [32m+ type Options struct{Timeout int}[0m
-  [32m+ field Point.Z int[0m
+  [32m+ type Options struct{ Timeout int }[0m
+  [2m~ type Point struct {[0m
+  [32m+     Z int[0m
+  [2m      // ...[0m
+  [2m  }[0m
 
 [1mexample.com/m/util[0m
   [1;32m+ func (Sizer) Size() int[0m
-  [38;5;242m- type Stringer interface{String() string}[0m
+  [38;5;242m- type Stringer interface{ String() string }[0m
   [1;38;5;208m+ type Stringer = fmt.Stringer[0m
 
 4 packages changed · 7 incompatible · 4 compatible · would require: [1;31mMAJOR[0m (v1.0.0 → v2.0.0)

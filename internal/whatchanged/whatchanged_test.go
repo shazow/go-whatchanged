@@ -345,7 +345,7 @@ func TestAddedStructFieldIsCompatible(t *testing.T) {
 	f.commit("base")
 	f.write("a/a.go", "package a\n\ntype Point struct{ X, Y, Z int }\n")
 	r := f.mustRun("HEAD", "", Options{})
-	mustContain(t, r.stdout, "  + field Point.Z int\n", "would require: MINOR")
+	mustContain(t, r.stdout, "  ~ type Point struct {\n  +     Z int\n        // ...\n    }\n", "would require: MINOR")
 	if r.code != ExitClean {
 		t.Errorf("exit = %d, want %d (compatible change)", r.code, ExitClean)
 	}
@@ -1303,13 +1303,13 @@ func TestGolden(t *testing.T) {
 		{"color", Options{Color: true}, ExitIncompatible},
 		{"breaking", Options{Breaking: true}, ExitIncompatible},
 		{"markdown", Options{Format: render.Markdown}, ExitIncompatible},
+		{"markdown_pos", Options{Format: render.Markdown, Positions: true}, ExitIncompatible},
 		{"json", Options{Format: render.JSON}, ExitIncompatible},
 		{"public", Options{Filter: render.Public}, ExitIncompatible},
 		// Internal packages alone: no public API in the selection.
 		{"internal", Options{Filter: render.Internal}, ExitClean},
 		{"pos", Options{Positions: true}, ExitIncompatible},
 		{"json_pos", Options{Format: render.JSON, Positions: true}, ExitIncompatible},
-		{"minimal", Options{Signatures: render.MinimalSignatures}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -1582,22 +1582,23 @@ func TestConstantValueChange(t *testing.T) {
 	r := f.mustRun("HEAD", "", Options{})
 	mustContain(t, r.stdout,
 		"  - const Limit int64 = 10\n  + const Limit int64 = 20\n",
-		"  - const Version untyped string = \"1.2.0\"\n  + const Version untyped string = \"1.3.0-dev\"\n")
+		"  - const Version = \"1.2.0\"\n  + const Version = \"1.3.0-dev\"\n")
 
 	// go/constant abbreviates a long string value with "..." and no closing
 	// quote, in the declarations and in apidiff's message alike; the
-	// declarations are shown all the same.
+	// declarations are shown all the same, unformatted since they no
+	// longer parse.
 	long := strings.Repeat("a", 80)
 	f.write("a/a.go", "package a\n\nconst Long = \""+long+"\"\n")
 	f.commit("long")
 	f.write("a/a.go", "package a\n\nconst Long = \""+long+"b\"\n")
 	r = f.mustRun("HEAD", "", Options{})
 	abbreviated := "\"" + strings.Repeat("a", 68) + "..."
-	if want := "example.com/m/a\n  - const Long untyped string = " + abbreviated + "\n  + const Long untyped string = " + abbreviated + "\n"; !strings.HasPrefix(r.stdout, want) {
+	if want := "example.com/m/a\n  - const Long = " + abbreviated + "\n  + const Long = " + abbreviated + "\n"; !strings.HasPrefix(r.stdout, want) {
 		t.Errorf("stdout = %q\nwant prefix %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
-	mustContain(t, r.stdout, `"before": "const Long untyped string = \"`+strings.Repeat("a", 68)+`..."`)
+	mustContain(t, r.stdout, `"before": "const Long = \"`+strings.Repeat("a", 68)+`..."`)
 }
 
 // A dependency that imports the main module (grpc-go and go-control-plane
@@ -1842,8 +1843,8 @@ func TestJSON(t *testing.T) {
 		Packages    []struct {
 			Path, Status string
 			Changes      []struct {
-				Symbol, Kind, Message, Before, After string
-				Compatible                           bool
+				Symbol, Kind, Message, Before, After, Struct string
+				Compatible                                   bool
 			}
 		}
 		Warnings []struct{ Package, Message string }
@@ -1882,7 +1883,7 @@ func TestJSON(t *testing.T) {
 	if ping := store.Changes[4]; ping.Symbol != "(*Client).Ping" || ping.Kind != "added" || !ping.Compatible || ping.Before != "" || ping.After != "func (c *Client) Ping() error" {
 		t.Errorf("Ping = %+v", ping)
 	}
-	if timeout := store.Changes[1]; timeout.Symbol != "Config.Timeout" || timeout.Before != "field Config.Timeout int" || timeout.After != "field Config.Timeout int64" {
+	if timeout := store.Changes[1]; timeout.Symbol != "Config.Timeout" || timeout.Before != "Timeout int" || timeout.After != "Timeout int64" || timeout.Struct != "Config" {
 		t.Errorf("Config.Timeout = %+v", timeout)
 	}
 	mustNotContain(t, r.stdout, `"pos"`, `"internal"`)
@@ -1957,15 +1958,19 @@ func TestPositions(t *testing.T) {
 	r := f.mustRun("v0.1.0", "", Options{Positions: true})
 	// A position sits on the line of the declaration it locates, the new
 	// one of a change or an addition and the old one of a removal, two
-	// spaces past the widest such line of the package.
+	// spaces past the widest such line of the package. The fields of a
+	// struct are shown together, as a fragment of it.
 	want := "example.com/m/a\n" +
 		"  - func Drop()            v0.1.0:a/a.go:5:6\n" +
 		"  - func (t T) M(n int)\n" +
 		"  + func (t T) M(n int64)  a/a.go:10:12\n" +
-		"  - field T.X int\n" +
-		"  + field T.X int64        a/a.go:6:2\n" +
+		"  ~ type T struct {\n" +
+		"  -     X int\n" +
+		"  +     X int64            a/a.go:6:2\n" +
+		"  +     Y int              a/a.go:7:2\n" +
+		"        // ...\n" +
+		"    }\n" +
 		"  + func Added()           a/a.go:12:6\n" +
-		"  + field T.Y int          a/a.go:7:2\n" +
 		"\n" +
 		"example.com/m/b (new)\n" +
 		"  + package added\n" +
@@ -1997,21 +2002,25 @@ func TestPositions(t *testing.T) {
 	want = "  - func Drop()            v0.1.0:a/a.go:5:6\n" +
 		"  - func (t T) M(n int)\n" +
 		"  + func (t T) M(n int64)  a/a.go:10:12\n" +
-		"  - field T.X int\n" +
-		"  + field T.X int64        a/a.go:6:2\n" +
+		"  ~ type T struct {\n" +
+		"  -     X int\n" +
+		"  +     X int64            a/a.go:6:2\n" +
+		"  +     Y int              a/a.go:7:2\n" +
+		"        // ...\n" +
+		"    }\n" +
 		"  + func Added()           a/a.go:12:6\n" +
-		"  + func AddedWithAVeryLongSignature(first string, second string, third string) (fourth int, fifth int, sixth int)  a/a.go:14:6\n" +
-		"  + field T.Y int          a/a.go:7:2\n"
+		"  + func AddedWithAVeryLongSignature(first string, second string, third string) (fourth int, fifth int, sixth int)  a/a.go:14:6\n"
 	mustContain(t, r.stdout, want)
-	// Narrower still, and the column drops to the 15-wide "+ field T.Y
-	// int", the widest at which "- func Drop()" still fits its position.
+	// Narrower still, and the column drops to the 14-wide "+ func
+	// Added()", the widest at which "- func Drop()" still fits its
+	// position.
 	r = f.mustRun("v0.1.0", "", Options{Positions: true, Width: 36})
 	mustContain(t, r.stdout,
-		"  - func Drop()    v0.1.0:a/a.go:5:6\n",
+		"  - func Drop()   v0.1.0:a/a.go:5:6\n",
 		"  + func (t T) M(n int64)  a/a.go:10:12\n",
-		"  + field T.X int64  a/a.go:6:2\n",
-		"  + func Added()   a/a.go:12:6\n",
-		"  + field T.Y int  a/a.go:7:2\n")
+		"  +     X int64   a/a.go:6:2\n",
+		"  + func Added()  a/a.go:12:6\n",
+		"  +     Y int     a/a.go:7:2\n")
 	// Without a limit, the long row sets the column.
 	r = f.mustRun("v0.1.0", "", Options{Positions: true})
 	mustContain(t, r.stdout, "  - func Drop()"+strings.Repeat(" ", 101)+"v0.1.0:a/a.go:5:6\n")
@@ -2038,7 +2047,7 @@ func TestPromotedMembersFromDependency(t *testing.T) {
 		"  ~ example.com/dep.(*Base).M: changed\n" +
 		"      - func(func(from string, to string))\n" +
 		"      + func(func(from string, to string)) error\n" +
-		"  + field T.Y int\n" +
+		"  ~ type T struct {\n  +     Y int\n        // ...\n    }\n" +
 		"\n1 package changed · 1 incompatible · 1 compatible · would require: MAJOR\n"
 	if r.stdout != want {
 		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
@@ -2216,7 +2225,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON, Filter: render.Public})
 	mustNotContain(t, r.stdout, `"internal"`)
 	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
-	if want := "_no exported API changes_\n\n**example.com/m/internal/hidden (internal)**\n\n```diff\n+ func More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
+	if want := "_no exported API changes_\n\n**example.com/m/internal/hidden (internal)**\n\n```go\n// Added\nfunc More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
 		t.Errorf("markdown: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
@@ -2226,42 +2235,55 @@ func TestFilterInternalPackages(t *testing.T) {
 	mustContain(t, r.stdout, `"packages_changed": 0,`, `"release": "patch",`, "\"internal\": {\n      \"packages_changed\": 1,")
 }
 
-func TestMinimalSignatures(t *testing.T) {
+func TestDeclarations(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Open(name string) error { return nil }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n")
 
-	// One line per change, with apidiff's message as is.
-	r := f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures})
+	// Each change shows its declarations, a changed symbol both of them.
+	r := f.mustRun("HEAD", "", Options{})
 	want := "example.com/m/a\n" +
-		"  - Drop: removed\n" +
-		"  ~ Open: changed from func(string) error to func(string, int) error\n" +
-		"  + Added: added\n" +
-		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
-	if r.stdout != want {
-		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
-	}
-
-	// The default shows every declaration.
-	r = f.mustRun("HEAD", "", Options{})
-	want = "example.com/m/a\n" +
 		"  - func Drop()\n" +
 		"  - func Open(name string) error\n  + func Open(name string, n int) error\n" +
 		"  + func Added()\n" +
 		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
 	if r.stdout != want {
-		t.Errorf("full: stdout = %q\nwant     %q", r.stdout, want)
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
-
-	// Markdown and JSON follow the same knob.
-	r = f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.Markdown})
-	mustContain(t, r.stdout, "```diff\n- Drop: removed\n! Open: changed from func(string) error to func(string, int) error\n+ Added: added\n```\n")
-	r = f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.JSON})
-	mustNotContain(t, r.stdout, `"before"`, `"after"`)
+	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
+	mustContain(t, r.stdout, "```go\n// Removed\nfunc Drop()\n\n// Changed\nfunc Open(name string) error // ->\nfunc Open(name string, n int) error\n\n// Added\nfunc Added()\n```\n")
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"before": "func Drop()"`, `"after": "func Added()"`, `"before": "func Open(name string) error"`)
+
+	// Declarations are formatted as gofmt formats them: a struct or an
+	// interface with several members takes several lines, which the text
+	// layout continues below the glyph, with the position on the first,
+	// and the Go block prints as they are, with the comment on the first.
+	f.commit("head")
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n\ntype Opts int\n")
+	f.commit("opts")
+	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n\ntype Opts struct {\n\tA int\n\tB string\n}\n\ntype I interface {\n\tM()\n\tN()\n}\n")
+	r = f.mustRun("HEAD", "", Options{Positions: true})
+	want = "example.com/m/a\n" +
+		"  - type Opts int\n" +
+		"  + type Opts struct {  a/a.go:9:6\n" +
+		"        A int\n" +
+		"        B string\n" +
+		"    }\n" +
+		"  + type I interface {  a/a.go:14:6\n" +
+		"        M()\n" +
+		"        N()\n" +
+		"    }\n" +
+		"\n1 package changed · 1 incompatible · 1 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("multi-line: stdout = %q\nwant     %q", r.stdout, want)
+	}
+	r = f.mustRun("HEAD", "", Options{Format: render.Markdown, Positions: true})
+	mustContain(t, r.stdout, "```go\n// Changed\ntype Opts int      // ->\ntype Opts struct { // a/a.go:9:6\n\tA int\n\tB string\n}\n\n// Added\ntype I interface { // a/a.go:14:6\n\tM()\n\tN()\n}\n```\n")
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	mustContain(t, r.stdout, `"after": "type Opts struct {\n\tA int\n\tB string\n}"`)
 }
 
 func TestParseFilter(t *testing.T) {
@@ -2274,19 +2296,6 @@ func TestParseFilter(t *testing.T) {
 	}
 	if _, err := ParseFilter("private"); err == nil {
 		t.Error("ParseFilter accepted private")
-	}
-}
-
-func TestParseSignatures(t *testing.T) {
-	t.Parallel()
-	for in, want := range map[string]render.Signatures{"full": render.FullSignatures, "Minimal": render.MinimalSignatures} {
-		got, err := ParseSignatures(in)
-		if err != nil || got != want {
-			t.Errorf("ParseSignatures(%q) = %v, %v; want %v", in, got, err, want)
-		}
-	}
-	if _, err := ParseSignatures("short"); err == nil {
-		t.Error("ParseSignatures accepted short")
 	}
 }
 
@@ -2367,7 +2376,7 @@ func TestFilterMainPackages(t *testing.T) {
 	// internal one; JSON marks the packages and counts them under
 	// summary.main, which appears when main packages took part.
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.Markdown})
-	mustContain(t, r.stdout, "**example.com/m/cmd/m (main)**\n\n```diff\n- func Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
+	mustContain(t, r.stdout, "**example.com/m/cmd/m (main)**\n\n```go\n// Removed\nfunc Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
 	mustNotContain(t, r.stdout, "internal:")
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.JSON})
 	mustContain(t, r.stdout, `"main": true`, `"path": "example.com/m/cmd/m"`,

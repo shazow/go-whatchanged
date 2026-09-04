@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 # The second step of the composite action in action.yml: resolves the two
 # revisions, runs go-whatchanged and turns the result into a job summary,
-# step outputs, annotations and, when asked, a pull request comment.
+# step outputs, annotations and a pull request comment.
 #
 # The action's inputs arrive as INPUT_* variables. PR_BASE_SHA is the tip of
-# the base branch of the pull request being built and PR_NUMBER its number,
-# both empty on other events; GH_TOKEN is the token for the comment. The
-# binary comes from the action's first step.
+# the base branch of the pull request being built, PR_NUMBER its number and
+# PR_HEAD_REPO the repository its head branch lives in, all empty on other
+# events; GH_TOKEN is the token for the comment. The binary comes from the
+# action's first step.
 set -euo pipefail
 
 work="$RUNNER_TEMP/go-whatchanged"
@@ -77,7 +78,7 @@ base=$INPUT_BASE
 revs=("$base")
 [ -z "$head" ] || revs+=("$head")
 
-flags=(--filter "$INPUT_FILTER" --signatures "$INPUT_SIGNATURES")
+flags=(--filter "$INPUT_FILTER")
 [ -z "$INPUT_PKG" ] || flags+=(--pkg "$(printf '%s' "$INPUT_PKG" | tr '\n' ,)")
 [ -z "$INPUT_EXCLUDE" ] || flags+=(--exclude "$(printf '%s' "$INPUT_EXCLUDE" | tr '\n' ,)")
 [ "$INPUT_BREAKING" != true ] || flags+=(--filter breaking)
@@ -134,7 +135,7 @@ run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 short() {
   if [[ $1 =~ ^[0-9a-f]{40}$ ]]; then echo "${1:0:7}"; else echo "$1"; fi
 }
-compared="<sub>Compared <code>$(short "$(jq -r .base "$json")")</code> with <code>$(short "$(jq -r .head "$json")")</code> · <a href=\"$run_url\">job summary</a></sub>"
+compared="Compared <code>$(short "$(jq -r .base "$json")")</code> with <code>$(short "$(jq -r .head "$json")")</code> · <a href=\"$run_url\">job summary</a>"
 
 echo "::group::report"
 cat "$md"
@@ -143,7 +144,7 @@ if [ "$INPUT_SUMMARY" = true ]; then
   {
     [ -z "$INPUT_TITLE" ] || printf '### %s %s\n\n' "$glyph" "$INPUT_TITLE"
     cat "$md"
-    printf '\n%s\n' "$compared"
+    printf '\n<sub>%s</sub>\n' "$compared"
   } >>"$GITHUB_STEP_SUMMARY"
 fi
 
@@ -196,18 +197,20 @@ find_comment() {
 }
 
 # comment_body writes the pull request comment to $1: the marker, then the
-# report folded into a details block whose summary line is the verdict.
-# Comments hold 65536 characters; a longer report is cut at a paragraph
-# boundary and points at the job summary, which has no limit.
+# report folded into a details block whose summary line is the verdict,
+# with a footer that names the sides, links the job summary and credits
+# the tool. Comments hold 65536 characters; a longer report is cut at a
+# paragraph boundary and points at the job summary, which has no limit.
 comment_body() {
-  local out=$1 marker=$2 limit=65536 report=$work/comment-report.md room
+  local out=$1 marker=$2 limit=65536 report=$work/comment-report.md room footer
+  footer="<sub>$compared · powered by <a href=\"https://github.com/shazow/go-whatchanged\">go-whatchanged</a></sub>"
   {
     echo "$marker"
     echo "<details>"
     printf '<summary>%s%s%s</summary>\n\n' "$glyph " "${INPUT_TITLE:+<b>$INPUT_TITLE</b>: }" \
       "$(printf '%s\n' "$summary" | paste -sd '|' | sed 's/|/ · /g')"
   } >"$out"
-  room=$((limit - $(wc -c <"$out") - $(printf '%s' "$compared" | wc -c) - 200))
+  room=$((limit - $(wc -c <"$out") - $(printf '%s' "$footer" | wc -c) - 200))
   if [ "$(wc -c <"$md")" -le "$room" ]; then
     cp "$md" "$report"
   else
@@ -217,7 +220,7 @@ comment_body() {
   fi
   {
     cat "$report"
-    printf '\n%s\n</details>\n' "$compared"
+    printf '\n%s\n</details>\n' "$footer"
   } >>"$out"
 }
 
@@ -232,7 +235,7 @@ upsert_comment() {
   dir=$(pwd -P | sed "s#^$GITHUB_WORKSPACE/\{0,1\}##")
   marker="<!-- go-whatchanged: ${dir:-.} -->"
   if ! id=$(find_comment "$marker"); then
-    annotate warning "could not list the pull request's comments (HTTP $(cat "$work/http")); the token needs pull-requests: read."
+    annotate warning "could not list the pull request's comments (HTTP $(cat "$work/http")). The comment needs pull-requests: write under the workflow's permissions; set comment: false for the job summary alone."
     return
   fi
   if [ -z "$id" ] && [ "$(jq '.packages | length' "$json")" -eq 0 ]; then
@@ -246,7 +249,13 @@ upsert_comment() {
   else
     api POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" "$request" && log "posted comment $(jq .id "$work/response.json")" && return
   fi
-  annotate warning "could not post the pull request comment (HTTP $http). The token needs pull-requests: write, which a pull request from a fork does not get."
+  # A pull request from a fork gets a read-only token, so its comment is
+  # never posted: a notice, since there is nothing the workflow can change.
+  if [ -n "$PR_HEAD_REPO" ] && [ "$PR_HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+    annotate notice "no comment on a pull request from a fork, whose token cannot post one (HTTP $http); the job summary has the diff."
+    return
+  fi
+  annotate warning "could not post the pull request comment (HTTP $http). The comment needs pull-requests: write under the workflow's permissions; set comment: false for the job summary alone."
 }
 
 if [ "$INPUT_COMMENT" = true ]; then

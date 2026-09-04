@@ -63,17 +63,22 @@ func (p Position) String() string {
 
 // Change is one API change. Message is an apidiff message, "<symbol>: <what>",
 // or "package added" / "package removed" for a package without exported
-// symbols. Before and After carry the declaration-style form of the symbol
-// on each side, such as "func Open(path string) (*Client, error)": Before
-// for a removal, After for an addition, both for a "changed from X to Y"
-// message (where the renderer falls back to the types quoted in the message
-// when they are empty). Pos locates the symbol's declaration: on the base
-// side for a removal, on the head side otherwise.
+// symbols. Before and After carry the declaration of the symbol on each
+// side as gofmt would print it, such as "func Open(path string) (*Client,
+// error)", on several lines for a struct or interface with several
+// members: Before for a removal, After for an addition, both for a
+// "changed from X to Y" message (where the renderer falls back to the
+// types quoted in the message when they are empty). A struct field's
+// declaration is the one inside its struct, "Timeout int", and Struct
+// names the struct, "Config"; the layouts show the fields of one struct
+// together as a fragment of its declaration. Pos locates the symbol's
+// declaration: on the base side for a removal, on the head side otherwise.
 type Change struct {
 	Message    string
 	Compatible bool
 	Before     string
 	After      string
+	Struct     string
 	Pos        Position
 }
 
@@ -156,7 +161,7 @@ type Format int
 const (
 	// Text is the colorized terminal layout.
 	Text Format = iota
-	// Markdown renders each package as a fenced diff block, for pull request
+	// Markdown renders each package as a fenced Go block, for pull request
 	// comments and GitHub job summaries.
 	Markdown
 	// JSON renders the whole result as one JSON document.
@@ -174,30 +179,6 @@ func ParseFormat(s string) (Format, error) {
 		return JSON, nil
 	}
 	return 0, fmt.Errorf("invalid format %q (want text, markdown or json)", s)
-}
-
-// Signatures selects how much of a symbol's declaration a change shows.
-type Signatures int
-
-const (
-	// FullSignatures shows each change as the declaration of its symbol,
-	// like a small patch: the old one on a "-" line, the new one on a "+"
-	// line, both for a changed symbol.
-	FullSignatures Signatures = iota
-	// MinimalSignatures prints one line per change, the apidiff message,
-	// with a changed symbol's old and new types quoted inline.
-	MinimalSignatures
-)
-
-// ParseSignatures parses a --signatures value: "full" or "minimal".
-func ParseSignatures(s string) (Signatures, error) {
-	switch strings.ToLower(s) {
-	case "full":
-		return FullSignatures, nil
-	case "minimal":
-		return MinimalSignatures, nil
-	}
-	return 0, fmt.Errorf("invalid signatures %q (want full or minimal)", s)
 }
 
 // Visibility is the set of parts of a module that take part in a diff:
@@ -274,9 +255,6 @@ type Options struct {
 	Color        bool
 	BreakingOnly bool
 	Format       Format
-	// Signatures selects whether declarations are shown; the zero value
-	// shows them in full.
-	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Width is the number of columns the text layout may use, 0 for no
@@ -415,21 +393,53 @@ func Write(w io.Writer, res Result, opts Options) error {
 // not be looked up on both sides, which do not name the symbol.
 type line struct {
 	glyph      string // "-", "!", "~" or "+"
+	kind       string // "added", "removed" or "changed"
 	head       string
 	from, to   string // the old and new declarations; either may be empty
 	decls      bool
+	strct      string // the struct the declarations are a field of, or ""
 	pos        string // "" when unknown or not wanted
 	compatible bool
 }
 
-// describe reduces c to a line. With FullSignatures a removed symbol's
-// declaration goes on a "-" line, an added one's on a "+" line, and a
-// "changed from X to Y" message is split so that the before and after values
-// sit on their own lines, like a small patch, which makes long signatures
-// easy to compare.
+// item is one entry of a package's listing: a change, or the field changes
+// of one struct, which the layouts show together as a fragment of the
+// struct's declaration.
+type item struct {
+	lines []line
+	strct string // the struct, for a fragment
+}
+
+// items groups lines into items: the field changes of one struct become
+// one item, in the position of the first of them, and every other line an
+// item of its own.
+func items(lines []line) []item {
+	var out []item
+	index := map[string]int{}
+	for _, l := range lines {
+		if l.strct == "" {
+			out = append(out, item{lines: []line{l}})
+			continue
+		}
+		i, ok := index[l.strct]
+		if !ok {
+			i = len(out)
+			index[l.strct] = i
+			out = append(out, item{strct: l.strct})
+		}
+		out[i].lines = append(out[i].lines, l)
+	}
+	return out
+}
+
+// describe reduces c to a line. A removed symbol's declaration goes on a
+// "-" line, an added one's on a "+" line, and a "changed from X to Y"
+// message is split so that the before and after values sit on their own
+// lines, like a small patch, which makes long signatures easy to compare.
 func describe(c Change, opts Options) line {
 	l := line{glyph: "~", head: c.Message, compatible: c.Compatible}
 	kind := c.Kind()
+	l.kind = kind
 	switch kind {
 	case "removed":
 		l.glyph = "-"
@@ -442,9 +452,6 @@ func describe(c Change, opts Options) line {
 	}
 	if opts.Positions {
 		l.pos = c.Pos.String()
-	}
-	if opts.Signatures == MinimalSignatures {
-		return l
 	}
 	switch kind {
 	case "removed":
@@ -462,6 +469,9 @@ func describe(c Change, opts Options) line {
 			l.head, l.from, l.to = head+"changed", from, to
 		}
 	}
+	if l.decls {
+		l.strct = c.Struct
+	}
 	return l
 }
 
@@ -474,14 +484,16 @@ const (
 	roleAdded               // the declaration of an added symbol
 	roleOld                 // the old declaration of a changed symbol
 	roleNew                 // the new declaration of a changed symbol
+	roleFrame               // the "type T struct {" and "}" around the fields of a struct
 )
 
-// row is one printed line of a change, as the text and Markdown layouts
-// share it: a glyph, the text after it and, on the one row that locates
-// the change, its position.
+// row is one printed line of the text layout: a glyph, the text after it
+// and, on the one row that locates a change, its position. A row without
+// a glyph continues the one above: a line of a multi-line declaration, or
+// the "}" that closes a struct fragment.
 type row struct {
-	glyph string // "-", "+", "~" or "!"
-	text  string // a declaration or a message
+	glyph string // "-", "+", "~", "!" or ""
+	text  string // a declaration or a message, tabs expanded
 	pos   string
 	role  role
 	// nested marks a bare type quoted under a message row: the X and Y of
@@ -489,19 +501,41 @@ type row struct {
 	// on both sides.
 	nested bool
 	// bold marks the row of an incompatible change that the text layout
-	// emphasizes and the Markdown layout, which has no bold inside a code
-	// block, marks with "!" instead.
+	// emphasizes.
 	bold bool
 }
 
-// label is the row as printed without color: the glyph and the text.
-func (r row) label() string { return r.glyph + " " + r.text }
+// label is the row as printed without color: the glyph and the text, the
+// text alone in the glyph's column for a continuation row.
+func (r row) label() string {
+	if r.glyph == "" {
+		return "  " + r.text
+	}
+	return r.glyph + " " + r.text
+}
 
-// rows lays l out as the text and Markdown layouts print it. A change with
-// declarations is the declarations alone, like a patch: a removal is its
-// old declaration on a "-" row, an addition its new one on a "+" row, and
-// a changed symbol is the pair, so that it reads as one edit rather than
-// as a removal and an addition. A change without declarations keeps its
+// tab is what the text layout prints for the tab that indents the lines
+// of a multi-line declaration and the fields of a struct fragment.
+const tab = "    "
+
+// decl lays out a declaration as rows: one, or for a declaration on
+// several lines its first line as given and the others as continuation
+// rows, in the same role. The position, when any, goes on the first row.
+func decl(r row) []row {
+	lines := strings.Split(strings.ReplaceAll(r.text, "\t", tab), "\n")
+	r.text = lines[0]
+	out := []row{r}
+	for _, l := range lines[1:] {
+		out = append(out, row{text: l, role: r.role, bold: r.bold})
+	}
+	return out
+}
+
+// rows lays l out as the text layout prints it. A change with declarations
+// is the declarations alone, like a patch: a removal is its old
+// declaration on a "-" row, an addition its new one on a "+" row, and a
+// changed symbol is the pair, so that it reads as one edit rather than as
+// a removal and an addition. A change without declarations keeps its
 // message row ("package added", "T: no longer implements fmt.Stringer"),
 // with any bare types quoted in the message nested under it.
 func (l line) rows() []row {
@@ -509,14 +543,12 @@ func (l line) rows() []row {
 	if l.decls {
 		switch {
 		case l.from != "" && l.to != "":
-			return []row{
-				{glyph: "-", text: l.from, role: roleOld},
-				{glyph: "+", text: l.to, pos: l.pos, role: roleNew, bold: bold},
-			}
+			return append(decl(row{glyph: "-", text: l.from, role: roleOld}),
+				decl(row{glyph: "+", text: l.to, pos: l.pos, role: roleNew, bold: bold})...)
 		case l.from != "":
-			return []row{{glyph: "-", text: l.from, pos: l.pos, role: roleRemoved, bold: bold}}
+			return decl(row{glyph: "-", text: l.from, pos: l.pos, role: roleRemoved, bold: bold})
 		default:
-			return []row{{glyph: "+", text: l.to, pos: l.pos, role: roleAdded, bold: bold}}
+			return decl(row{glyph: "+", text: l.to, pos: l.pos, role: roleAdded, bold: bold})
 		}
 	}
 	out := []row{{glyph: l.glyph, text: l.head, pos: l.pos, role: roleMessage, bold: bold}}
@@ -529,6 +561,28 @@ func (l line) rows() []row {
 	return out
 }
 
+// elision is the last line of a struct fragment, which says that the
+// struct has fields the fragment leaves out, as gopls elides them.
+const elision = "// ..."
+
+// rows lays it out as the text layout prints it: the rows of its lines,
+// wrapped for a struct fragment in the struct's declaration, "~ type T
+// struct {" above the fields, indented one tab, and the elision and "}"
+// below them.
+func (it item) rows() []row {
+	if it.strct == "" {
+		return it.lines[0].rows()
+	}
+	out := []row{{glyph: "~", text: "type " + it.strct + " struct {", role: roleFrame}}
+	for _, l := range it.lines {
+		for _, r := range l.rows() {
+			r.text = tab + r.text
+			out = append(out, r)
+		}
+	}
+	return append(out, row{text: tab + elision, role: roleFrame}, row{text: "}", role: roleFrame})
+}
+
 // packageRows returns the rows of the changes of p to show, honoring
 // BreakingOnly, and the column at which their positions line up: the
 // width of the widest labeled row among those that carry a position. With
@@ -537,11 +591,15 @@ func (l line) rows() []row {
 // with indent columns before the label and two between it and the
 // position; those rows print their position unaligned instead.
 func packageRows(p Package, opts Options, limit, indent int) (rows []row, width int) {
+	var lines []line
 	for _, c := range p.Changes {
 		if opts.BreakingOnly && c.Compatible {
 			continue
 		}
-		rows = append(rows, describe(c, opts).rows()...)
+		lines = append(lines, describe(c, opts))
+	}
+	for _, it := range items(lines) {
+		rows = append(rows, it.rows()...)
 	}
 	return rows, column(rows, limit, indent)
 }
@@ -696,9 +754,9 @@ func writeText(w io.Writer, res Result, opts Options) error {
 // row colors r for the terminal. A removal is red, an addition green, both
 // bold when incompatible; the old declaration of a changed symbol is
 // greyed out and the new one orange (bold when incompatible), so that the
-// pair reads as one edit. A message row is red for a removal or an
-// incompatible addition, green for a compatible addition, and otherwise
-// cyan, or yellow when incompatible.
+// pair reads as one edit. The frame of a struct fragment is dimmed. A
+// message row is red for a removal or an incompatible addition, green for
+// a compatible addition, and otherwise cyan, or yellow when incompatible.
 func (st Style) row(r row) string {
 	s := r.label()
 	switch r.role {
@@ -710,6 +768,8 @@ func (st Style) row(r row) string {
 		return st.Grey(s)
 	case roleNew:
 		return st.Orange(s, r.bold)
+	case roleFrame:
+		return st.Dim(s)
 	}
 	code := codeYellow
 	switch {
@@ -826,12 +886,10 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss changed", n, noun)
 }
 
-// writeMarkdown renders the same rows as the text layout, each package as
-// a bold path followed by a fenced diff block, which GitHub colors: "-"
-// lines red, "+" lines green and "!" lines orange. Where the text layout
-// uses bold for an incompatible change, the row's "+" or "~" becomes "!"
-// (a removal keeps its "-"), so that a breaking change stands out in a
-// pull request comment too.
+// writeMarkdown renders each package as a bold path followed by a fenced
+// Go block, which GitHub highlights as Go: keywords, types, strings and
+// comments each in their own color. A code block cannot color a whole
+// line, so the diff's own signal lives in comments; see goBlock.
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	var b strings.Builder
 	for i, s := range sections(res, opts) {
@@ -839,23 +897,9 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		for _, p := range s.packages {
-			rows, width := packageRows(p, opts, 0, 0)
-			fmt.Fprintf(&b, "**%s**\n\n```diff\n", header(p))
-			for _, r := range rows {
-				glyph, sep := r.glyph, " "
-				if r.bold && glyph != "-" {
-					glyph = "!"
-				}
-				if r.nested {
-					sep = "   "
-				}
-				b.WriteString(glyph + sep + r.text)
-				if r.pos != "" {
-					b.WriteString(padding(r.label(), width) + "  " + r.pos)
-				}
-				b.WriteString("\n")
-			}
-			b.WriteString("```\n\n")
+			fmt.Fprintf(&b, "**%s**\n\n", header(p))
+			goBlock(&b, p, opts)
+			b.WriteString("\n")
 		}
 		switch {
 		case s.part != Public && s.secondary, s.part == Public && s.summary != "":
@@ -870,6 +914,175 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	}
 	_, err := io.WriteString(w, b.String())
 	return err
+}
+
+// goLine is one line of a Go block: a declaration and the comment that
+// trails it, or a comment line alone when code is empty.
+type goLine struct {
+	code    string
+	comment string // without the "//"
+}
+
+// goItem is one change as the Go block prints it: one line for a removal
+// or an addition, two for a changed symbol, its old declaration on the
+// first with "->" trailing and its new one on the second, so that both
+// sides are highlighted and read as one edit. A change without
+// declarations to show is its message as a comment line. The field
+// changes of one struct are one goItem, the fields between "type T struct
+// {" and "}" lines, indented one tab.
+type goItem []goLine
+
+// goBlock writes the changes of p as a fenced Go block, grouped under
+// "// Removed", "// Changed" and "// Added" headers in that order, from
+// what breaks to what is merely new. A change whose compatibility is not
+// what its group implies says so in a trailing comment: an incompatible
+// addition (a method added to an interface), or a compatible change (a
+// func that became a var). The items of the Changed group, two lines
+// each, are set apart by blank lines, inside a struct fragment too.
+// Positions, when wanted, trail each line that locates a change, in a
+// column that lines up across the block. A declaration on several lines
+// has its comment on the first.
+func goBlock(b *strings.Builder, p Package, opts Options) {
+	kinds := []string{"removed", "changed", "added"}
+	lines := map[string][]line{}
+	for _, c := range p.Changes {
+		if opts.BreakingOnly && c.Compatible {
+			continue
+		}
+		l := describe(c, opts)
+		lines[l.kind] = append(lines[l.kind], l)
+	}
+	groups := make([][]goItem, len(kinds))
+	for i, kind := range kinds {
+		for _, it := range items(lines[kind]) {
+			groups[i] = append(groups[i], it.goItem(kind == "changed"))
+		}
+	}
+	// The column at which trailing comments line up, per indentation as
+	// gofmt aligns them, so that the fields of a struct fragment line up
+	// among themselves: only with positions, which are long enough to want
+	// one; otherwise a single space.
+	width := map[string]int{}
+	if opts.Positions {
+		for _, items := range groups {
+			for _, item := range items {
+				for _, gl := range item {
+					if gl.code != "" && gl.comment != "" {
+						indent, code := splitIndent(gl.code)
+						width[indent] = max(width[indent], utf8.RuneCountInString(code))
+					}
+				}
+			}
+		}
+	}
+	b.WriteString("```go\n")
+	first := true
+	for i, kind := range kinds {
+		items := groups[i]
+		if len(items) == 0 {
+			continue
+		}
+		if !first {
+			b.WriteString("\n")
+		}
+		first = false
+		b.WriteString("// " + strings.ToUpper(kind[:1]) + kind[1:] + "\n")
+		for i, item := range items {
+			if i > 0 && kind == "changed" {
+				b.WriteString("\n")
+			}
+			for _, gl := range item {
+				switch {
+				case gl.code == "" && gl.comment == "":
+					// a blank line
+				case gl.code == "":
+					b.WriteString("// " + gl.comment)
+				case gl.comment == "":
+					b.WriteString(gl.code)
+				default:
+					head, rest, _ := strings.Cut(gl.code, "\n")
+					indent, code := splitIndent(head)
+					b.WriteString(head + padding(code, width[indent]) + " // " + gl.comment)
+					if rest != "" {
+						b.WriteString("\n" + rest)
+					}
+				}
+				b.WriteString("\n")
+			}
+		}
+	}
+	b.WriteString("```\n")
+}
+
+// splitIndent splits the first line of s into the tabs that indent it and
+// the rest.
+func splitIndent(s string) (indent, rest string) {
+	s, _, _ = strings.Cut(s, "\n")
+	rest = strings.TrimLeft(s, "\t")
+	return s[:len(s)-len(rest)], rest
+}
+
+// goItem lays it out for the Go block: the goItem of its line, or for a
+// struct fragment the goItems of its fields, indented, between "type T
+// struct {" and the elision and "}". A removed field points at itself
+// with "<-", since the fragment is otherwise a struct declaration under
+// a Removed header. With spaced set, the fields are set apart by blank
+// lines, as the items of the Changed group are.
+func (it item) goItem(spaced bool) goItem {
+	if it.strct == "" {
+		return it.lines[0].goItem()
+	}
+	out := goItem{{code: "type " + it.strct + " struct {"}}
+	for i, l := range it.lines {
+		if i > 0 && spaced {
+			out = append(out, goLine{})
+		}
+		for _, gl := range l.goItem() {
+			gl.code = "\t" + strings.ReplaceAll(gl.code, "\n", "\n\t")
+			if l.kind == "removed" {
+				gl.comment = strings.TrimSuffix("<- · "+gl.comment, " · ")
+			}
+			out = append(out, gl)
+		}
+	}
+	return append(out, goLine{code: "\t" + elision}, goLine{code: "}"})
+}
+
+// goItem lays l out for the Go block; see goItem.
+func (l line) goItem() goItem {
+	// The note on the line that locates the change: its compatibility when
+	// that is not what its kind implies, then its position.
+	var notes []string
+	switch {
+	case l.kind == "added" && !l.compatible:
+		notes = append(notes, "incompatible")
+	case l.kind == "changed" && l.compatible:
+		notes = append(notes, "compatible")
+	}
+	if l.pos != "" {
+		notes = append(notes, l.pos)
+	}
+	note := strings.Join(notes, " · ")
+	if l.decls {
+		switch {
+		case l.from != "" && l.to != "":
+			return goItem{{code: l.from, comment: "->"}, {code: l.to, comment: note}}
+		case l.from != "":
+			return goItem{{code: l.from, comment: note}}
+		default:
+			return goItem{{code: l.to, comment: note}}
+		}
+	}
+	// A message, "package added" or "T: changed from X to Y" with the bare
+	// types X and Y the message quoted, as one comment line.
+	msg := l.head
+	if l.from != "" && l.to != "" {
+		msg += " from " + l.from + " to " + l.to
+	}
+	if note != "" {
+		msg += " · " + note
+	}
+	return goItem{{comment: msg}}
 }
 
 // JSON layout. Field names are part of the tool's interface.
@@ -898,6 +1111,7 @@ type jsonChange struct {
 	Message    string    `json:"message"`
 	Before     string    `json:"before,omitempty"`
 	After      string    `json:"after,omitempty"`
+	Struct     string    `json:"struct,omitempty"`
 	Pos        *Position `json:"pos,omitempty"`
 }
 
@@ -961,6 +1175,7 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 				Message:    c.Message,
 				Before:     l.from,
 				After:      l.to,
+				Struct:     l.strct,
 			}
 			if opts.Positions && !c.Pos.IsZero() {
 				pos := c.Pos

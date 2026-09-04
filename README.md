@@ -28,7 +28,7 @@ example.com/m/store
   - func Open(path string) (*Client, error)
   + func Open(path string, o Options) (*Client, error)
   + func (c *Client) Ping() error
-  + type Options struct{Timeout int}
+  + type Options struct{ Timeout int }
 
 example.com/m/util
   + func (Sizer) Size() int
@@ -75,8 +75,6 @@ Options:
   --filter=WHICH     all, or any of public | internal | main: which
                      packages take part; breaking: only incompatible
                      changes (default all)
-  --signatures=HOW   full | minimal: declarations, or one line per change
-                     (default full)
   --pos              annotate changes with source positions
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
@@ -200,10 +198,13 @@ the summary still describe the full diff.
 
 ## Reading the output
 
-Bold marks an incompatible change: a removal, a changed signature, a
-method added to an interface. A line with no declaration to show, and
-every line under `--signatures=minimal`, carries apidiff's message behind
-a glyph:
+Each change shows the declaration of its symbol, formatted as gofmt
+formats it; the fields of a struct are shown together, as a fragment of
+the struct with the changed fields alone inside and `// ...` for the
+rest. Bold marks an
+incompatible change: a removal, a changed signature, a method added to an
+interface. A line with no declaration to show carries apidiff's message
+behind a glyph:
 
 | Glyph | Meaning |
 |---|---|
@@ -214,26 +215,38 @@ a glyph:
 
 ## Output formats
 
-`--format=markdown` renders each package as a `diff` block for a pull
-request comment or a job summary, with `!` marking the incompatible lines
-that the terminal shows in bold:
+`--format=markdown` renders each package as a `go` block, which GitHub
+highlights as Go, for a pull request comment or a job summary. The
+changes are grouped under `// Removed`, `// Changed` and `// Added`, from
+what breaks to what is merely new; a changed symbol shows its old
+declaration with `// ->` trailing and its new one below it, so that both
+sides are highlighted and read as one edit. A change whose compatibility
+is not what its group implies says so in a trailing comment, such as a
+method added to an interface, and `--pos` positions trail each line in a
+column.
 
 ````
 $ go-whatchanged --format=markdown @latest
 **example.com/m/store**
 
-```diff
-- func (c *Client) Close() error
-- func Open(path string) (*Client, error)
-! func Open(path string, o Options) (*Client, error)
-+ func (c *Client) Ping() error
-+ type Options struct{Timeout int}
+```go
+// Removed
+func (c *Client) Close() error
+
+// Changed
+func Open(path string) (*Client, error) // ->
+func Open(path string, o Options) (*Client, error)
+
+// Added
+func (c *Client) Ping() error
+type Options struct{ Timeout int }
 ```
 
 **example.com/m/util**
 
-```diff
-! func (Sizer) Size() int
+```go
+// Added
+func (Sizer) Size() int // incompatible
 ```
 
 2 packages changed · 3 incompatible · 2 compatible · would require: **MAJOR** (v1.4.0 → v2.0.0)
@@ -241,7 +254,9 @@ $ go-whatchanged --format=markdown @latest
 
 `--format=json` prints one document for scripts and bots; its field names
 are part of the tool's interface. `base_version` and `next_version` are
-present when the base is a release tag, `pos` with `--pos`.
+present when the base is a release tag, `pos` with `--pos`, and `struct`
+on a struct field's change, whose `before` and `after` are the field's
+declaration inside it.
 
 ```json
 {
@@ -299,16 +314,18 @@ names the bump:
 ## GitHub Action
 
 Add the action to a workflow to get the diff on every pull request. It
-builds the tool from the ref that pins it and appends the diff to the job
-summary, under a heading whose glyph names the release the changes call
-for: 🟢 none, 🟡 minor, 🔴 major. On a tag push, it lists what the tag
-ships:
+builds the tool from the ref that pins it, appends the diff to the job
+summary under a heading whose glyph names the release the changes call
+for, 🟢 none, 🟡 minor, 🔴 major, and posts it as a pull request comment
+folded under its summary line. On a tag push, it lists what the tag
+ships in the job summary:
 
 ```yaml
 on: pull_request
 
 permissions:
   contents: read
+  pull-requests: write # for the comment
 
 jobs:
   api:
@@ -323,24 +340,22 @@ jobs:
       - uses: shazow/go-whatchanged@main
 ```
 
-With `comment: true` it also posts the diff as a pull request comment,
-folded under its summary line, and updates that same comment on every
-later push instead of adding another. The first comment waits until
-there is something to show, so a pull request that never touches the API
-gets none. The comment needs `pull-requests: write`, which the default
-token lacks on a pull request from a fork; there, the action warns and
-the job summary still has the diff.
+The comment is updated on every later push instead of adding another,
+and the first one waits until there is something to show, so a pull
+request that never touches the API gets none. It needs `pull-requests:
+write`, which the default token lacks on a pull request from a fork;
+there, the action says so in a notice and the job summary still has the
+diff. `comment: false` keeps the diff to the job summary:
 
 ```yaml
 permissions:
   contents: read
-  pull-requests: write
 
     steps:
       # ...
       - uses: shazow/go-whatchanged@main
         with:
-          comment: true
+          comment: false
 ```
 
 | Input | Default | Meaning |
@@ -351,14 +366,13 @@ permissions:
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
 | `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
 | `breaking` | `false` | Show only incompatible changes. |
-| `signatures` | `full` | `full` or `minimal`. |
 | `pos` | `false` | Annotate changes with source positions. |
 | `strict` | `false` | Treat type-check errors as fatal. |
 | `goos`, `goarch` | the runner's | Build target. |
 | `fail-on` | | `major`, `minor` or `patch`: fail the step at that level or above. |
 | `summary` | `true` | Append the diff to the job summary. |
 | `title` | `API changes` | Heading above the diff in the summary and the comment. Empty for none. |
-| `comment` | `false` | Post the diff as a pull request comment and keep it updated. |
+| `comment` | `true` | Post the diff as a pull request comment and keep it updated. `false` for the job summary alone. |
 | `token` | `github.token` | The token for the comment. |
 
 Outputs for later steps:

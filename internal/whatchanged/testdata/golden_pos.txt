@@ -7,19 +7,25 @@ example.com/m/gone (removed)
 
 example.com/m/store
   - func (c *Client) Close() error                      v1.0.0:store/store.go:7:18
-  - field Config.Timeout int
-  + field Config.Timeout int64                          store/store.go:17:21
+  ~ type Config struct {
+  -     Timeout int
+  +     Timeout int64                                   store/store.go:17:21
+        // ...
+    }
   - func Open(path string) (*Client, error)
   + func Open(path string, o Options) (*Client, error)  store/store.go:11:6
-  - const Version untyped string = "1"
-  + const Version untyped int = 1                       store/store.go:19:7
+  - const Version = "1"
+  + const Version = 1                                   store/store.go:19:7
   + func (c *Client) Ping() error                       store/store.go:7:18
-  + type Options struct{Timeout int}                    store/store.go:9:6
-  + field Point.Z int                                   store/store.go:15:26
+  + type Options struct{ Timeout int }                  store/store.go:9:6
+  ~ type Point struct {
+  +     Z int                                           store/store.go:15:26
+        // ...
+    }
 
 example.com/m/util
   + func (Sizer) Size() int       util/util.go:7:2
-  - type Stringer interface{String() string}
+  - type Stringer interface{ String() string }
   + type Stringer = fmt.Stringer  util/util.go:10:6
 
 4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)

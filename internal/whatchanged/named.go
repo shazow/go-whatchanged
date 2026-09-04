@@ -1,18 +1,21 @@
 package whatchanged
 
 import (
+	"go/format"
 	"go/types"
 	"strings"
 )
 
-// declString renders obj as it would appear in source, for example "func
-// Open(path string) (*Client, error)" or "field Point.Z int", where sym is
-// the symbol as apidiff names it ("Point.Z"). go/types prints methods as
+// declString renders obj as it would appear in source, formatted as gofmt
+// formats it: "func Open(path string) (*Client, error)", "type Options
+// struct{ Timeout int }", "const Version = 1". go/types prints methods as
 // "func (*T).M(...)"; this prints the conventional "func (r *T) M(...)"
-// instead, names the struct a field belongs to, which go/types leaves out
-// and the line would otherwise not say, and adds the value of a constant,
-// which is what a "value changed" message is about.
-func declString(obj types.Object, pkg *types.Package, sym string) string {
+// instead, adds the value of a constant, which is what a "value changed"
+// message is about, and leaves the type off an untyped constant, which has
+// none in source. A struct field is rendered as it is declared in its
+// struct, "Timeout int", or its type alone when embedded; the struct's
+// name is carried separately, see structOf.
+func declString(obj types.Object, pkg *types.Package) string {
 	// Qualify foreign types by package name, as source does ("apidiff.Report"
 	// rather than "golang.org/x/exp/apidiff.Report").
 	qual := func(p *types.Package) string {
@@ -21,12 +24,20 @@ func declString(obj types.Object, pkg *types.Package, sym string) string {
 		}
 		return p.Name()
 	}
+	decl := types.ObjectString(obj, qual)
 	switch o := obj.(type) {
 	case *types.Const:
-		return types.ObjectString(obj, qual) + " = " + o.Val().String()
+		if b, ok := o.Type().(*types.Basic); ok && b.Info()&types.IsUntyped != 0 {
+			decl = "const " + o.Name()
+		}
+		decl += " = " + o.Val().String()
 	case *types.Var:
 		if o.IsField() {
-			return "field " + sym + " " + types.TypeString(o.Type(), qual)
+			t := strings.TrimPrefix(gofmt("var _ "+types.TypeString(o.Type(), qual)), "var _ ")
+			if o.Embedded() {
+				return t
+			}
+			return o.Name() + " " + t
 		}
 	case *types.Func:
 		if sig := o.Signature(); sig.Recv() != nil {
@@ -35,11 +46,37 @@ func declString(obj types.Object, pkg *types.Package, sym string) string {
 			if recv.Name() != "" && recv.Name() != "_" {
 				name = recv.Name() + " "
 			}
-			return "func (" + name + types.TypeString(recv.Type(), qual) + ") " + o.Name() +
+			decl = "func (" + name + types.TypeString(recv.Type(), qual) + ") " + o.Name() +
 				strings.TrimPrefix(types.TypeString(sig, qual), "func")
 		}
 	}
-	return types.ObjectString(obj, qual)
+	return gofmt(decl)
+}
+
+// gofmt formats a declaration as gofmt would: "struct{ Timeout int }"
+// rather than go/types's "struct{Timeout int}", and a struct or interface
+// with several members on several lines, indented with tabs. A
+// declaration the parser rejects is returned as it is.
+func gofmt(decl string) string {
+	const pkg = "package p\n\n"
+	out, err := format.Source([]byte(pkg + decl + "\n"))
+	if err != nil {
+		return decl
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(string(out), pkg), "\n")
+}
+
+// structOf returns the struct a field belongs to, "Config" for the field
+// Config.Timeout, and "" for any other object. A generic struct's name
+// comes without its type parameters, as lookupSymbol takes it.
+func structOf(obj types.Object, sym string) string {
+	v, ok := obj.(*types.Var)
+	i := strings.LastIndex(sym, ".")
+	if !ok || !v.IsField() || i < 0 {
+		return ""
+	}
+	recv, _, _ := strings.Cut(sym[:i], "[")
+	return recv
 }
 
 // lookupSymbol resolves the symbol forms apidiff emits: "Name", "T.M",

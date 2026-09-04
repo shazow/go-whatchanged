@@ -72,7 +72,6 @@ type options struct {
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
 	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, or any of public, internal and main; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
-	Signatures string   `long:"signatures" choice:"full" choice:"minimal" default:"full" description:"show each change as its declarations (full) or as one message line (minimal)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
@@ -176,9 +175,6 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 	var err error
 	if opts.Format, err = whatchanged.ParseFormat(o.Format); err != nil {
 		return opts, fmt.Errorf("--format: %w", err)
-	}
-	if opts.Signatures, err = whatchanged.ParseSignatures(o.Signatures); err != nil {
-		return opts, fmt.Errorf("--signatures: %w", err)
 	}
 	return opts, nil
 }
