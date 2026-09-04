@@ -1310,7 +1310,6 @@ func TestGolden(t *testing.T) {
 		{"internal", Options{Filter: render.Internal}, ExitClean},
 		{"pos", Options{Positions: true}, ExitIncompatible},
 		{"json_pos", Options{Format: render.JSON, Positions: true}, ExitIncompatible},
-		{"minimal", Options{Signatures: render.MinimalSignatures}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2227,40 +2226,25 @@ func TestFilterInternalPackages(t *testing.T) {
 	mustContain(t, r.stdout, `"packages_changed": 0,`, `"release": "patch",`, "\"internal\": {\n      \"packages_changed\": 1,")
 }
 
-func TestMinimalSignatures(t *testing.T) {
+func TestDeclarations(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Drop() {}\n\nfunc Open(name string) error { return nil }\n")
 	f.commit("base")
 	f.write("a/a.go", "package a\n\nfunc Keep() {}\n\nfunc Open(name string, n int) error { return nil }\n\nfunc Added() {}\n")
 
-	// One line per change, with apidiff's message as is.
-	r := f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures})
+	// Each change shows its declarations, a changed symbol both of them.
+	r := f.mustRun("HEAD", "", Options{})
 	want := "example.com/m/a\n" +
-		"  - Drop: removed\n" +
-		"  ~ Open: changed from func(string) error to func(string, int) error\n" +
-		"  + Added: added\n" +
-		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
-	if r.stdout != want {
-		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
-	}
-
-	// The default shows every declaration.
-	r = f.mustRun("HEAD", "", Options{})
-	want = "example.com/m/a\n" +
 		"  - func Drop()\n" +
 		"  - func Open(name string) error\n  + func Open(name string, n int) error\n" +
 		"  + func Added()\n" +
 		"\n1 package changed · 2 incompatible · 1 compatible · would require: MAJOR\n"
 	if r.stdout != want {
-		t.Errorf("full: stdout = %q\nwant     %q", r.stdout, want)
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
 	}
-
-	// Markdown and JSON follow the same knob.
-	r = f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.Markdown})
-	mustContain(t, r.stdout, "```diff\n- Drop: removed\n! Open: changed from func(string) error to func(string, int) error\n+ Added: added\n```\n")
-	r = f.mustRun("HEAD", "", Options{Signatures: render.MinimalSignatures, Format: render.JSON})
-	mustNotContain(t, r.stdout, `"before"`, `"after"`)
+	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
+	mustContain(t, r.stdout, "```go\n// Removed\nfunc Drop()\n\n// Changed\nfunc Open(name string) error // ->\nfunc Open(name string, n int) error\n\n// Added\nfunc Added()\n```\n")
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"before": "func Drop()"`, `"after": "func Added()"`, `"before": "func Open(name string) error"`)
 }
@@ -2275,19 +2259,6 @@ func TestParseFilter(t *testing.T) {
 	}
 	if _, err := ParseFilter("private"); err == nil {
 		t.Error("ParseFilter accepted private")
-	}
-}
-
-func TestParseSignatures(t *testing.T) {
-	t.Parallel()
-	for in, want := range map[string]render.Signatures{"full": render.FullSignatures, "Minimal": render.MinimalSignatures} {
-		got, err := ParseSignatures(in)
-		if err != nil || got != want {
-			t.Errorf("ParseSignatures(%q) = %v, %v; want %v", in, got, err, want)
-		}
-	}
-	if _, err := ParseSignatures("short"); err == nil {
-		t.Error("ParseSignatures accepted short")
 	}
 }
 

@@ -176,30 +176,6 @@ func ParseFormat(s string) (Format, error) {
 	return 0, fmt.Errorf("invalid format %q (want text, markdown or json)", s)
 }
 
-// Signatures selects how much of a symbol's declaration a change shows.
-type Signatures int
-
-const (
-	// FullSignatures shows each change as the declaration of its symbol,
-	// like a small patch: the old one on a "-" line, the new one on a "+"
-	// line, both for a changed symbol.
-	FullSignatures Signatures = iota
-	// MinimalSignatures prints one line per change, the apidiff message,
-	// with a changed symbol's old and new types quoted inline.
-	MinimalSignatures
-)
-
-// ParseSignatures parses a --signatures value: "full" or "minimal".
-func ParseSignatures(s string) (Signatures, error) {
-	switch strings.ToLower(s) {
-	case "full":
-		return FullSignatures, nil
-	case "minimal":
-		return MinimalSignatures, nil
-	}
-	return 0, fmt.Errorf("invalid signatures %q (want full or minimal)", s)
-}
-
 // Visibility is the set of parts of a module that take part in a diff:
 // any combination of Public, Internal and Main, combined with |. The zero
 // value selects All.
@@ -274,9 +250,6 @@ type Options struct {
 	Color        bool
 	BreakingOnly bool
 	Format       Format
-	// Signatures selects whether declarations are shown; the zero value
-	// shows them in full.
-	Signatures Signatures
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Width is the number of columns the text layout may use, 0 for no
@@ -423,11 +396,10 @@ type line struct {
 	compatible bool
 }
 
-// describe reduces c to a line. With FullSignatures a removed symbol's
-// declaration goes on a "-" line, an added one's on a "+" line, and a
-// "changed from X to Y" message is split so that the before and after values
-// sit on their own lines, like a small patch, which makes long signatures
-// easy to compare.
+// describe reduces c to a line. A removed symbol's declaration goes on a
+// "-" line, an added one's on a "+" line, and a "changed from X to Y"
+// message is split so that the before and after values sit on their own
+// lines, like a small patch, which makes long signatures easy to compare.
 func describe(c Change, opts Options) line {
 	l := line{glyph: "~", head: c.Message, compatible: c.Compatible}
 	kind := c.Kind()
@@ -444,9 +416,6 @@ func describe(c Change, opts Options) line {
 	}
 	if opts.Positions {
 		l.pos = c.Pos.String()
-	}
-	if opts.Signatures == MinimalSignatures {
-		return l
 	}
 	switch kind {
 	case "removed":
@@ -491,8 +460,7 @@ type row struct {
 	// on both sides.
 	nested bool
 	// bold marks the row of an incompatible change that the text layout
-	// emphasizes and the Markdown layout's diff block, which has no bold
-	// inside a code block, marks with "!" instead.
+	// emphasizes.
 	bold bool
 }
 
@@ -831,9 +799,7 @@ func plural(n int, noun string) string {
 // writeMarkdown renders each package as a bold path followed by a fenced
 // Go block, which GitHub highlights as Go: keywords, types, strings and
 // comments each in their own color. A code block cannot color a whole
-// line, so the diff's own signal lives in comments; see goBlock. With
-// MinimalSignatures there are no declarations to highlight, and each
-// package is a diff block of apidiff's messages instead; see diffBlock.
+// line, so the diff's own signal lives in comments; see goBlock.
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	var b strings.Builder
 	for i, s := range sections(res, opts) {
@@ -842,11 +808,7 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 		}
 		for _, p := range s.packages {
 			fmt.Fprintf(&b, "**%s**\n\n", header(p))
-			if opts.Signatures == MinimalSignatures {
-				diffBlock(&b, p, opts)
-			} else {
-				goBlock(&b, p, opts)
-			}
+			goBlock(&b, p, opts)
 			b.WriteString("\n")
 		}
 		switch {
@@ -976,31 +938,6 @@ func (l line) goItem() goItem {
 		msg += " · " + note
 	}
 	return goItem{{comment: msg}}
-}
-
-// diffBlock writes the rows of p as a fenced diff block, which GitHub
-// colors: "-" lines red, "+" lines green and "!" lines orange. Where the
-// text layout uses bold for an incompatible change, the row's "+" or "~"
-// becomes "!" (a removal keeps its "-"), so that a breaking change stands
-// out in a pull request comment too.
-func diffBlock(b *strings.Builder, p Package, opts Options) {
-	rows, width := packageRows(p, opts, 0, 0)
-	b.WriteString("```diff\n")
-	for _, r := range rows {
-		glyph, sep := r.glyph, " "
-		if r.bold && glyph != "-" {
-			glyph = "!"
-		}
-		if r.nested {
-			sep = "   "
-		}
-		b.WriteString(glyph + sep + r.text)
-		if r.pos != "" {
-			b.WriteString(padding(r.label(), width) + "  " + r.pos)
-		}
-		b.WriteString("\n")
-	}
-	b.WriteString("```\n")
 }
 
 // JSON layout. Field names are part of the tool's interface.

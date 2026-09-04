@@ -78,7 +78,7 @@ base=$INPUT_BASE
 revs=("$base")
 [ -z "$head" ] || revs+=("$head")
 
-flags=(--filter "$INPUT_FILTER" --signatures "$INPUT_SIGNATURES")
+flags=(--filter "$INPUT_FILTER")
 [ -z "$INPUT_PKG" ] || flags+=(--pkg "$(printf '%s' "$INPUT_PKG" | tr '\n' ,)")
 [ -z "$INPUT_EXCLUDE" ] || flags+=(--exclude "$(printf '%s' "$INPUT_EXCLUDE" | tr '\n' ,)")
 [ "$INPUT_BREAKING" != true ] || flags+=(--filter breaking)

@@ -148,18 +148,6 @@ var V int // compatible
 // U: changed from int to int64 · compatible
 ```
 
-### Minimal signatures
-
-`--signatures=minimal` prints apidiff's messages, which are not Go and
-gain nothing from a `go` block. It keeps the `diff` block, with `!`
-marking the incompatible lines that the terminal shows in bold:
-
-```diff
-- Drop: removed
-! Open: changed from func(string) error to func(string, int) error
-+ Added: added
-```
-
 ### The pull request comment
 
 The action folds the report under its verdict, as before; nothing in the

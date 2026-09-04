@@ -40,7 +40,7 @@ func TestParseArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if opts.Filter != render.All || opts.Signatures != render.FullSignatures || opts.Format != render.Text || opts.Base != "" || opts.Head != "" {
+	if opts.Filter != render.All || opts.Format != render.Text || opts.Base != "" || opts.Head != "" {
 		t.Errorf("defaults = %+v", opts)
 	}
 	// Missing modules are downloaded with the go command unless
@@ -56,7 +56,7 @@ func TestParseArgs(t *testing.T) {
 		t.Errorf("--fsreadonly: Fetch = %T, want nil", opts.Fetch)
 	}
 
-	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--signatures=minimal", "--exit-fail=minor", "--filter", "breaking", "--pos", "--color=never", "v1.4.0", "HEAD"})
+	o, err = parseArgs([]string{"--filter=internal", "--pkg", "store/...,util", "--pkg=a", "--exclude", "b", "--format", "md", "--exit-fail=minor", "--filter", "breaking", "--pos", "--color=never", "v1.4.0", "HEAD"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +67,7 @@ func TestParseArgs(t *testing.T) {
 	want := whatchanged.Options{
 		Base: "v1.4.0", Head: "HEAD",
 		Packages: []string{"store/...", "util", "a"}, Exclude: []string{"b"},
-		Filter: render.Internal, Format: render.Markdown, Signatures: render.MinimalSignatures,
+		Filter: render.Internal, Format: render.Markdown,
 		ExitFail: whatchanged.FailMinor, Breaking: true, Positions: true,
 		Fetch: &modfetch.GoCommand{Stderr: os.Stderr},
 	}

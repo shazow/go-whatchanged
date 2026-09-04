@@ -70,9 +70,6 @@ type Options struct {
 	// Width is the number of columns the text layout may use, 0 for no
 	// limit; see render.Options.Width.
 	Width int
-	// Signatures selects whether each change shows the symbol's
-	// declaration; the zero value shows it in full.
-	Signatures render.Signatures
 	// Color enables ANSI escapes.
 	Color bool
 	// Strict turns type-check warnings into a fatal error.
@@ -145,11 +142,6 @@ func ParseFailOn(s string) (FailOn, error) {
 // ParseFormat parses a --format value: "text", "markdown" (or "md") or "json".
 func ParseFormat(s string) (render.Format, error) {
 	return render.ParseFormat(s)
-}
-
-// ParseSignatures parses a --signatures value: "full" or "minimal".
-func ParseSignatures(s string) (render.Signatures, error) {
-	return render.ParseSignatures(s)
 }
 
 // ParseFilter parses one --filter term: "public", "internal", "main" or
@@ -276,7 +268,6 @@ func finish(res *render.Result, opts Options) (int, error) {
 		Color:        opts.Color,
 		BreakingOnly: opts.Breaking,
 		Format:       opts.Format,
-		Signatures:   opts.Signatures,
 		Positions:    opts.Positions,
 		Width:        opts.Width,
 		Filter:       opts.Filter,

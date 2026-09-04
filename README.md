@@ -82,8 +82,6 @@ Options:
   --filter=WHICH     all, or any of public | internal | main: which
                      packages take part; breaking: only incompatible
                      changes (default all)
-  --signatures=HOW   full | minimal: declarations, or one line per change
-                     (default full)
   --pos              annotate changes with source positions
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
@@ -208,9 +206,8 @@ the summary still describe the full diff.
 ## Reading the output
 
 Bold marks an incompatible change: a removal, a changed signature, a
-method added to an interface. A line with no declaration to show, and
-every line under `--signatures=minimal`, carries apidiff's message behind
-a glyph:
+method added to an interface. A line with no declaration to show carries
+apidiff's message behind a glyph:
 
 | Glyph | Meaning |
 |---|---|
@@ -229,10 +226,7 @@ declaration with `// ->` trailing and its new one below it, so that both
 sides are highlighted and read as one edit. A change whose compatibility
 is not what its group implies says so in a trailing comment, such as a
 method added to an interface, and `--pos` positions trail each line in a
-column. With `--signatures=minimal` there are no declarations to
-highlight, and each package is a `diff` block of apidiff's messages
-instead, `!` marking the incompatible lines that the terminal shows in
-bold.
+column.
 
 ````
 $ go-whatchanged --format=markdown @latest
@@ -373,7 +367,6 @@ permissions:
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
 | `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
 | `breaking` | `false` | Show only incompatible changes. |
-| `signatures` | `full` | `full` or `minimal`. |
 | `pos` | `false` | Annotate changes with source positions. |
 | `strict` | `false` | Treat type-check errors as fatal. |
 | `goos`, `goarch` | the runner's | Build target. |
