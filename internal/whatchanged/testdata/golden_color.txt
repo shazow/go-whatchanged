@@ -1,4 +1,7 @@
 # stdout
+[1mexample.com/m/deps[0m
+  [32m+ import "example.com/dep"[0m
+
 [1mexample.com/m/fresh (new)[0m
   [32m+ func Hello()[0m
 

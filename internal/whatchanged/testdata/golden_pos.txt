@@ -1,4 +1,7 @@
 # stdout
+example.com/m/deps
+  + import "example.com/dep"
+
 example.com/m/fresh (new)
   + func Hello()  fresh/fresh.go:3:6
 

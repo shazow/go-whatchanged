@@ -1,0 +1,8 @@
+# stdout
+example.com/m/deps
+  + import "example.com/dep"
+
+4 packages changed · 7 incompatible · 4 compatible · would require: MAJOR (v1.0.0 → v2.0.0)
+
+internal: 1 package changed · 1 incompatible · 1 compatible
+# stderr

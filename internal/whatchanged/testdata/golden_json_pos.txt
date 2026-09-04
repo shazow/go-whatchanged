@@ -6,6 +6,17 @@
   "next_version": "v2.0.0",
   "packages": [
     {
+      "path": "example.com/m/deps",
+      "status": "changed",
+      "changes": [],
+      "imports": [
+        {
+          "path": "example.com/dep",
+          "kind": "added"
+        }
+      ]
+    },
+    {
       "path": "example.com/m/fresh",
       "status": "new",
       "changes": [

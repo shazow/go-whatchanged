@@ -1392,6 +1392,9 @@ func TestSubdirectoryModule(t *testing.T) {
 
 func goldenFixture(t *testing.T) *fixture {
 	f := newFixture(t)
+	f.useFakeModcache()
+	f.writeModule("example.com/dep", "v1.0.0", map[string]string{"dep.go": "package dep\n\nfunc Do() {}\n"})
+	f.write("deps/deps.go", "package deps\n\nimport \"fmt\"\n\nfunc Use() { fmt.Print() }\n")
 	f.write("store/store.go", `package store
 
 import "fmt"
@@ -1418,6 +1421,10 @@ var Default = Open
 	h := f.commit("base")
 	f.tag("v1.0.0", h)
 
+	// deps swaps a standard library import for a dependency: only the
+	// latter is an import change, and its package has no API change.
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire example.com/dep v1.0.0\n")
+	f.write("deps/deps.go", "package deps\n\nimport \"example.com/dep\"\n\nfunc Use() { dep.Do() }\n")
 	f.write("store/store.go", `package store
 
 import "fmt"
@@ -1466,6 +1473,10 @@ func TestGolden(t *testing.T) {
 		{"internal", Options{Filter: render.Internal}, ExitClean},
 		{"pos", Options{Positions: true}, ExitIncompatible},
 		{"json_pos", Options{Format: render.JSON, Positions: true}, ExitIncompatible},
+		// The kinds of change: the imports alone, or the API alone; the
+		// summary counts the full diff either way.
+		{"imports", Options{Kinds: render.Imports}, ExitIncompatible},
+		{"api", Options{Kinds: render.API}, ExitIncompatible},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -2043,10 +2054,11 @@ func TestJSON(t *testing.T) {
 	if rep.Warnings == nil || len(rep.Warnings) != 0 {
 		t.Errorf("warnings = %v, want an empty array", rep.Warnings)
 	}
-	if len(rep.Packages) != 4 || rep.Packages[0].Path != "example.com/m/fresh" || rep.Packages[0].Status != "new" || rep.Packages[1].Status != "removed" || rep.Packages[2].Status != "changed" {
+	if len(rep.Packages) != 5 || rep.Packages[0].Path != "example.com/m/deps" || len(rep.Packages[0].Changes) != 0 ||
+		rep.Packages[1].Path != "example.com/m/fresh" || rep.Packages[1].Status != "new" || rep.Packages[2].Status != "removed" || rep.Packages[3].Status != "changed" {
 		t.Errorf("packages = %+v", rep.Packages)
 	}
-	store := rep.Packages[2]
+	store := rep.Packages[3]
 	if len(store.Changes) != 7 {
 		t.Fatalf("store changes = %+v", store.Changes)
 	}
@@ -2401,7 +2413,7 @@ func TestFilterInternalPackages(t *testing.T) {
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON, Filter: render.Public})
 	mustNotContain(t, r.stdout, `"internal"`)
 	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
-	if want := "_no exported API changes_\n\n**example.com/m/internal/hidden (internal)**\n\n```go\n// Added\nfunc More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
+	if want := "_no exported API changes_\n\n### `example.com/m/internal/hidden` (internal)\n\n```go\n// Added\nfunc More()\n```\n\n_internal: 1 package changed · 0 incompatible · 1 compatible_\n"; r.stdout != want {
 		t.Errorf("markdown: stdout = %q\nwant     %q", r.stdout, want)
 	}
 	r = f.mustRun("HEAD", "", Options{Filter: render.Internal, Format: render.Markdown})
@@ -2552,7 +2564,7 @@ func TestFilterMainPackages(t *testing.T) {
 	// internal one; JSON marks the packages and counts them under
 	// summary.main, which appears when main packages took part.
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.Markdown})
-	mustContain(t, r.stdout, "**example.com/m/cmd/m (main)**\n\n```go\n// Removed\nfunc Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
+	mustContain(t, r.stdout, "### `example.com/m/cmd/m` (main)\n\n```go\n// Removed\nfunc Version() string\n```\n\n_main: 1 package changed · 1 incompatible · 0 compatible_\n")
 	mustNotContain(t, r.stdout, "internal:")
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public | render.Main, Format: render.JSON})
 	mustContain(t, r.stdout, `"main": true`, `"path": "example.com/m/cmd/m"`,
@@ -2560,4 +2572,159 @@ func TestFilterMainPackages(t *testing.T) {
 	mustNotContain(t, r.stdout, `"internal": true`, "\"internal\": {\n")
 	r = f.mustRun("HEAD", "", Options{Filter: render.Public, Format: render.JSON})
 	mustNotContain(t, r.stdout, `"main"`)
+}
+
+// TestImports covers import changes: the packages of other modules that a
+// package started or stopped importing are listed before its changes, in
+// every layout, and never count. The standard library and the module's own
+// packages are not tracked, a nested module is another module, and a
+// replaced module without a dot in its path is not the standard library.
+// A new package brings all of its dependencies, a removed one loses them,
+// and a package whose imports alone changed is listed without counting as
+// changed. --filter=api leaves the imports out, --filter=imports shows
+// nothing else, and breaking hides them as compatible changes.
+func TestImports(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.useFakeModcache()
+	f.writeModule("example.com/dep", "v1.0.0", map[string]string{"dep.go": "package dep\n\nfunc Do() {}\n", "sub/sub.go": "package sub\n\nfunc Do() {}\n"})
+	f.writeModule("example.com/other", "v1.0.0", map[string]string{"other.go": "package other\n\nfunc Do() {}\n"})
+	f.writeModule("example.com/m/nested", "v1.0.0", map[string]string{"nested.go": "package nested\n\nfunc Do() {}\n"})
+	f.write("go.mod", "module example.com/m\n\ngo 1.24\n\nrequire (\n\texample.com/dep v1.0.0\n\texample.com/other v1.0.0\n\texample.com/m/nested v1.0.0\n\tfoo v0.0.0\n)\n\nreplace foo => ./foo\n")
+	f.write("foo/go.mod", "module foo\n\ngo 1.24\n")
+	f.write("foo/foo.go", "package foo\n\nfunc Do() {}\n")
+	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\n\t\"example.com/dep\"\n\t\"example.com/other\"\n)\n\nfunc Open() error { dep.Do(); other.Do(); _, err := os.Open(\"\"); return fmt.Errorf(\"%w\", err) }\n")
+	f.write("util/util.go", "package util\n\nimport (\n\t\"strings\"\n\n\t\"example.com/other\"\n)\n\nfunc Up(s string) string { other.Do(); return strings.ToUpper(s) }\n")
+	f.write("gone/gone.go", "package gone\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/m/util\"\n)\n\nfunc Gone() string { dep.Do(); return util.Up(\"\") }\n")
+	f.commit("base")
+
+	// store: drops os and other, keeps fmt and dep, gains strings, a
+	// sibling package, a package of dep, the nested module and the
+	// replaced module, and removes a function; util: only its imports
+	// change; gone is removed and fresh added, each with dependencies.
+	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"strings\"\n\n\t\"example.com/dep\"\n\t\"example.com/dep/sub\"\n\t\"example.com/m/nested\"\n\t\"example.com/m/util\"\n\t\"foo\"\n)\n\nfunc Name() string { dep.Do(); sub.Do(); nested.Do(); foo.Do(); return fmt.Sprint(strings.ToUpper(util.Up(\"\"))) }\n")
+	f.write("util/util.go", "package util\n\nimport (\n\t\"bytes\"\n\n\t\"example.com/dep\"\n)\n\nfunc Up(s string) string { dep.Do(); return string(bytes.ToUpper([]byte(s))) }\n")
+	f.remove("gone/gone.go")
+	f.write("fresh/fresh.go", "package fresh\n\nimport (\n\t\"example.com/m/util\"\n\t\"example.com/other\"\n)\n\nfunc Hello() string { other.Do(); return util.Up(\"\") }\n")
+
+	r := f.mustRun("HEAD", "", Options{})
+	want := "example.com/m/fresh (new)\n" +
+		"  + import \"example.com/other\"\n" +
+		"  + func Hello() string\n\n" +
+		"example.com/m/gone (removed)\n" +
+		"  - import \"example.com/dep\"\n" +
+		"  - func Gone() string\n\n" +
+		"example.com/m/store\n" +
+		"  - import \"example.com/other\"\n" +
+		"  + import \"example.com/dep/sub\"\n" +
+		"  + import \"example.com/m/nested\"\n" +
+		"  + import \"foo\"\n" +
+		"  - func Open() error\n" +
+		"  + func Name() string\n\n" +
+		"example.com/m/util\n" +
+		"  - import \"example.com/other\"\n" +
+		"  + import \"example.com/dep\"\n\n" +
+		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitIncompatible {
+		t.Errorf("exit = %d, want %d", r.code, ExitIncompatible)
+	}
+	if r.stderr != "" {
+		t.Errorf("stderr = %q", r.stderr)
+	}
+
+	// The API alone: util is not listed.
+	r = f.mustRun("HEAD", "", Options{Kinds: render.API})
+	mustNotContain(t, r.stdout, "import", "example.com/m/util\n")
+	mustContain(t, r.stdout, "3 packages changed · 2 incompatible · 2 compatible")
+
+	// The imports alone: the summary still counts the API changes.
+	r = f.mustRun("HEAD", "", Options{Kinds: render.Imports})
+	want = "example.com/m/fresh (new)\n" +
+		"  + import \"example.com/other\"\n\n" +
+		"example.com/m/gone (removed)\n" +
+		"  - import \"example.com/dep\"\n\n" +
+		"example.com/m/store\n" +
+		"  - import \"example.com/other\"\n" +
+		"  + import \"example.com/dep/sub\"\n" +
+		"  + import \"example.com/m/nested\"\n" +
+		"  + import \"foo\"\n\n" +
+		"example.com/m/util\n" +
+		"  - import \"example.com/other\"\n" +
+		"  + import \"example.com/dep\"\n\n" +
+		"3 packages changed · 2 incompatible · 2 compatible · would require: MAJOR\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+
+	// Breaking hides the imports, as compatible changes.
+	r = f.mustRun("HEAD", "", Options{Breaking: true})
+	mustNotContain(t, r.stdout, "import", "example.com/m/util\n", "example.com/m/fresh")
+	mustContain(t, r.stdout, "example.com/m/store\n  - func Open() error\n\n")
+
+	r = f.mustRun("HEAD", "", Options{Format: render.Markdown})
+	mustContain(t, r.stdout,
+		"### `example.com/m/store`\n\n```go\n// Removed\nimport \"example.com/other\"\nfunc Open() error\n\n// Added\nimport \"example.com/dep/sub\"\nimport \"example.com/m/nested\"\nimport \"foo\"\nfunc Name() string\n```\n",
+		"### `example.com/m/util`\n\n```go\n// Removed\nimport \"example.com/other\"\n\n// Added\nimport \"example.com/dep\"\n```\n")
+
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	var rep struct {
+		Packages []struct {
+			Path    string            `json:"path"`
+			Status  string            `json:"status"`
+			Changes []json.RawMessage `json:"changes"`
+			Imports []struct {
+				Path string `json:"path"`
+				Kind string `json:"kind"`
+			} `json:"imports"`
+		} `json:"packages"`
+		Summary struct {
+			PackagesChanged int `json:"packages_changed"`
+		} `json:"summary"`
+	}
+	if err := json.Unmarshal([]byte(r.stdout), &rep); err != nil {
+		t.Fatalf("%v\n%s", err, r.stdout)
+	}
+	if rep.Summary.PackagesChanged != 3 {
+		t.Errorf("packages_changed = %d, want 3", rep.Summary.PackagesChanged)
+	}
+	got := map[string]string{}
+	for _, p := range rep.Packages {
+		var imports []string
+		for _, i := range p.Imports {
+			imports = append(imports, i.Kind+" "+i.Path)
+		}
+		got[p.Path] = fmt.Sprintf("%s changes=%d %s", p.Status, len(p.Changes), strings.Join(imports, ", "))
+	}
+	wantJSON := map[string]string{
+		"example.com/m/fresh": "new changes=1 added example.com/other",
+		"example.com/m/gone":  "removed changes=1 removed example.com/dep",
+		"example.com/m/store": "changed changes=2 removed example.com/other, added example.com/dep/sub, added example.com/m/nested, added foo",
+		"example.com/m/util":  "changed changes=0 removed example.com/other, added example.com/dep",
+	}
+	if !maps.Equal(got, wantJSON) {
+		t.Errorf("json packages = %v\nwant %v", got, wantJSON)
+	}
+
+	// A package whose imports alone changed, with no API change anywhere,
+	// is listed above the no-changes summary and exits clean.
+	f.write("store/store.go", "package store\n\nimport (\n\t\"fmt\"\n\t\"os\"\n\n\t\"example.com/dep\"\n\t\"example.com/other\"\n)\n\nfunc Open() error { dep.Do(); other.Do(); _, err := os.Open(\"\"); return fmt.Errorf(\"%w\", err) }\n")
+	f.remove("fresh/fresh.go")
+	f.write("gone/gone.go", "package gone\n\nimport (\n\t\"example.com/dep\"\n\t\"example.com/m/util\"\n)\n\nfunc Gone() string { dep.Do(); return util.Up(\"\") }\n")
+	r = f.mustRun("HEAD", "", Options{})
+	want = "example.com/m/util\n  - import \"example.com/other\"\n  + import \"example.com/dep\"\n\nno exported API changes\n"
+	if r.stdout != want {
+		t.Errorf("stdout = %q\nwant     %q", r.stdout, want)
+	}
+	if r.code != ExitClean {
+		t.Errorf("exit = %d, want %d", r.code, ExitClean)
+	}
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	mustContain(t, r.stdout, "\"path\": \"example.com/m/util\",\n      \"status\": \"changed\",\n      \"changes\": [],\n      \"imports\": [\n")
+	r = f.mustRun("HEAD", "", Options{Kinds: render.API})
+	if r.stdout != "no exported API changes\n" {
+		t.Errorf("stdout = %q", r.stdout)
+	}
 }

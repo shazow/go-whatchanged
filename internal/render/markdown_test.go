@@ -25,7 +25,7 @@ func TestGoBlock(t *testing.T) {
 		opts Options
 		want string
 	}{
-		{"plain", Options{Format: Markdown}, "**example.com/m/p**\n\n```go\n" +
+		{"plain", Options{Format: Markdown}, "### `example.com/m/p`\n\n```go\n" +
 			"// Removed\n" +
 			"func Gone()\n" +
 			"\n// Changed\n" +

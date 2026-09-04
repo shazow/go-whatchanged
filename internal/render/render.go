@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode/utf8"
 )
@@ -110,15 +111,37 @@ func (c Change) Kind() string {
 	return "changed"
 }
 
+// Import is a change to the imports of a package: a package of another
+// module that the package started importing, or with Removed set, stopped
+// importing. An import is not part of the API and never counts towards the
+// summary or the required release; the layouts list it before the
+// package's changes, as a compatible addition or removal of "import
+// \"path\"".
+type Import struct {
+	Path    string
+	Removed bool
+}
+
+// Kind classifies the import change as "added" or "removed".
+func (i Import) Kind() string {
+	if i.Removed {
+		return "removed"
+	}
+	return "added"
+}
+
 // Package is the diff of one package. An Internal package (one below an
 // internal directory) or a Main package (a command) is shown but kept out
-// of the public API's counts and required release level.
+// of the public API's counts and required release level. Imports are the
+// changes to the packages of other modules it imports; a package with
+// import changes alone is listed but does not count as changed.
 type Package struct {
 	Path     string
 	Status   Status
 	Internal bool
 	Main     bool
 	Changes  []Change
+	Imports  []Import
 }
 
 // part returns the part of the module the package belongs to: Main for a
@@ -250,11 +273,52 @@ func (v Visibility) Includes(internal, main bool) bool {
 	return v.Has(Package{Internal: internal, Main: main}.part())
 }
 
+// Kinds is the set of kinds of change that take part in a diff: API
+// changes, import changes or both, combined with |. The zero value selects
+// AllKinds.
+type Kinds int
+
+const (
+	// API selects the changes to the exported API: the symbols apidiff
+	// reports on, and packages added or removed.
+	API Kinds = 1 << iota
+	// Imports selects the changes to the imports of other modules.
+	Imports
+
+	// AllKinds selects both.
+	AllKinds = API | Imports
+)
+
+// ParseKinds parses one --filter term: "api" or "imports".
+func ParseKinds(s string) (Kinds, error) {
+	switch strings.ToLower(s) {
+	case "api":
+		return API, nil
+	case "imports":
+		return Imports, nil
+	}
+	return 0, fmt.Errorf("invalid filter %q (want api or imports)", s)
+}
+
+// Has reports whether k selects every kind in kinds. The zero value
+// selects everything.
+func (k Kinds) Has(kinds Kinds) bool {
+	if k == 0 {
+		k = AllKinds
+	}
+	return k&kinds == kinds
+}
+
 // Options controls rendering.
 type Options struct {
-	Color        bool
+	Color bool
+	// BreakingOnly hides compatible changes, import changes among them.
 	BreakingOnly bool
-	Format       Format
+	// Kinds says which kinds of change are shown: the API changes, the
+	// import changes or, the default, both. The summary always counts the
+	// API changes of the full diff.
+	Kinds  Kinds
+	Format Format
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
 	// Width is the number of columns the text layout may use, 0 for no
@@ -475,6 +539,38 @@ func describe(c Change, opts Options) line {
 	return l
 }
 
+// describeImport reduces an import change to a line: the declaration
+// "import \"path\"" on a "-" or a "+" line, compatible either way.
+func describeImport(i Import) line {
+	decl := "import " + strconv.Quote(i.Path)
+	if i.Removed {
+		return line{glyph: "-", kind: "removed", head: decl, from: decl, decls: true, compatible: true}
+	}
+	return line{glyph: "+", kind: "added", head: decl, to: decl, decls: true, compatible: true}
+}
+
+// lines reduces the changes of p to show to lines, honoring Kinds and
+// BreakingOnly, which hides the import changes along with every other
+// compatible one: the imports first, removed before added, then the
+// changes in order.
+func (p Package) lines(opts Options) []line {
+	var lines []line
+	if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
+		for _, i := range p.Imports {
+			lines = append(lines, describeImport(i))
+		}
+	}
+	if opts.Kinds.Has(API) {
+		for _, c := range p.Changes {
+			if opts.BreakingOnly && c.Compatible {
+				continue
+			}
+			lines = append(lines, describe(c, opts))
+		}
+	}
+	return lines
+}
+
 // role says what a row shows, which decides its color in the text layout.
 type role int
 
@@ -591,14 +687,7 @@ func (it item) rows() []row {
 // with indent columns before the label and two between it and the
 // position; those rows print their position unaligned instead.
 func packageRows(p Package, opts Options, limit, indent int) (rows []row, width int) {
-	var lines []line
-	for _, c := range p.Changes {
-		if opts.BreakingOnly && c.Compatible {
-			continue
-		}
-		lines = append(lines, describe(c, opts))
-	}
-	for _, it := range items(lines) {
+	for _, it := range items(p.lines(opts)) {
 		rows = append(rows, it.rows()...)
 	}
 	return rows, column(rows, limit, indent)
@@ -643,6 +732,12 @@ func padding(text string, width int) string {
 }
 
 func header(p Package) string {
+	return p.Path + notes(p)
+}
+
+// notes is the parenthesized suffix of a package's header, " (internal,
+// new)", or "" when there is nothing to note.
+func notes(p Package) string {
 	var notes []string
 	if p.Internal {
 		notes = append(notes, "internal")
@@ -657,9 +752,9 @@ func header(p Package) string {
 		notes = append(notes, "removed")
 	}
 	if len(notes) == 0 {
-		return p.Path
+		return ""
 	}
-	return p.Path + " (" + strings.Join(notes, ", ") + ")"
+	return " (" + strings.Join(notes, ", ") + ")"
 }
 
 // section is one part of the text and Markdown layouts: the public API,
@@ -886,10 +981,12 @@ func plural(n int, noun string) string {
 	return fmt.Sprintf("%d %ss changed", n, noun)
 }
 
-// writeMarkdown renders each package as a bold path followed by a fenced
-// Go block, which GitHub highlights as Go: keywords, types, strings and
-// comments each in their own color. A code block cannot color a whole
-// line, so the diff's own signal lives in comments; see goBlock.
+// writeMarkdown renders each package as a level-3 heading, its path in
+// code, followed by a fenced Go block, which GitHub highlights as Go:
+// keywords, types, strings and comments each in their own color. A code
+// block cannot color a whole line, so the diff's own signal lives in
+// comments; see goBlock. The headings nest under the level-2 title the
+// action puts above the report.
 func writeMarkdown(w io.Writer, res Result, opts Options) error {
 	var b strings.Builder
 	for i, s := range sections(res, opts) {
@@ -897,7 +994,7 @@ func writeMarkdown(w io.Writer, res Result, opts Options) error {
 			b.WriteString("\n")
 		}
 		for _, p := range s.packages {
-			fmt.Fprintf(&b, "**%s**\n\n", header(p))
+			fmt.Fprintf(&b, "### `%s`%s\n\n", p.Path, notes(p))
 			goBlock(&b, p, opts)
 			b.WriteString("\n")
 		}
@@ -945,11 +1042,7 @@ type goItem []goLine
 func goBlock(b *strings.Builder, p Package, opts Options) {
 	kinds := []string{"removed", "changed", "added"}
 	lines := map[string][]line{}
-	for _, c := range p.Changes {
-		if opts.BreakingOnly && c.Compatible {
-			continue
-		}
-		l := describe(c, opts)
+	for _, l := range p.lines(opts) {
 		lines[l.kind] = append(lines[l.kind], l)
 	}
 	groups := make([][]goItem, len(kinds))
@@ -1102,6 +1195,12 @@ type jsonPackage struct {
 	Internal bool         `json:"internal,omitempty"`
 	Main     bool         `json:"main,omitempty"`
 	Changes  []jsonChange `json:"changes"`
+	Imports  []jsonImport `json:"imports,omitempty"`
+}
+
+type jsonImport struct {
+	Path string `json:"path"`
+	Kind string `json:"kind"`
 }
 
 type jsonChange struct {
@@ -1131,9 +1230,9 @@ type jsonCounts struct {
 }
 
 // writeJSON renders the result as one indented JSON document. Only packages
-// with changes to show are listed (BreakingOnly filters the changes, and a
-// package left without any is dropped); the summary always counts the full
-// diff, as in the other layouts.
+// with changes to show are listed (Kinds and BreakingOnly filter the
+// changes, and a package left without any is dropped); the summary always
+// counts the full diff, as in the other layouts.
 func writeJSON(w io.Writer, res Result, opts Options) error {
 	sum := Summarize(res)
 	rep := jsonReport{
@@ -1159,12 +1258,17 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 		rep.Summary.Main = &jsonCounts{PackagesChanged: msum.PackagesChanged, Incompatible: msum.Incompatible, Compatible: msum.Compatible}
 	}
 	for _, p := range res.Packages {
-		if len(p.Changes) == 0 {
+		if len(p.Changes) == 0 && len(p.Imports) == 0 {
 			continue
 		}
 		jp := jsonPackage{Path: p.Path, Status: p.Status.String(), Internal: p.Internal, Main: p.Main, Changes: []jsonChange{}}
+		if opts.Kinds.Has(Imports) && !opts.BreakingOnly {
+			for _, i := range p.Imports {
+				jp.Imports = append(jp.Imports, jsonImport{Path: i.Path, Kind: i.Kind()})
+			}
+		}
 		for _, c := range p.Changes {
-			if opts.BreakingOnly && c.Compatible {
+			if !opts.Kinds.Has(API) || opts.BreakingOnly && c.Compatible {
 				continue
 			}
 			l := describe(c, opts)
@@ -1183,7 +1287,7 @@ func writeJSON(w io.Writer, res Result, opts Options) error {
 			}
 			jp.Changes = append(jp.Changes, jc)
 		}
-		if len(jp.Changes) == 0 {
+		if len(jp.Changes) == 0 && len(jp.Imports) == 0 {
 			continue
 		}
 		rep.Packages = append(rep.Packages, jp)

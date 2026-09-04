@@ -55,6 +55,7 @@ go install github.com/shazow/go-whatchanged@latest
 | What has changed since the last release in another checkout? | `go-whatchanged ~/src/m@latest` |
 | Which of these changes break importers? | `go-whatchanged --filter=breaking @latest` |
 | What changed in the commands, the `main` packages? | `go-whatchanged --filter=main @latest` |
+| Which packages picked up or dropped a dependency? | `go-whatchanged --filter=imports @latest` |
 | Would this pass a compatibility gate? | `go-whatchanged --exit-fail=major @latest` |
 
 ```
@@ -73,8 +74,9 @@ Options:
   --pkg=PATTERN      diff only packages matching PATTERN (repeatable)
   --exclude=PATTERN  skip packages matching PATTERN (repeatable)
   --filter=WHICH     all, or any of public | internal | main: which
-                     packages take part; breaking: only incompatible
-                     changes (default all)
+                     packages take part; api | imports: which kinds of
+                     change; breaking: only incompatible changes
+                     (default all)
   --pos              annotate changes with source positions
   --format=LAYOUT    text | markdown (or md) | json (default text)
   --color=WHEN       auto | always | never (default auto; honors NO_COLOR)
@@ -193,8 +195,11 @@ their own, as above, and `main` packages, which nothing can import, after
 them in a section of theirs; neither counts towards the public API's
 totals or the exit code. `--filter` picks the sections: `--filter=public`
 for the importable API alone, `--filter=main` for the commands alone,
-`--filter=public,main` for both. With `--filter=breaking`, the counts in
-the summary still describe the full diff.
+`--filter=public,main` for both. It also picks the kinds of change,
+`--filter=api` or `--filter=imports` (see [Import
+changes](#import-changes)), and `--filter=breaking` narrows the diff to
+incompatible changes; with either, the counts in the summary still
+describe the full diff.
 
 ## Reading the output
 
@@ -213,10 +218,45 @@ behind a glyph:
 | `!` | incompatible addition |
 | `~` | changed (bold when incompatible) |
 
+### Import changes
+
+Above each package's changes, the diff lists the packages of other modules
+it started or stopped importing, as `import "path"` lines on `+` and `-`
+rows: a new dependency is as visible as a new function. The standard
+library and the module's own packages are not tracked, so a package that
+swaps `sort` for `slices` is not listed for it; a nested module counts as
+another module. A package that appears brings all of its dependencies, one
+that disappears loses them. Import changes are not API changes: they never
+count towards the summary, the required release or the exit code, and a
+package whose imports alone changed is listed without counting as changed.
+They are compatible, so `--filter=breaking` hides them.
+
+`--filter=imports` shows the import changes alone, for the question of
+which packages picked up or dropped a dependency, and `--filter=api` the
+API changes alone; either combines with the parts, `--filter=public,api`.
+Here is what an upgrade of testify did, where `assert` moved its YAML
+dependency behind a package of its own:
+
+```
+$ go-whatchanged --filter=imports github.com/stretchr/testify@v1.9.0 @v1.10.0
+github.com/stretchr/testify/assert
+  - import "gopkg.in/yaml.v3"
+
+github.com/stretchr/testify/assert/yaml (new)
+  + import "gopkg.in/yaml.v3"
+
+5 packages changed · 1 incompatible · 23 compatible · would require: MAJOR (v1.9.0 → v2.0.0)
+```
+
+The imports are those of the package's non-test files for the build
+target, as the `go` command sees them; `import "C"` is never among them,
+since cgo is disabled.
+
 ## Output formats
 
-`--format=markdown` renders each package as a `go` block, which GitHub
-highlights as Go, for a pull request comment or a job summary. The
+`--format=markdown` renders each package as a heading and a `go` block,
+which GitHub highlights as Go, for a pull request comment or a job
+summary. The
 changes are grouped under `// Removed`, `// Changed` and `// Added`, from
 what breaks to what is merely new; a changed symbol shows its old
 declaration with `// ->` trailing and its new one below it, so that both
@@ -227,7 +267,7 @@ column.
 
 ````
 $ go-whatchanged --format=markdown @latest
-**example.com/m/store**
+### `example.com/m/store`
 
 ```go
 // Removed
@@ -242,7 +282,7 @@ func (c *Client) Ping() error
 type Options struct{ Timeout int }
 ```
 
-**example.com/m/util**
+### `example.com/m/util`
 
 ```go
 // Added
@@ -256,7 +296,9 @@ func (Sizer) Size() int // incompatible
 are part of the tool's interface. `base_version` and `next_version` are
 present when the base is a release tag, `pos` with `--pos`, and `struct`
 on a struct field's change, whose `before` and `after` are the field's
-declaration inside it.
+declaration inside it. A package with import changes carries them in
+`imports`, each a `path` and a `kind` of `added` or `removed`; a package
+with import changes alone has an empty `changes`.
 
 ```json
 {
@@ -364,7 +406,7 @@ permissions:
 | `head` | `@HEAD` | The new side, `@rev`. Empty means the working tree. |
 | `working-directory` | `.` | The module to diff, for repositories with several. |
 | `pkg`, `exclude` | | Package patterns, comma- or newline-separated. |
-| `filter` | `all` | `all`, or any of `public`, `internal` and `main`: `public,main`. |
+| `filter` | `all` | `all`, or any of `public`, `internal` and `main` for the packages and `api` and `imports` for the kinds of change: `public,main`, `public,api`. |
 | `breaking` | `false` | Show only incompatible changes. |
 | `pos` | `false` | Annotate changes with source positions. |
 | `strict` | `false` | Treat type-check errors as fatal. |

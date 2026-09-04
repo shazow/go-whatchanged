@@ -65,6 +65,15 @@ type Options struct {
 	Filter render.Visibility
 	// Positions annotates each change with the position of its declaration.
 	Positions bool
+	// Kinds selects which kinds of change are shown: the API changes,
+	// the import changes or, the zero value, both. An import change is a
+	// package of another module that a package started or stopped
+	// importing, listed before the package's API changes; the standard
+	// library and the module's own packages are not tracked. Import
+	// changes are not API changes: they never count towards the summary,
+	// the required release or the exit code, and a package with import
+	// changes alone is listed without counting as changed.
+	Kinds render.Kinds
 	// Width is the number of columns the text layout may use, 0 for no
 	// limit; see render.Options.Width.
 	Width int
@@ -265,6 +274,7 @@ func finish(res *render.Result, opts Options) (int, error) {
 	ro := render.Options{
 		Color:        opts.Color,
 		BreakingOnly: opts.Breaking,
+		Kinds:        opts.Kinds,
 		Format:       opts.Format,
 		Positions:    opts.Positions,
 		Width:        opts.Width,
@@ -329,9 +339,10 @@ type side struct {
 	res       *modres.Resolver
 	ld        *loader.Loader
 	pkgs      map[string]*types.Package
-	internal  map[string]bool // import paths of internal packages
-	main      map[string]bool // import paths of main packages
-	all       []string        // every import path Options.Filter selects, before Options.Packages and Exclude
+	internal  map[string]bool     // import paths of internal packages
+	main      map[string]bool     // import paths of main packages
+	imports   map[string][]string // the packages of other modules each package imports
+	all       []string            // every import path Options.Filter selects, before Options.Packages and Exclude
 	problem   map[string]string
 	notes     []string // module-level warnings, reported under the module path
 }
@@ -622,6 +633,9 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 	s.pkgs = make(map[string]*types.Package, len(found))
 	s.internal = make(map[string]bool)
 	s.main = make(map[string]bool)
+	if opts.Kinds.Has(render.Imports) {
+		s.imports = make(map[string][]string)
+	}
 	filter := discover.NewFilter(opts.Packages, opts.Exclude)
 	paths := make([]string, 0, len(found))
 	for p := range found {
@@ -643,6 +657,9 @@ func loadSide(ctx context.Context, spec sideSpec, env modres.Env, opts Options, 
 		s.pkgs[p] = pkg
 		s.internal[p] = found[p].Internal
 		s.main[p] = found[p].Main
+		if s.imports != nil {
+			s.imports[p] = s.dependencies(found[p].Dir, found[p].Build.Imports)
+		}
 	}
 	if err := s.ld.Err(); err != nil {
 		// A module the cache lacks is only ever missing without a source,
@@ -704,6 +721,7 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 			annotate(&rc, fset, base, head, old, nw)
 			pkg.Changes = append(pkg.Changes, rc)
 		}
+		pkg.Imports = diffImports(base.imports[p], head.imports[p])
 		// apidiff only sees symbols, so a package with no exported API
 		// that appears or disappears would go unreported. Importers still
 		// notice: the import breaks, or its init side effects are gone.
@@ -720,6 +738,44 @@ func diffSides(base, head *side, fset *token.FileSet) *render.Result {
 
 	res.Warnings = collectWarnings(base, head)
 	return res
+}
+
+// dependencies returns the imports of a package in dir that other modules
+// provide: neither the standard library nor this module, as the resolver
+// tells them apart, so that a nested module is a dependency and a replaced
+// module without a dot in its path is not the standard library. An import
+// that resolves nowhere is kept, since it is not the standard library or
+// this module either; the loader warns about it separately. The imports
+// are those go/build lists: the ones of the package's non-test files for
+// the build target, "C" excluded since cgo is disabled.
+func (s *side) dependencies(dir string, imports []string) []string {
+	var deps []string
+	for _, p := range imports {
+		if loc, err := s.res.Resolve(p, dir); err == nil && loc.Kind != modres.Dep {
+			continue
+		}
+		deps = append(deps, p)
+	}
+	return deps
+}
+
+// diffImports lists the import paths in old but not in nw as removed and
+// those in nw but not in old as added, removals first, each sorted by
+// path. The imports of a package on one side only are all removed or all
+// added.
+func diffImports(old, nw []string) []render.Import {
+	var out []render.Import
+	for _, p := range slices.Sorted(slices.Values(old)) {
+		if !slices.Contains(nw, p) {
+			out = append(out, render.Import{Path: p, Removed: true})
+		}
+	}
+	for _, p := range slices.Sorted(slices.Values(nw)) {
+		if !slices.Contains(old, p) {
+			out = append(out, render.Import{Path: p})
+		}
+	}
+	return out
 }
 
 // annotate fills in the declarations, the struct of a field and the

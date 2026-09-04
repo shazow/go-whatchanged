@@ -47,9 +47,17 @@ it. Both may be repeated or given comma-separated lists.
 packages and then the main packages (commands), which nothing can import;
 neither of the latter counts towards the summary, the required release or
 the exit code. --filter=public, --filter=internal and --filter=main pick
-the parts to show, and add up: --filter=public,main. --filter=breaking
-narrows the diff to incompatible changes and combines with any of them:
---filter=public,breaking.
+the parts to show, and add up: --filter=public,main.
+
+Above each package's changes, the diff lists the packages of other modules
+it started or stopped importing, so that a new dependency is as visible as
+a new function. Import changes are not API changes: they never count
+towards the summary, the required release or the exit code. --filter=api
+leaves them out and --filter=imports shows nothing else; both combine with
+the parts: --filter=public,imports.
+
+--filter=breaking narrows the diff to incompatible changes, which no
+import change is, and combines with any of the above: --filter=public,breaking.
 
 GOOS and GOARCH in the environment select the build target, as for the go
 command; the default is the running platform.
@@ -71,7 +79,7 @@ unless there is an error).`
 type options struct {
 	Pkg        patterns `long:"pkg" value-name:"PATTERN" description:"diff only packages matching PATTERN (example: --pkg store/... --pkg util)"`
 	Exclude    patterns `long:"exclude" value-name:"PATTERN" description:"skip packages matching PATTERN (example: --exclude cmd/...,experimental)"`
-	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"packages to diff: all, or any of public, internal and main; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
+	Filter     filter   `long:"filter" value-name:"WHICH" default:"all" description:"what to diff: all, or any of public, internal and main for the packages, and api and imports for the kinds of change; add breaking to show only incompatible changes; comma-separated or repeatable (example: --filter public,breaking)"`
 	Pos        bool     `long:"pos" description:"annotate each change with its source position"`
 	Format     string   `long:"format" choice:"text" choice:"markdown" choice:"md" choice:"json" default:"text" description:"output type"`
 	Color      string   `long:"color" choice:"auto" choice:"always" choice:"never" default:"auto" description:"colorize output (auto honors NO_COLOR)"`
@@ -149,6 +157,7 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 		Filter:    o.Filter.visibility(),
 		Breaking:  o.Filter.breaking(),
 		Positions: o.Pos,
+		Kinds:     o.Filter.kinds(),
 		Width:     terminalWidth(),
 		Strict:    o.Strict,
 		Base:      o.Args.Base,
@@ -181,9 +190,10 @@ func (o *options) whatchanged() (whatchanged.Options, error) {
 
 // filter collects the terms of a repeatable, comma-separated --filter flag:
 // "public", "internal" and "main" say which packages take part (all three
-// add up to "all", the default when none is named) and "breaking" narrows
-// the diff to incompatible changes. It is a slice so that go-flags drops
-// the default when the flag is given.
+// add up to "all", the default when none is named), "api" and "imports"
+// which kinds of change (likewise), and "breaking" narrows the diff to
+// incompatible changes. It is a slice so that go-flags drops the default
+// when the flag is given.
 type filter []string
 
 // UnmarshalFlag adds the terms of one flag occurrence, implementing
@@ -194,10 +204,10 @@ func (f *filter) UnmarshalFlag(s string) error {
 		switch term {
 		case "":
 			continue
-		case "all", "public", "internal", "main", "breaking":
+		case "all", "public", "internal", "main", "api", "imports", "breaking":
 			*f = append(*f, term)
 		default:
-			return fmt.Errorf("invalid filter %q (want all, public, internal, main or breaking)", term)
+			return fmt.Errorf("invalid filter %q (want all, public, internal, main, api, imports or breaking)", term)
 		}
 	}
 	return nil
@@ -226,6 +236,26 @@ func (f filter) visibility() render.Visibility {
 		return render.All
 	}
 	return v
+}
+
+// kinds returns the kinds of change the terms select: the kinds named, or
+// both when "all" or no kind at all was named.
+func (f filter) kinds() render.Kinds {
+	var k render.Kinds
+	for _, term := range f {
+		switch term {
+		case "all":
+			return render.AllKinds
+		case "api":
+			k |= render.API
+		case "imports":
+			k |= render.Imports
+		}
+	}
+	if k == 0 {
+		return render.AllKinds
+	}
+	return k
 }
 
 // breaking reports whether only incompatible changes are wanted.

@@ -119,7 +119,7 @@ fi
 # The summary lines are everything outside the fenced blocks that is not a
 # package heading, minus the markdown emphasis: the public API's line and,
 # when internal or main packages changed, theirs.
-summary=$(awk '/^```/ {fence = !fence; next} fence || /^\*\*/ || /^$/ {next} {print}' "$md" |
+summary=$(awk '/^```/ {fence = !fence; next} fence || /^### / || /^$/ {next} {print}' "$md" |
   sed -e 's/\*\*//g' -e 's/^_\(.*\)_$/\1/')
 
 # The glyph stands for the release the public API changes call for: green
@@ -142,7 +142,8 @@ cat "$md"
 echo "::endgroup::"
 if [ "$INPUT_SUMMARY" = true ]; then
   {
-    [ -z "$INPUT_TITLE" ] || printf '### %s %s\n\n' "$glyph" "$INPUT_TITLE"
+    # A level above the report's package headings.
+    [ -z "$INPUT_TITLE" ] || printf '## %s %s\n\n' "$glyph" "$INPUT_TITLE"
     cat "$md"
     printf '\n<sub>%s</sub>\n' "$compared"
   } >>"$GITHUB_STEP_SUMMARY"
