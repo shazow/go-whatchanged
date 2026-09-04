@@ -3,7 +3,7 @@
 The action works: every pull request on this repository gets its comment,
 and the dogfood job runs in four seconds with a warm cache. This proposal
 is about what surrounds it. How the action is shared, `uses:
-shazow/go-whatchanged@main` with no tags behind it; how the README asks a
+shazow/go-whatchanged@main` with `v1.0.0` since tagged; how the README asks a
 project to adopt it; and the 283-line shell script that does everything
 between `go build` and the comment, which is the part most likely to
 break and least likely to be tested.
@@ -75,26 +75,24 @@ it.
 
 ### Tag releases, move a major tag, list on the Marketplace
 
-There are no tags. `go install github.com/shazow/go-whatchanged@latest`
-gives a pseudo-version, `uses: shazow/go-whatchanged@main` follows every
-merge, and neither Dependabot nor a `# v0.3.0` comment has anything to
-hold on to.
+`v1.0.0` is tagged, so `go install github.com/shazow/go-whatchanged@latest`
+resolves to a release and the README can pin the action to it. Two
+things remain.
 
-- Tag releases as the go command reads them, `v0.1.0` onwards. `@latest`
-  resolves for `go install`, and the tool's own `@latest` starts working
-  on its own repository.
-- Keep a floating major tag, `v0` now and `v1` later, moved on each
-  release, as `actions/toolkit` documents (`git tag -fa v0 && git push
-  origin v0 --force`). Create it as a plain tag, not a release: with
-  immutable releases enabled a tag tied to a release cannot move. A tag
-  named `v0` is not a version to the go command, which lists only canonical
-  semantic versions, so it costs the module nothing. A ten-line workflow on
-  `push: tags: v*` can move it.
+- Keep a floating major tag, `v1`, moved on each release, as
+  `actions/toolkit` documents (`git tag -fa v1 && git push origin v1
+  --force`). Create it as a plain tag, not a release: with immutable
+  releases enabled a tag tied to a release cannot move. A tag named `v1`
+  is not a version to the go command, which lists only canonical semantic
+  versions, so it costs the module nothing. A ten-line workflow on `push:
+  tags: v*` can move it, and the README can then say `@v1` and stop
+  needing an edit per release.
 - Publish on the Marketplace. `action.yml` is at the root with `branding`,
   which is all the listing needs beyond a release.
-- Pin by `@v0` in the README, and mention pinning by SHA with a version
-  comment, `uses: shazow/go-whatchanged@<sha> # v0.3.0`, as kubebuilder
-  pins `go-apidiff` and GitHub's security guidance recommends.
+
+Either way, mention pinning by SHA with a version comment, `uses:
+shazow/go-whatchanged@<sha> # v1.0.0`, as kubebuilder pins `go-apidiff`
+and GitHub's security guidance recommends.
 
 A separate `go-whatchanged-action` repository, the layout of golangci-lint
 and goreleaser, would only make sense with a release binary to download.
@@ -114,7 +112,7 @@ the smallest workflow that gets it, and then the knobs.
 2. **One minimal workflow**, `on: pull_request`, three steps, with the
    comment `# for the comment` on the permission and `# history and tags,
    for the merge-base and @latest` on `fetch-depth`, as now. Pinned to
-   `@v0`. `setup-go` in it with a comment that it is optional, for the
+   `@v1`. `setup-go` in it with a comment that it is optional, for the
    cache.
 3. **A cookbook** of the questions the Usage table asks, as workflow
    fragments: a compatibility gate (`fail-on: major`), the public API
@@ -311,8 +309,8 @@ change; the Go program is the one that removes the script.
 
 ## In what order
 
-1. **Tag `v0.1.0`, move `v0`, list on the Marketplace, pin the README to
-   `@v0`.** A release workflow and a README edit; no code.
+1. **Move a `v1` tag on each release and list on the Marketplace.** A
+   release workflow and a README edit; no code.
 2. **`@rev...` and `summary.text` in the tool.** Two features with tests
    and golden files, useful on the command line, and the script shrinks
    by forty lines and its most fragile part the day they land.
