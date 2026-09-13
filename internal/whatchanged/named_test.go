@@ -28,6 +28,11 @@ func TestGofmtRawTags(t *testing.T) {
 			"type T struct {\n\tID string \"json:\\\"a`b\\\"\"\n}",
 		},
 		{
+			// A tab a raw string can hold does not break the alignment.
+			"type T struct{ID string \"json:\\\"a\\tb\\\"\"; N int \"j:\\\"n\\\"\"}",
+			"type T struct {\n\tID string `json:\"a\tb\"`\n\tN  int    `j:\"n\"`\n}",
+		},
+		{
 			`type T struct{ID string "json:\"a\nb\""}`,
 			"type T struct {\n\tID string \"json:\\\"a\\nb\\\"\"\n}",
 		},

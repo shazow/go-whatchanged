@@ -9,7 +9,6 @@ import (
 	"go/types"
 	"strconv"
 	"strings"
-	"unicode/utf8"
 )
 
 // declString renders obj as it would appear in source, formatted as gofmt
@@ -82,8 +81,8 @@ func gofmt(decl string) string {
 // rawTags rewrites the struct tags of file as backquoted raw strings,
 // `json:"id"`, which is how they are written in source and reads without
 // the escaping go/types prints them with, "json:\"id\"". A tag a raw
-// string cannot hold, one containing a backquote or an unprintable
-// character, is left as it is.
+// string cannot hold unchanged, one strconv.CanBackquote rejects, is left
+// as it is.
 func rawTags(file *ast.File) {
 	ast.Inspect(file, func(n ast.Node) bool {
 		st, ok := n.(*ast.StructType)
@@ -95,27 +94,13 @@ func rawTags(file *ast.File) {
 				continue
 			}
 			tag, err := strconv.Unquote(f.Tag.Value)
-			if err != nil || !rawString(tag) {
+			if err != nil || !strconv.CanBackquote(tag) {
 				continue
 			}
 			f.Tag.Value = "`" + tag + "`"
 		}
 		return true
 	})
-}
-
-// rawString reports whether s can be written as a backquoted raw string
-// without changing it.
-func rawString(s string) bool {
-	if strings.Contains(s, "`") || !utf8.ValidString(s) {
-		return false
-	}
-	for _, r := range s {
-		if !strconv.IsPrint(r) {
-			return false
-		}
-	}
-	return true
 }
 
 // structOf returns the struct a field belongs to, "Config" for the field
