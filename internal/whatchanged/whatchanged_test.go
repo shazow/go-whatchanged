@@ -3250,3 +3250,23 @@ func TestMod(t *testing.T) {
 		t.Errorf("json mod = %q\nwant %q", got, wantJSON)
 	}
 }
+
+// TestStructTagsBackquoted checks that a struct tag reaches the rendered
+// output in the backquoted form source writes it in. The type checker
+// decodes the tag and types.ObjectString re-encodes it as an interpreted
+// string, so without the rewrite gofmt does the output would read
+// "json:\"id\"" here instead; see TestGofmtRawTagsSource.
+func TestStructTagsBackquoted(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.write("a/a.go", "package a\n\nfunc A() {}\n")
+	f.commit("base")
+	f.write("a/a.go", "package a\n\nfunc A() {}\n\ntype NetworkStatus struct {\n\tID       string `json:\"id\"`\n\tAttached bool   `json:\"attached\"`\n}\n")
+	f.commit("head")
+	r := f.mustRun("HEAD~1", "HEAD", Options{})
+	mustContain(t, r.stdout,
+		"ID       string `json:\"id\"`",
+		"Attached bool   `json:\"attached\"`",
+	)
+	mustNotContain(t, r.stdout, `\"id\"`)
+}
