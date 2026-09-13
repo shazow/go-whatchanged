@@ -1,8 +1,13 @@
 package whatchanged
 
 import (
+	"bytes"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"go/types"
+	"strconv"
 	"strings"
 )
 
@@ -55,15 +60,31 @@ func declString(obj types.Object, pkg *types.Package) string {
 
 // gofmt formats a declaration as gofmt would: "struct{ Timeout int }"
 // rather than go/types's "struct{Timeout int}", and a struct or interface
-// with several members on several lines, indented with tabs. A
-// declaration the parser rejects is returned as it is.
+// with several members on several lines, indented with tabs. A struct tag,
+// which go/types prints as a double-quoted literal, "json:\"bar\"", is
+// given the backticks it has in source, `json:"bar"`, unless it contains
+// a backtick itself. A declaration the parser rejects is returned as it
+// is.
 func gofmt(decl string) string {
 	const pkg = "package p\n\n"
-	out, err := format.Source([]byte(pkg + decl + "\n"))
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", pkg+decl+"\n", parser.SkipObjectResolution)
 	if err != nil {
 		return decl
 	}
-	return strings.TrimSuffix(strings.TrimPrefix(string(out), pkg), "\n")
+	ast.Inspect(f, func(n ast.Node) bool {
+		if field, ok := n.(*ast.Field); ok && field.Tag != nil {
+			if tag, err := strconv.Unquote(field.Tag.Value); err == nil && !strings.Contains(tag, "`") {
+				field.Tag.Value = "`" + tag + "`"
+			}
+		}
+		return true
+	})
+	var out bytes.Buffer
+	if err := format.Node(&out, fset, f); err != nil {
+		return decl
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(out.String(), pkg), "\n")
 }
 
 // structOf returns the struct a field belongs to, "Config" for the field
