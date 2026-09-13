@@ -2731,6 +2731,19 @@ func TestDeclarations(t *testing.T) {
 	mustContain(t, r.stdout, "```go\n// Changed\ntype Opts int      // ->\ntype Opts struct { // a/a.go:9:6\n\tA int\n\tB string\n}\n\n// Added\ntype I interface { // a/a.go:14:6\n\tM()\n\tN()\n}\n```\n")
 	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
 	mustContain(t, r.stdout, `"after": "type Opts struct {\n\tA int\n\tB string\n}"`)
+
+	// A struct tag has the backticks it has in source, rather than the
+	// double-quoted literal go/types prints, unless it contains a
+	// backtick itself, which source has to double-quote too.
+	f.commit("structs")
+	f.write("a/b.go", "package a\n\ntype Tagged struct {\n\tA int `json:\"a,omitempty\" yaml:\"a\"`\n\tB string \"tick:\\\"`\\\"\"\n}\n")
+	r = f.mustRun("HEAD", "", Options{})
+	mustContain(t, r.stdout, "  + type Tagged struct {\n"+
+		"        A int    `json:\"a,omitempty\" yaml:\"a\"`\n"+
+		"        B string \"tick:\\\"`\\\"\"\n"+
+		"    }\n")
+	r = f.mustRun("HEAD", "", Options{Format: render.JSON})
+	mustContain(t, r.stdout, `"after": "type Tagged struct {\n\tA int    `+"`"+`json:\"a,omitempty\" yaml:\"a\"`+"`"+`\n\tB string \"tick:\\\"`+"`"+`\\\"\"\n}"`)
 }
 
 func TestFilterMainPackages(t *testing.T) {
