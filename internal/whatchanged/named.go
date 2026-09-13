@@ -1,9 +1,15 @@
 package whatchanged
 
 import (
+	"bytes"
+	"go/ast"
 	"go/format"
+	"go/parser"
+	"go/token"
 	"go/types"
+	"strconv"
 	"strings"
+	"unicode/utf8"
 )
 
 // declString renders obj as it would appear in source, formatted as gofmt
@@ -55,15 +61,61 @@ func declString(obj types.Object, pkg *types.Package) string {
 
 // gofmt formats a declaration as gofmt would: "struct{ Timeout int }"
 // rather than go/types's "struct{Timeout int}", and a struct or interface
-// with several members on several lines, indented with tabs. A
+// with several members on several lines, indented with tabs. Struct tags
+// are rewritten as the raw strings source writes them, see rawTags. A
 // declaration the parser rejects is returned as it is.
 func gofmt(decl string) string {
 	const pkg = "package p\n\n"
-	out, err := format.Source([]byte(pkg + decl + "\n"))
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "decl.go", pkg+decl+"\n", parser.SkipObjectResolution)
 	if err != nil {
 		return decl
 	}
-	return strings.TrimSuffix(strings.TrimPrefix(string(out), pkg), "\n")
+	rawTags(file)
+	var buf bytes.Buffer
+	if err := format.Node(&buf, fset, file); err != nil {
+		return decl
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(buf.String(), pkg), "\n")
+}
+
+// rawTags rewrites the struct tags of file as backquoted raw strings,
+// `json:"id"`, which is how they are written in source and reads without
+// the escaping go/types prints them with, "json:\"id\"". A tag a raw
+// string cannot hold, one containing a backquote or an unprintable
+// character, is left as it is.
+func rawTags(file *ast.File) {
+	ast.Inspect(file, func(n ast.Node) bool {
+		st, ok := n.(*ast.StructType)
+		if !ok || st.Fields == nil {
+			return true
+		}
+		for _, f := range st.Fields.List {
+			if f.Tag == nil || !strings.HasPrefix(f.Tag.Value, `"`) {
+				continue
+			}
+			tag, err := strconv.Unquote(f.Tag.Value)
+			if err != nil || !rawString(tag) {
+				continue
+			}
+			f.Tag.Value = "`" + tag + "`"
+		}
+		return true
+	})
+}
+
+// rawString reports whether s can be written as a backquoted raw string
+// without changing it.
+func rawString(s string) bool {
+	if strings.Contains(s, "`") || !utf8.ValidString(s) {
+		return false
+	}
+	for _, r := range s {
+		if !strconv.IsPrint(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // structOf returns the struct a field belongs to, "Config" for the field
